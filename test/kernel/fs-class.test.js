@@ -10,7 +10,6 @@ const {
 	isUnsafeFsOverrideActive,
 	defaultProbeDriveType,
 	parseNetUseDriveType,
-	parseDisplayRoot,
 	resetFilesystemWarningMemo,
 	REMEDIATION,
 } = require('../../lib/kernel/fs-class');
@@ -699,15 +698,23 @@ describe('classifyLinux — mountProbeThrew distinguishes threw vs no-match (M3)
 });
 
 describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M5)', () => {
-	test('does not launch PowerShell after a successful net use miss', () => {
+	test('preserves the fixed local C: drive after a successful net use miss', () => {
 		const seenFiles = [];
 		const fakeExec = (file) => {
 			seenFiles.push(file);
-			if (file === 'powershell') throw new Error('PowerShell fallback must not run after net use succeeds');
+			if (file === 'powershell') throw new Error('Unexpected PowerShell probe after net use succeeds');
 			return '';
 		};
-		expect(defaultProbeDriveType('Z:', { execFileSync: fakeExec })).toBe('fixed');
+		expect(defaultProbeDriveType('C:', { execFileSync: fakeExec })).toBe('fixed');
 		expect(seenFiles).toEqual(['net']);
+	}, T);
+
+	test('returns unknown for a non-C drive after a successful net use miss', () => {
+		const fakeExec = (file) => {
+			if (file === 'powershell') throw new Error('Unexpected PowerShell probe after net use succeeds');
+			return '';
+		};
+		expect(defaultProbeDriveType('Z:', { execFileSync: fakeExec })).toBe('unknown');
 	}, T);
 
 	test('B1: net use exec passes timeout=1500 + killSignal SIGKILL', () => {
@@ -716,7 +723,7 @@ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M
 			seenOptions.push(options);
 			return '';
 		};
-		const result = defaultProbeDriveType('Z:', { execFileSync: fakeExec });
+		const result = defaultProbeDriveType('C:', { execFileSync: fakeExec });
 		expect(seenOptions).toHaveLength(1);
 		for (const options of seenOptions) {
 			expect(options.timeout).toBe(1500);
@@ -768,12 +775,6 @@ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M
 		expect(parseNetUseDriveType(stdout, 'Z:')).toBeNull();
 		// Must not partial-match (e.g. a line mentioning Z elsewhere).
 		expect(parseNetUseDriveType('OK  AZ:  ...', 'Z:')).toBeNull();
-	}, T);
-
-	test('M5: parseDisplayRoot treats a non-empty DisplayRoot as network, empty/whitespace as null', () => {
-		expect(parseDisplayRoot('\\\\fileserver\\share\r\n')).toBe('network');
-		expect(parseDisplayRoot('   \r\n')).toBeNull();
-		expect(parseDisplayRoot('')).toBeNull();
 	}, T);
 
 	test('M5: defaultProbeDriveType returns network when net use stdout lists the letter', () => {
