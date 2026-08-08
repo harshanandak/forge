@@ -12,7 +12,10 @@ const {
 	generateNpmPublishWorkflow,
 	renderNpmPublishWorkflow,
 } = require('../lib/npm-publish-workflow');
-const { PROTECTED_STATE_AUDIT_LOG } = require('../lib/protected-state-surfaces');
+const {
+	PROTECTED_STATE_AUDIT_LOG,
+	verifyProtectedStateAuthorization,
+} = require('../lib/protected-state-surfaces');
 const {
 	createReleaseSuiteReceipt,
 	verifyReleaseSuiteReceipt,
@@ -222,6 +225,51 @@ describe('Forge-owned npm publish workflow', () => {
 			});
 			expect(fs.existsSync(workflowPath)).toBe(false);
 		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('real capped audit failure cannot leave a reusable authorization behind', () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-capped-audit-'));
+		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+		const auditPath = path.join(root, PROTECTED_STATE_AUDIT_LOG);
+		const previous = Buffer.from('previous workflow\n', 'utf8');
+		const realWriteFileSync = fs.writeFileSync;
+		try {
+			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+			fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+			fs.writeFileSync(workflowPath, previous);
+			const seeded = Array.from({ length: 500 }, (_, index) => JSON.stringify({
+				kind: 'protected_state_write',
+				decision: 'blocked',
+				seq: index,
+			}));
+			fs.writeFileSync(auditPath, `${seeded.join('\n')}\n`, 'utf8');
+			fs.writeFileSync = (target, ...args) => {
+				if (String(target).startsWith(`${auditPath}.`) && String(target).endsWith('.tmp')) {
+					const error = new Error('forced audit temp failure');
+					error.code = 'ENOSPC';
+					throw error;
+				}
+				return realWriteFileSync(target, ...args);
+			};
+
+			const result = generateNpmPublishWorkflow(root, { actor: 'release-test' });
+			expect(result).toMatchObject({
+				success: false,
+				error: 'Could not record protected-state authorization: forced audit temp failure',
+			});
+			expect(fs.readFileSync(workflowPath)).toEqual(previous);
+			const records = fs.readFileSync(auditPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+			expect(records).toHaveLength(500);
+			expect(verifyProtectedStateAuthorization({
+				actor: 'release-test',
+				surface: 'workflows',
+				path: NPM_PUBLISH_WORKFLOW_PATH,
+				content: renderNpmPublishWorkflow(),
+			}, records).allowed).toBe(false);
+		} finally {
+			fs.writeFileSync = realWriteFileSync;
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
