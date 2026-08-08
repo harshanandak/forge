@@ -35,6 +35,16 @@ function fakeShardChild(code, pid, args = []) {
   return child;
 }
 
+function fakeProcessTree() {
+  return {
+    reserveChild: () => ({ id: 'test-child' }),
+    registerChild: () => true,
+    unregisterChild: () => {},
+    installSignalHandlers: () => () => {},
+    cleanup: () => {},
+  };
+}
+
 
 describe('scripts/test-full-suite.js', () => {
   test('parseArgs reads shard count and label prefix', () => {
@@ -176,6 +186,7 @@ describe('scripts/test-full-suite.js', () => {
         ['test/a.test.js', 2000],
         ['packages/skills/test/a.test.js', 1000],
       ]),
+      processTree: fakeProcessTree(),
       spawn,
     });
 
@@ -190,13 +201,6 @@ describe('scripts/test-full-suite.js', () => {
   test('concurrent full-suite invocations use disjoint receipt directories', async () => {
     const receiptPaths = [];
     let pid = 9020;
-    const createProcessTree = () => ({
-      reserveChild: () => ({ id: 'concurrent-' + pid }),
-      registerChild: () => true,
-      unregisterChild: () => {},
-      installSignalHandlers: () => () => {},
-      cleanup: () => {},
-    });
     const spawn = (_command, args) => {
       receiptPaths.push(args[args.indexOf('--reporter-outfile') + 1]);
       return fakeShardChild(0, pid++, args);
@@ -207,13 +211,13 @@ describe('scripts/test-full-suite.js', () => {
         runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
           allTests: ['test/a.test.js'],
           durationMap: new Map(),
-          processTree: createProcessTree(),
+          processTree: fakeProcessTree(),
           spawn,
         }),
         runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
           allTests: ['test/a.test.js'],
           durationMap: new Map(),
-          processTree: createProcessTree(),
+          processTree: fakeProcessTree(),
           spawn,
         }),
       ]);
@@ -389,6 +393,7 @@ describe('scripts/test-full-suite.js', () => {
         ['test/b.test.js', 1000],
       ]),
       spawn,
+      processTree: fakeProcessTree(),
     });
 
     expect(status).toBe(1);
@@ -406,6 +411,7 @@ describe('scripts/test-full-suite.js', () => {
 
     const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
       allTests: ['test/a.test.js'],
+      processTree: fakeProcessTree(),
       durationMap: new Map([['test/a.test.js', 1000]]),
       spawn,
     });
