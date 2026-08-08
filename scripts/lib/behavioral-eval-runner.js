@@ -15,6 +15,9 @@ const STRUCTURAL_FAILURE_PREFIXES = Object.freeze([
   'evidence.', 'binding.', 'case_id.', 'packet.', 'split.', 'trial.', 'metrics.',
   'manifest.', 'observation.',
 ]);
+const SAFE_RUNTIME_FAILURES = new Set([
+  'runtime.execution_failed', 'runtime.token_budget_exceeded', 'runtime.usage_unparseable',
+]);
 
 function hasExactFields(value, fields) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -61,7 +64,12 @@ function snapshotArms(arms) {
   return Object.freeze(snapshots);
 }
 
-function buildEnvelope(input, identity, binding, evaluation, result) {
+function explicitHardFailure(evaluation, result) {
+  return result.evidence?.observation?.hardFailure === true
+    || evaluation.hardFailure === true;
+}
+
+function buildEnvelope(input, identity, binding, evaluation, result, hardFailure) {
   const attribution = result.attribution;
   return createEvalEvidence({
     issue_id: input.issueId,
@@ -103,14 +111,14 @@ function buildEnvelope(input, identity, binding, evaluation, result) {
     },
     case_result: {
       status: evaluation.passed ? 'PASS' : 'FAIL',
-      hard_failure: evaluation.hardFailure === true,
+      hard_failure: hardFailure,
       latency_ms: result.evidence.metrics.durationMs,
       tokens: result.evidence.metrics.tokensUsed,
     },
   });
 }
 
-function finding(identity, status, failures, evidence, evaluation) {
+function finding(identity, status, failures, evidence, hardFailure = false) {
   return {
     caseId: identity.caseId,
     risk: identity.risk,
@@ -120,7 +128,7 @@ function finding(identity, status, failures, evidence, evaluation) {
     budget: identity.budget,
     trialIndex: identity.trialIndex,
     status,
-    hardFailure: evaluation?.hardFailure === true,
+    hardFailure,
     latencyMs: Number.isFinite(evidence?.metrics?.durationMs) ? evidence.metrics.durationMs : 0,
     tokens: Number.isFinite(evidence?.metrics?.tokensUsed) ? evidence.metrics.tokensUsed : 0,
     failures,
@@ -166,14 +174,15 @@ async function invokeExecutor(input, packet, trialIndex, arm, binding) {
       binding,
       skillName: input.skillName,
     }));
-  } catch {
-    return null;
+  } catch (error) {
+    const failure = error?.message;
+    return SAFE_RUNTIME_FAILURES.has(failure) ? { runtimeFailure: failure } : null;
   }
 }
 
-async function persistEvidence(input, append, identity, binding, evaluation, result) {
+async function persistEvidence(input, append, identity, binding, evaluation, result, hardFailure) {
   try {
-    const envelope = buildEnvelope(input, identity, binding, evaluation, result);
+    const envelope = buildEnvelope(input, identity, binding, evaluation, result, hardFailure);
     const appended = await append(input.projectRoot, envelope, input.appendOptions || {});
     if (appended?.conflict) return 'evidence.conflict';
     if (!appended || appended.ok !== true) return 'evidence.append_failed';
@@ -186,6 +195,12 @@ async function persistEvidence(input, append, identity, binding, evaluation, res
 async function executeArm({ input, corpus, packet, trialIndex, arm, binding, append }) {
   const identity = identityFor(packet, trialIndex, arm);
   const result = await invokeExecutor(input, packet, trialIndex, arm, binding);
+  if (result?.runtimeFailure) {
+    return {
+      status: 'INCOMPLETE',
+      finding: finding(identity, 'INCOMPLETE', [result.runtimeFailure]),
+    };
+  }
   if (!validExecutorResult(result)) {
     return { status: 'INCOMPLETE', finding: finding(identity, 'INCOMPLETE', ['evidence.malformed']) };
   }
@@ -203,24 +218,29 @@ async function executeArm({ input, corpus, packet, trialIndex, arm, binding, app
     evidence: result.evidence,
     expectedBinding: binding,
   });
+  const hardFailure = explicitHardFailure(evaluation, result);
   if (evaluation.failures.some(isStructuralFailure)) {
     return {
       status: 'INCOMPLETE',
-      finding: finding(identity, 'INCOMPLETE', evaluation.failures, result.evidence, evaluation),
+      finding: finding(identity, 'INCOMPLETE', evaluation.failures, result.evidence, hardFailure),
     };
   }
 
-  const persistenceFailure = await persistEvidence(input, append, identity, binding, evaluation, result);
+  const persistenceFailure = await persistEvidence(
+    input, append, identity, binding, evaluation, result, hardFailure,
+  );
   if (persistenceFailure) {
     return {
       status: 'INCOMPLETE',
-      finding: finding(identity, 'INCOMPLETE', [persistenceFailure], result.evidence, evaluation),
+      finding: finding(identity, 'INCOMPLETE', [persistenceFailure], result.evidence, hardFailure),
     };
   }
   const status = evaluation.passed ? 'PASS' : 'FAIL';
   return {
     status,
-    finding: finding(identity, status, evaluation.passed ? [] : evaluation.failures, result.evidence, evaluation),
+    finding: finding(
+      identity, status, evaluation.passed ? [] : evaluation.failures, result.evidence, hardFailure,
+    ),
   };
 }
 

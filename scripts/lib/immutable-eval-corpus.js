@@ -68,6 +68,9 @@ const EVIDENCE_KEYS = Object.freeze([
 const BINDING_KEYS = Object.freeze(['repoSha', 'configHash', 'budgetHash']);
 const METRIC_KEYS = Object.freeze(['durationMs', 'tokensUsed']);
 const OBSERVER_KEYS = Object.freeze(['mutationCount', 'pollCount']);
+const HARD_FAILURE_CODES = new Set([
+  'oracle.hard_failure', 'observer.mutation', 'observer.polling',
+]);
 
 function canonicalize(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -112,7 +115,7 @@ function hasExactKeys(value, allowed, prefix) {
 }
 
 function fail(...failures) {
-  return { passed: false, failures: [...new Set(failures)], hardFailure: true };
+  return { passed: false, failures: [...new Set(failures)], hardFailure: false };
 }
 
 function validatePacket(packet) {
@@ -284,10 +287,11 @@ function evaluateCase({ packet, allPackets, manifest, evidence, expectedBinding 
   failures.push(...evidenceFailures);
   failures.push(...checkPacketBinding(packet, canonicalPacket, evidence, expectedBinding));
   failures.push(...checkObservation(packet, evidence));
+  const uniqueFailures = [...new Set(failures)];
   return {
     passed: failures.length === 0,
-    failures: [...new Set(failures)],
-    hardFailure: failures.length > 0,
+    failures: uniqueFailures,
+    hardFailure: uniqueFailures.some((failure) => HARD_FAILURE_CODES.has(failure)),
   };
 }
 

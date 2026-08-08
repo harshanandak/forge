@@ -9,7 +9,7 @@ const path = require('node:path');
 const FORGE_BIN = path.resolve(__dirname, '../../bin/forge.js');
 
 describe('forge skill eval behavioral CLI', () => {
-  test('real node subprocess resolves four arms and exact attribution before failing on an unavailable runtime', () => {
+  test('real node subprocess rejects a nonexistent issue before runtime or fake PR attribution', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skill-eval-cli-'));
     try {
       fs.mkdirSync(path.join(root, 'skills', 'demo'), { recursive: true });
@@ -28,7 +28,6 @@ describe('forge skill eval behavioral CLI', () => {
         const git = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
         expect(git.status).toBe(0);
       }
-      const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
       const result = spawnSync(process.execPath, [
         FORGE_BIN, 'skill', 'eval', 'demo', '--full', '--tier', '30', '--json',
       ], {
@@ -38,20 +37,19 @@ describe('forge skill eval behavioral CLI', () => {
           ...process.env,
           FORGE_EVAL_RUNTIME: 'forge-eval-runtime-does-not-exist',
           FORGE_EVAL_MODELS: 'model-one,model-two',
-          FORGE_EVAL_ISSUE_ID: '198bec40-0d65-42a8-b2c2-c682f44fdb22',
+          FORGE_EVAL_ISSUE_ID: '11111111-1111-4111-8111-111111111111',
           FORGE_EVAL_PR: '500',
-          FORGE_EVAL_PR_HEAD: head,
+          FORGE_EVAL_PR_HEAD: 'a'.repeat(40),
         },
       });
 
       expect(result.status).toBe(1);
       const output = JSON.parse(result.stdout);
       expect(output.status).toBe('INCOMPLETE');
-      expect(output.findings[0].failures).toEqual(['runtime.unavailable']);
-      expect(output.arms).toHaveLength(4);
-      expect(output.binding.repoSha).toBe(head);
-      expect(output.issueId).toBe('198bec40-0d65-42a8-b2c2-c682f44fdb22');
-      expect(output.pr).toBe(500);
+      expect(output.findings[0].failures).toEqual(['attribution.issue_unavailable']);
+      expect(output.arms).toHaveLength(0);
+      expect(output.issueId).toBeUndefined();
+      expect(output.pr).toBeUndefined();
       expect(result.stderr).not.toContain('arms.invalid');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

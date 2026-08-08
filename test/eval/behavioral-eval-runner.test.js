@@ -5,6 +5,8 @@ const { describe, expect, test } = require('bun:test');
 const { runBehavioralEvaluation } = require('../../scripts/lib/behavioral-eval-runner');
 const { hashPacket } = require('../../scripts/lib/immutable-eval-corpus');
 const { EVENT_TYPE } = require('../../scripts/lib/eval-evidence');
+const { loadPromotionEvidence } = require('../../scripts/lib/promotion-evidence-loader');
+const { scorePromotion } = require('../../scripts/lib/promotion-scorecard');
 const { buildMigratedKernelIssueDeps } = require('../../lib/kernel/cli-broker-factory');
 
 const ISSUE_ID = '198bec40-0d65-42a8-b2c2-c682f44fdb22';
@@ -267,6 +269,73 @@ describe('controlled behavioral evaluation runner', () => {
     expect(result.status).toBe('FAIL');
     expect(result.failedRuns).toBe(1);
     expect(result.incompleteRuns).toBe(0);
+  });
+
+  test('ordinary oracle misses are not hard failures and real runner evidence can promote an improving bounded arm', async () => {
+    const run = options({
+      tier: 100,
+      arms: ARMS.map((arm) => ({ ...arm, budget: 'tier-100' })),
+      executor: async (input) => executorResult(input, input.config === 'current' && input.packet.split === 'TEST'
+        ? { evidence: { observation: { ...input.packet.oracle.expected, decision: 'ordinary-mismatch' } } }
+        : {}),
+    });
+    const result = await runBehavioralEvaluation(run.input);
+    const loaded = loadPromotionEvidence({ tier: 100, findings: result.findings });
+    const scorecard = scorePromotion({ tier: 100, pairs: loaded.pairs });
+
+    expect(result.status).toBe('FAIL');
+    expect(result.findings.filter((finding) => finding.status === 'FAIL').every(
+      (finding) => finding.hardFailure === false,
+    )).toBe(true);
+    expect(loaded.ok).toBe(true);
+    expect(scorecard.status).toBe('PASS');
+    expect(scorecard.winner).toBe('bounded');
+    expect(scorecard.bootstrap.delta).toBeGreaterThanOrEqual(0.05);
+  }, 15000);
+
+  test('explicit safety hard failures from real runner evidence still veto promotion', async () => {
+    let injected = false;
+    const run = options({
+      tier: 100,
+      arms: ARMS.map((arm) => ({ ...arm, budget: 'tier-100' })),
+      executor: async (input) => {
+        if (input.config === 'bounded' && !injected) {
+          injected = true;
+          return executorResult(input, {
+            evidence: { observation: { ...input.packet.oracle.expected, hardFailure: true } },
+          });
+        }
+        if (input.config === 'current' && input.packet.split === 'TEST') {
+          return executorResult(input, {
+            evidence: { observation: { ...input.packet.oracle.expected, decision: 'ordinary-mismatch' } },
+          });
+        }
+        return executorResult(input);
+      },
+    });
+    const result = await runBehavioralEvaluation(run.input);
+    const loaded = loadPromotionEvidence({ tier: 100, findings: result.findings });
+    const scorecard = scorePromotion({ tier: 100, pairs: loaded.pairs });
+
+    expect(loaded.ok).toBe(true);
+    expect(result.findings.filter((finding) => finding.hardFailure)).toHaveLength(1);
+    expect(scorecard.status).toBe('FAIL');
+    expect(scorecard.reasons).toContain('hard_failure');
+  }, 15000);
+
+  test('preserves runtime control failures as INCOMPLETE', async () => {
+    let calls = 0;
+    const run = options({
+      executor: async (input) => {
+        calls += 1;
+        if (calls === 1) throw new Error('runtime.token_budget_exceeded');
+        return executorResult(input);
+      },
+    });
+    const result = await runBehavioralEvaluation(run.input);
+    expect(result.status).toBe('INCOMPLETE');
+    expect(result.findings[0].failures).toEqual(['runtime.token_budget_exceeded']);
+    expect(run.appended).toHaveLength(result.expectedRuns - 1);
   });
 
   test('missing executor fails closed without appending evidence', async () => {

@@ -6,6 +6,8 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const { contentHash } = require('../../lib/file-hash');
 const { stableStringify } = require('../../lib/kernel/evaluators');
 const { resolveActiveIssueId } = require('../../lib/workflow/enforce-stage');
+const { isWorkableStatus } = require('../../lib/kernel/readiness-model');
+const { PrStateAdapter } = require('../../lib/adapters/pr-state-adapter');
 const {
   buildKernelIssueDeps,
   resolveKernelDatabasePath,
@@ -17,6 +19,7 @@ const { hashPacket } = require('./immutable-eval-corpus');
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
+const EFFORTS = new Set(['low', 'medium', 'high', 'max']);
 const OBSERVATION_KEYS = Object.freeze([
   'decision', 'contract', 'head', 'review', 'checks', 'ci', 'claim', 'security',
   'order', 'platform', 'scope', 'compaction', 'wait', 'hardFailure', 'observer',
@@ -45,6 +48,12 @@ function parseModels(env) {
   return models;
 }
 
+function parseEffort(env) {
+  const effort = String(env.FORGE_EVAL_EFFORT || 'high').trim().toLowerCase();
+  if (!EFFORTS.has(effort)) throw new Error('effort.invalid');
+  return effort;
+}
+
 function resolveHead(projectRoot, execFile = execFileSync) {
   const head = execFile('git', ['rev-parse', '--verify', 'HEAD'], {
     cwd: projectRoot,
@@ -63,25 +72,35 @@ function resolveBranch(projectRoot, execFile = execFileSync) {
   }).trim();
 }
 
-async function resolveKernelIssue(projectRoot, branch) {
+async function resolveKernelIssue(projectRoot, branch, requestedIssueId, deps = {}) {
   let driver;
+  let ownsDriver = false;
   try {
-    const databasePath = resolveKernelDatabasePath({ projectRoot });
-    if (!databasePath || !fs.existsSync(databasePath)) return null;
-    driver = buildKernelIssueDeps({ projectRoot, databasePath }).kernelDriver;
-    return await resolveActiveIssueId(driver, branch);
+    driver = deps.kernelDriver;
+    if (!driver) {
+      const databasePath = resolveKernelDatabasePath({ projectRoot });
+      if (!databasePath || !fs.existsSync(databasePath)) return null;
+      driver = buildKernelIssueDeps({ projectRoot, databasePath }).kernelDriver;
+      ownsDriver = true;
+    }
+    const activeIssueId = await resolveActiveIssueId(driver, branch);
+    const issueId = requestedIssueId || activeIssueId;
+    if (!issueId || activeIssueId !== issueId || typeof driver.loadKernelEntity !== 'function') return null;
+    const issue = await driver.loadKernelEntity('issue', issueId, {}, {});
+    if (!issue || issue.id !== issueId || !isWorkableStatus(issue.status)) return null;
+    return issueId;
   } catch {
     return null;
   } finally {
-    if (driver && typeof driver.close === 'function') {
+    if (ownsDriver && driver && typeof driver.close === 'function') {
       try { await driver.close(); } catch { /* read-only cleanup */ }
     }
   }
 }
 
-function resolvePrFromGh(projectRoot, head, execFile = execFileSync) {
+function resolvePrFromGh(projectRoot, execFile = execFileSync) {
   try {
-    const raw = execFile('gh', ['pr', 'view', '--json', 'number,headRefOid'], {
+    const raw = execFile('gh', ['pr', 'view', '--json', 'number'], {
       cwd: projectRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -90,36 +109,62 @@ function resolvePrFromGh(projectRoot, head, execFile = execFileSync) {
     });
     const value = JSON.parse(raw);
     if (!Number.isSafeInteger(value.number) || value.number <= 0) return null;
-    if (String(value.headRefOid || '').toLowerCase() !== head) return null;
     return value.number;
   } catch {
     return null;
   }
 }
 
+function createPrAdapter(projectRoot, execFile = execFileSync) {
+  return new PrStateAdapter({
+    gh: (command, args) => execFile(command, args, {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30000,
+      windowsHide: true,
+    }),
+  });
+}
+
 async function resolveAttribution(projectRoot, head, env, deps = {}) {
   const branch = resolveBranch(projectRoot, deps.execFileSync);
-  const issueId = env.FORGE_EVAL_ISSUE_ID || await resolveKernelIssue(projectRoot, branch);
+  const requestedIssueId = env.FORGE_EVAL_ISSUE_ID;
+  if (requestedIssueId && !UUID.test(String(requestedIssueId))) {
+    throw new Error('attribution.issue_unavailable');
+  }
+  const issueId = await resolveKernelIssue(projectRoot, branch, requestedIssueId, deps);
   if (!UUID.test(String(issueId || ''))) throw new Error('attribution.issue_unavailable');
 
-  let pr;
-  if (env.FORGE_EVAL_PR !== undefined || env.FORGE_EVAL_PR_HEAD !== undefined) {
-    if (!POSITIVE_INTEGER.test(String(env.FORGE_EVAL_PR || ''))
-      || String(env.FORGE_EVAL_PR_HEAD || '').toLowerCase() !== head) {
-      throw new Error('attribution.pr_mismatch');
-    }
-    pr = Number(env.FORGE_EVAL_PR);
-  } else {
-    pr = resolvePrFromGh(projectRoot, head, deps.execFileSync);
+  const explicitPr = env.FORGE_EVAL_PR !== undefined || env.FORGE_EVAL_PR_HEAD !== undefined;
+  if (explicitPr && (!POSITIVE_INTEGER.test(String(env.FORGE_EVAL_PR || ''))
+    || (env.FORGE_EVAL_PR_HEAD !== undefined
+      && String(env.FORGE_EVAL_PR_HEAD).toLowerCase() !== head))) {
+    throw new Error('attribution.pr_mismatch');
   }
+  const pr = explicitPr
+    ? Number(env.FORGE_EVAL_PR)
+    : resolvePrFromGh(projectRoot, deps.execFileSync);
   if (!pr) throw new Error('attribution.pr_unavailable');
+  let state;
+  try {
+    const adapter = deps.prAdapter || createPrAdapter(projectRoot, deps.execFileSync);
+    state = await adapter.readState(pr);
+  } catch {
+    throw new Error('attribution.pr_unavailable');
+  }
+  if (state?.state !== 'OPEN' || String(state?.headSha || '').toLowerCase() !== head) {
+    throw new Error('attribution.pr_mismatch');
+  }
   return { issueId, pr };
 }
 
 function buildConfig({ tier, skillName, skillText, models, command, env }) {
+  const effort = parseEffort(env);
   const budget = {
     timeoutMs: Number(env.FORGE_EVAL_TIMEOUT_MS || 120000),
     maxTokens: Number(env.FORGE_EVAL_MAX_TOKENS || 8192),
+    tokenEnforcement: 'parsed-usage',
   };
   if (!Number.isSafeInteger(budget.timeoutMs) || budget.timeoutMs <= 0
     || !Number.isSafeInteger(budget.maxTokens) || budget.maxTokens <= 0) {
@@ -136,6 +181,7 @@ function buildConfig({ tier, skillName, skillText, models, command, env }) {
     models,
     conditions: ['current', 'bounded'],
     runtime: command,
+    effort,
     budget,
   };
   const configHash = contentHash(stableStringify(config));
@@ -146,7 +192,7 @@ function buildConfig({ tier, skillName, skillText, models, command, env }) {
       arms.push({ id, model, config: condition, budget: budgetId });
     }
   }
-  return { arms, budget, budgetHash, configHash, skillHash };
+  return { arms, budget, budgetHash, configHash, effort, skillHash };
 }
 
 function probeRuntime(command, spawn = spawnSync) {
@@ -172,17 +218,24 @@ function parseJsonResult(stdout) {
 
 function countTokens(stdout) {
   const tokens = { input: 0, output: 0, cached: 0 };
+  let found = false;
   for (const line of String(stdout || '').split('\n')) {
     try {
       const event = JSON.parse(line);
       const usage = event?.message?.usage || event?.usage;
       if (!usage) continue;
-      tokens.input += Number(usage.input_tokens) || 0;
-      tokens.output += Number(usage.output_tokens) || 0;
-      tokens.cached += Number(usage.cache_read_input_tokens) || 0;
+      const input = Number(usage.input_tokens);
+      const output = Number(usage.output_tokens);
+      const cached = usage.cache_read_input_tokens === undefined
+        ? 0 : Number(usage.cache_read_input_tokens);
+      if (![input, output, cached].every((value) => Number.isFinite(value) && value >= 0)) continue;
+      found = true;
+      tokens.input += input;
+      tokens.output += output;
+      tokens.cached += cached;
     } catch { /* non-JSON runtime line */ }
   }
-  return tokens;
+  return found ? tokens : null;
 }
 
 function buildPrompt({ armId, packet, skillName, config, skillText }) {
@@ -203,24 +256,35 @@ function buildPrompt({ armId, packet, skillName, config, skillText }) {
   ].join('\n');
 }
 
-function createExecutor({ projectRoot, skillName, skillText, command, budget, skillHash, env }) {
+function buildRuntimeArgv({ command, prompt, model, effort }) {
+  return [
+    ...command,
+    '-p', prompt,
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--no-session-persistence',
+    '--tools', '',
+    '--model', model,
+    '--effort', effort,
+  ];
+}
+
+function createExecutor({ projectRoot, skillName, skillText, command, budget, effort, skillHash, env }) {
+  const appliedEffort = effort || parseEffort(env);
   return async (input) => {
     const prompt = buildPrompt({ ...input, skillName, skillText });
     const startedAt = new Date().toISOString();
     const started = Date.now();
-    const cmd = [
-      ...command,
-      '-p', prompt,
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--no-session-persistence',
-      '--model', input.model,
-    ];
+    const cmd = buildRuntimeArgv({ command, prompt, model: input.model, effort: appliedEffort });
     const execution = await executeCommand('behavioral-eval', prompt, projectRoot, budget.timeoutMs, cmd, env);
     const ended = Date.now();
     const endedAt = new Date().toISOString();
     if (execution.timedOut || execution.exitCode !== 0) throw new Error('runtime.execution_failed');
     const tokens = countTokens(execution.stdout);
+    if (!tokens) throw new Error('runtime.usage_unparseable');
+    if (tokens.input + tokens.output > budget.maxTokens) {
+      throw new Error('runtime.token_budget_exceeded');
+    }
     const observation = parseJsonResult(execution.stdout);
     const durationMs = ended - started;
     return {
@@ -236,12 +300,15 @@ function createExecutor({ projectRoot, skillName, skillText, command, budget, sk
       },
       attribution: {
         model: input.model,
-        effort: env.FORGE_EVAL_EFFORT || 'high',
+        effort: appliedEffort,
         role: 'behavioral-eval',
         hashes: {
           prompt: contentHash(prompt),
           skill: skillHash,
-          tool: contentHash(stableStringify({ command, model: input.model })),
+          tool: contentHash(stableStringify({
+            command, model: input.model, effort: appliedEffort,
+            tools: [], tokenEnforcement: budget.tokenEnforcement,
+          })),
         },
         startedAt,
         endedAt,
@@ -301,7 +368,7 @@ async function resolveBehavioralEvaluation({ projectRoot, skillName, skillPath, 
         pr,
         executor: createExecutor({
           projectRoot, skillName, skillText, command, budget: config.budget,
-          skillHash: config.skillHash, env,
+          effort: config.effort, skillHash: config.skillHash, env,
         }),
         appendOptions: { env },
       },
@@ -319,6 +386,7 @@ async function resolveBehavioralEvaluation({ projectRoot, skillName, skillPath, 
 module.exports = {
   resolveBehavioralEvaluation,
   _internal: {
-    buildConfig, buildPrompt, countTokens, createExecutor, parseJsonResult, parseModels, runtimeCommand,
+    buildConfig, buildPrompt, buildRuntimeArgv, countTokens, createExecutor, parseEffort,
+    parseJsonResult, parseModels, resolveAttribution, runtimeCommand,
   },
 };
