@@ -2,9 +2,9 @@
 
 This page documents release readiness. Package publishing still requires the explicit publish step after merge.
 
-## v0.0.11 Boundary
+## v0.1.0-beta.5 Boundary
 
-v0.0.11 is the public documentation and positioning package release. The release branch bumps package metadata to `0.0.11`; publish only after the release PR is merged, tagged, and validated.
+v0.1.0-beta.5 is the current prerelease boundary. The release branch declares `0.1.0-beta.5`; publish only after the release PR is merged, tagged, and validated on that exact SHA.
 
 Keep these release steps explicit:
 
@@ -22,6 +22,8 @@ git status --short --branch
 bun run check
 npm pack --dry-run
 ```
+
+The trusted npm workflow is generated through `forge release generate-npm-workflow`; direct workflow edits remain blocked. On a release event, the workflow resolves the tag once, runs the complete supported repository suite on that immutable commit, and allows publication only when the attributable suite receipt, verification checkout, and publish checkout all name the same SHA. Missing or mismatched evidence fails closed.
 
 For docs-heavy changes, also run a Markdown link check if available. If no docs checker exists and adding one would broaden the PR, create a follow-up issue instead.
 
@@ -41,7 +43,7 @@ Release notes should include:
 - adapter compatibility
 - DeepWiki refresh checklist
 
-The v0.0.11 release notes live in [CHANGELOG.md](../../CHANGELOG.md).
+The v0.1.0-beta.5 release notes live in [CHANGELOG.md](../../CHANGELOG.md).
 
 ## Rollback
 

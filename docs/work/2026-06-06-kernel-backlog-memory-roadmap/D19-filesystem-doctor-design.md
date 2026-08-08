@@ -80,7 +80,7 @@ gatherSignals(absPath, deps = {}) -> signals
 ```
 `deps` (each defaults to a real impl; tests pass fakes):
 - `platform = process.platform`, `env = process.env`, `homedir = os.homedir`
-- `probeDriveType(driveLetter)` — Windows. **No native deps:** shell out via `execFileSync('cmd', ['/c','wmic','logicaldrive',…])` is deprecated on Win11; prefer `execFileSync('net', ['use'])` parse for mapped letters + `execFileSync('powershell','-NoProfile','-Command','(Get-PSDrive …).DisplayRoot')` fallback. **Spec gap flagged below (G1).** Probe is wrapped in try/catch → `'unknown'` on failure.
+- `probeDriveType(driveLetter)` — Windows. **No native deps:** shell out via `execFileSync('net', ['use'])` and parse mapped letters. A successful miss treats the conventional local `C:` drive as `fixed`; every non-`C:` letter remains `'unknown'`/warn because a miss does not prove that an SMB or cloud redirector is absent. UNC and cloud-path signals remain independent. Probe is wrapped in try/catch → `'unknown'` on failure.
 - `probeMounts()` — Linux. Read `/proc/mounts`, find the longest mountpoint that is a prefix of `absPath`, return its fs type.
 - `readWslInterop()` — Linux. `true` if `/proc/version` contains `microsoft` (case-insensitive) or `env.WSL_DISTRO_NAME` set.
 - `isUNC(absPath)` — pure string test.
@@ -257,6 +257,6 @@ Document `forge doctor` + `FORGE_KERNEL_ALLOW_UNSAFE_FS` in AGENTS.md/doctor ref
 
 ## 3. Ambiguity policy — flagged spec gaps (7-dim rubric)
 
-- **G1 — Windows mapped-drive probe mechanism (confidence ~72%, <80 → FLAG).** Detecting "is drive Z: a network mapping" dependency-free on Win11 is the one fragile probe. `wmic` is deprecated/absent on newer Win11; `net use` parsing covers mapped letters but not all SMB cases; `Get-PSDrive .DisplayRoot` needs PowerShell. **Recommendation pending user:** (a) ship `net use` parse + PowerShell fallback, probe wrapped try/catch→`unknown` (warn) so a probe miss fails open, OR (b) treat all non-`C:` fixed-looking letters as `unknown`/warn and rely on UNC + cloud-env detection (which catch the highest-risk cases) for v1. UNC and cloud-sync detection — the dominant corruption sources — are unaffected either way. **Please confirm (a) or (b).**
+- **G1 — Windows mapped-drive probe mechanism (option (b) selected; confidence ~72%, <80 → FLAG).** `net use` parsing reliably identifies listed mapped letters but does not cover every SMB case. A successful miss therefore keeps only the conventional local `C:` drive as `fixed`; every non-`C:` fixed-looking letter is `unknown`/warn, so uncertainty never produces an unsafe local-ok result. UNC and cloud-sync detection remain independent and still refuse when positively identified. Probe failures likewise map to `unknown`/warn.
 - **G2 — `unknown` tier = warn, not refuse (confidence ~85%, proceed + documented).** Fail-open chosen so unclassifiable-but-fine setups aren't hard-blocked; refuse is reserved for positively-identified cloud/network. Assumption documented here.
 - **G3 — doctor scope = single `filesystem-class` check for D19 (confidence ~90%, proceed).** `checks[]` array is future-proof but D19 ships exactly one check; broader health stays in `runtime-health.js` per scope discipline. Documented.

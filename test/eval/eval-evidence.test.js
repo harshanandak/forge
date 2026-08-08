@@ -97,6 +97,21 @@ describe('eval evidence', () => {
     expect(reordered).toEqual(first);
   });
 
+  test('allow-lists behavioral run identity and binds arm and trial into the content hash', () => {
+    const first = createEvalEvidence(validCase({
+      run_identity: { arm_id: 'arm-1', trial_index: 0 },
+    }));
+    const nextTrial = createEvalEvidence(validCase({
+      run_identity: { arm_id: 'arm-1', trial_index: 1 },
+    }));
+
+    expect(first.evidence.run_identity).toEqual({ arm_id: 'arm-1', trial_index: 0 });
+    expect(first.content_hash).not.toBe(nextTrial.content_hash);
+    expect(() => createEvalEvidence(validCase({
+      run_identity: { arm_id: 'arm-1', trial_index: 0, transcript: 'private' },
+    }))).toThrow(/unknown field.*transcript/i);
+  });
+
   test('detects corruption', () => {
     const envelope = createEvalEvidence(validCase());
     envelope.evidence.tokens.output += 1;
@@ -168,6 +183,57 @@ describe('eval evidence', () => {
     expect(duplicate.duplicate).toBe(true);
     expect(evidenceEvents).toHaveLength(1);
     expect(JSON.parse(evidenceEvents[0].payload_json)).toEqual(envelope);
+  });
+
+  test('keys behavioral retries by semantic run identity and rejects conflicting payloads', async () => {
+    const kernel = await freshKernel();
+    const semanticIdentity = {
+      arm_id: 'opaque-a',
+      case_id: 'case-001', risk: 'low', split: 'DEV', model: 'model-a',
+      config: 'current', budget: 'tier-30', tier: 30, trial_index: 0,
+      config_hash: '4'.repeat(64), budget_hash: '5'.repeat(64),
+    };
+    const caseResult = { status: 'PASS', hard_failure: false, latency_ms: 3000, tokens: 125 };
+    const firstEnvelope = createEvalEvidence(validCase({
+      run_identity: semanticIdentity,
+      case_result: caseResult,
+    }));
+    const conflictingEnvelope = createEvalEvidence(validCase({
+      run_identity: semanticIdentity,
+      case_result: caseResult,
+      tokens: { input: 101, output: 25, cached: 5 },
+    }));
+    const options = { deps: deps(kernel), env: { FORGE_ACTOR: 'eval-test' } };
+
+    const first = await appendEvalEvidence('/unused', firstEnvelope, options);
+    const duplicate = await appendEvalEvidence('/unused', firstEnvelope, options);
+    const conflict = await appendEvalEvidence('/unused', conflictingEnvelope, options);
+    const events = await kernel.kernelDriver.listKernelEvents('issue', ISSUE_ID, {}, kernel.kernelBroker.config);
+
+    expect(first.duplicate).toBe(false);
+    expect(duplicate).toMatchObject({ ok: true, duplicate: true });
+    expect(conflict).toMatchObject({ ok: false, duplicate: false, conflict: true, status: 'INCOMPLETE' });
+    expect(events.filter((event) => event.event_type === 'eval.evidence.recorded')).toHaveLength(1);
+  });
+
+  test('returns an explicit incomplete conflict when an idempotency winner is not visible', async () => {
+    const kernel = await freshKernel();
+    const envelope = createEvalEvidence(validCase());
+    const base = deps(kernel);
+    const racingDriver = Object.create(base.kernelDriver);
+    racingDriver.loadKernelEventByIdempotencyKey = async () => null;
+    racingDriver.insertKernelEvent = async () => {
+      throw new Error('UNIQUE constraint failed: idempotency_key');
+    };
+
+    const result = await appendEvalEvidence('/unused', envelope, {
+      deps: { ...base, kernelDriver: racingDriver },
+      env: { FORGE_ACTOR: 'eval-test' },
+    });
+
+    expect(result).toMatchObject({
+      ok: false, duplicate: false, conflict: true, status: 'INCOMPLETE', actor: 'eval-test',
+    });
   });
 
   test('persists canonical stable envelope bytes regardless of input key order', async () => {

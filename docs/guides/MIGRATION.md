@@ -1,6 +1,6 @@
 # Migration Guide
 
-Use this guide when moving older Forge docs, habits, or installed scaffolding toward the v0.0.11 public framing.
+Use this guide when moving older Forge docs, habits, or installed scaffolding toward the v0.1.0-beta.5 public framing.
 
 ## What Changed
 
@@ -39,8 +39,8 @@ forge setup --agents claude,cursor
 
 ## Version Labels
 
-- `0.0.11` is the package version for this public docs/readiness release.
-- `0.0.10` is the previous published package version.
+- `0.1.0-beta.5` is the current prerelease package version.
+- `0.1.0-beta.4` is the previous prerelease package version.
 - Internal labels such as `0.0.19` or `v3` describe roadmap slices or historical codenames. Do not present them as current package versions.
 
 ## Safe Upgrade Path

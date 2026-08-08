@@ -23,9 +23,9 @@ The committed manifest is `.forge/protected-paths.yaml`. Runtime enforcement is 
 
 - Direct edits, additions, modifications, renames, and deletions of protected files are blocked by `scripts/protected-state-check.js`.
 - Allowed Forge API writes must declare the matching required surface. For example, a Forge config writer must call the protected writer with `surface: "forge_config"` and `viaForgeApi: true`.
-- Forge-owned commands that intentionally stage generated protected changes can set `FORGE_PROTECTED_STATE_ALLOWED_SURFACES` to the comma-separated surfaces they own for that command invocation.
+- Surface-only environment declarations do not authorize protected changes. Forge-owned workflow commands must issue a content-bound Kernel capability for the exact actor, worktree, surface, path, and bytes.
 - Blocked decisions include actor, path, decision, required surface, reason, and repair hint.
-- Audit-ready events use kind `protected_state_write` and are appended as JSON lines to `.forge/protected-state-audit.jsonl` (git-ignored, capped at the newest 500 records). The write is best-effort: a failing audit sink never blocks the check.
+- Audit-ready events use kind `protected_state_write` and are appended as JSON lines to `.forge/protected-state-audit.jsonl` (git-ignored, capped at the newest 500 records). This log is visibility-only and never authorizes a protected edit. Forge-owned workflow authorization uses one-time, content-bound Kernel events that the protected-state checker consumes; hand-written JSON cannot grant authority. The audit write remains best-effort for ordinary blocked checks, while the workflow generator rolls back its file transaction if its required audit or Kernel authorization write fails.
 
 ## Repair Hint
 

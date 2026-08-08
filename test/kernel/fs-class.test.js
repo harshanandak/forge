@@ -10,7 +10,6 @@ const {
 	isUnsafeFsOverrideActive,
 	defaultProbeDriveType,
 	parseNetUseDriveType,
-	parseDisplayRoot,
 	resetFilesystemWarningMemo,
 	REMEDIATION,
 } = require('../../lib/kernel/fs-class');
@@ -699,17 +698,33 @@ describe('classifyLinux — mountProbeThrew distinguishes threw vs no-match (M3)
 });
 
 describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M5)', () => {
-	test('B1: both net use and PowerShell execs pass timeout=1500 + killSignal SIGKILL', () => {
+	test('preserves the fixed local C: drive without launching a network probe', () => {
+		const seenFiles = [];
+		const fakeExec = (file) => {
+			seenFiles.push(file);
+			if (file === 'powershell') throw new Error('Unexpected PowerShell probe after net use succeeds');
+			return '';
+		};
+		expect(defaultProbeDriveType('C:', { execFileSync: fakeExec })).toBe('fixed');
+		expect(seenFiles).toEqual([]);
+	}, T);
+
+	test('returns unknown for a non-C drive after a successful net use miss', () => {
+		const fakeExec = (file) => {
+			if (file === 'powershell') throw new Error('Unexpected PowerShell probe after net use succeeds');
+			return '';
+		};
+		expect(defaultProbeDriveType('Z:', { execFileSync: fakeExec })).toBe('unknown');
+	}, T);
+
+	test('B1: net use exec passes timeout=1500 + killSignal SIGKILL', () => {
 		const seenOptions = [];
 		const fakeExec = (_file, _args, options) => {
 			seenOptions.push(options);
-			// Return empty so net use misses and the PowerShell fallback also runs,
-			// exercising BOTH exec calls in one probe.
 			return '';
 		};
 		const result = defaultProbeDriveType('Z:', { execFileSync: fakeExec });
-		// Both probes ran (net use, then PowerShell DisplayRoot).
-		expect(seenOptions).toHaveLength(2);
+		expect(seenOptions).toHaveLength(1);
 		for (const options of seenOptions) {
 			expect(options.timeout).toBe(1500);
 			expect(options.killSignal).toBe('SIGKILL');
@@ -717,7 +732,7 @@ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M
 			expect(options.encoding).toBe('utf8');
 		}
 		// No network backing detected → fixed.
-		expect(result).toBe('fixed');
+		expect(result).toBe('unknown');
 	}, T);
 
 	test('B1: a hanging exec that throws (timeout-style) propagates so gather maps it to unknown/warn', () => {
@@ -762,22 +777,12 @@ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M
 		expect(parseNetUseDriveType('OK  AZ:  ...', 'Z:')).toBeNull();
 	}, T);
 
-	test('M5: parseDisplayRoot treats a non-empty DisplayRoot as network, empty/whitespace as null', () => {
-		expect(parseDisplayRoot('\\\\fileserver\\share\r\n')).toBe('network');
-		expect(parseDisplayRoot('   \r\n')).toBeNull();
-		expect(parseDisplayRoot('')).toBeNull();
-	}, T);
-
 	test('M5: defaultProbeDriveType returns network when net use stdout lists the letter', () => {
 		const stdout = 'OK           Z:        \\\\fileserver\\team        Microsoft Windows Network\r\n';
 		const fakeExec = (file) => (file === 'net' ? stdout : '');
 		expect(defaultProbeDriveType('Z:', { execFileSync: fakeExec })).toBe('network');
 	}, T);
 
-	test('M5: defaultProbeDriveType returns network when PowerShell DisplayRoot is non-empty', () => {
-		const fakeExec = (file) => (file === 'net' ? '' : '\\\\nas\\share\r\n');
-		expect(defaultProbeDriveType('Z:', { execFileSync: fakeExec })).toBe('network');
-	}, T);
 });
 
 describe('classifyFilesystem — end-to-end with injected probes', () => {

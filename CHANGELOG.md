@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Note**: `/check` was renamed to `/validate` and `/merge` was renamed to `/premerge` in v0.0.3. Historical entries below may use the old names.
 
-## [Unreleased]
+## [0.1.0-beta.5] - 2026-08-09
 
 ### Added
 
+- **Controlled behavioral skill evaluation.** `forge skill eval <skill> --full --tier <30|100|300>` now runs the frozen two-model × current/bounded protocol with exact-head issue/PR attribution, isolated zero-tool runtimes, privacy-safe semantic evidence, fail-closed conflict handling, and deterministic promotion scoring. Thirty cases remain instrumentation-only; evaluation never supplies merge authority. (issue `198bec40-0d65-42a8-b2c2-c682f44fdb22`)
 - **Host-owned Shepherd background transport.** Session startup now forwards an explicitly supplied harness background-shell capability, runs it from the stable Git common root, and preserves the detached fallback when the capability is absent or fails. (#494, issue `60ccc100-506b-46a6-bf96-b2fce3436ed6`)
 - **Critical merge-flow reliability integration plan.** Defines a deterministic safety floor, executable work contracts, configurable risk policy, zero-token owner monitoring, and a sequential exact-head merge slot without constraining model reasoning. (#493, issue `a57a2b2a-3b0d-4fce-bf13-e3e4a386f1c9`, epic `f30e5d29-9099-4029-baec-af39f08b6ee3`)
 - **Model-neutral evaluation evidence and exact-SHA replay.** Adds a privacy-safe content-addressed envelope with fail-closed drift checks while excluding raw prompts, transcripts, tool payloads, secrets, and personal data. (#491, issue `02f5ea90-4a1a-462f-9b22-54eb5d37f6b3`)
@@ -18,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Exact-SHA npm publication evidence.** The Forge-generated publish workflow now resolves one immutable tag SHA, requires the complete repository suite and an attributable matching receipt before npm publication, and protects workflow updates with one-time Kernel capabilities instead of forgeable sidecar evidence. (issue `198bec40-0d65-42a8-b2c2-c682f44fdb22`)
 - **Simplified the PR-monitor surface.** The workflow now keeps one canonical
   `pr-verdict:*` label and writes detailed diagnostics to the Actions job summary
   (also available via `forge shepherd --pull --json`); it no longer creates a
@@ -25,6 +27,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   visibility projection and never supplies merge authority. (112a348a)
 - Added portable `invocation: model|user` skill metadata with omission defaulting to `model`; `ship`, `review`, and `rollback` are now explicitly user-invoked while canonical and generated skill projections remain byte-identical. (#467, `588e6973`)
 - Documented why Litestream remains a disaster-recovery candidate rather than Forge's multi-machine authority; self-hosted libSQL remains the Phase 2 server target. (#463, `746d839d`)
+
+### Fixed
+
+- **Windows full-suite drive classification no longer launches a redundant PowerShell probe for every child process.** Persistent mappings still use the bounded `net use` probe; an unclassified non-system drive now fails open as unknown instead of being mislabeled fixed. (#496, issue `1efe5de9-6bfb-448f-8575-624577b829f2`)
+- **Injected synchronous pre-push runners no longer create real process-tracking state.** Targeted-mode unit execution keeps its command and edge-suite assertions while avoiding the Windows process-tree setup that pushed the test beyond Bun's 15-second limit. (issue `54b54219-7cbc-4262-9461-a77112a7c49b`)
+
+## [0.1.0-beta.4] - 2026-07-24
+
+The **Kernel-only authority and autonomous Shepherd wave** removed the remaining live Beads runtime path while expanding Forge's portable skill and PR-monitoring surfaces.
+
+### Added
+
+- Reasoning-driven skill invocation, sub-skill composition, static skill evaluation, and dedicated setup, portability, worktree, and gate skills. (#417-#419, #429-#434)
+- Kernel-backed PR authority, singleton Shepherd leases, reconciliation, daemon execution, and cross-harness triggering guidance. (#420-#428)
+- Query-relevant project-memory recall for supported agent sessions. (#440-#441)
+
+### Changed
+
+- Issue commands, status, and dashboards now use the Forge Kernel exclusively; the live Beads backend and dashboard surfaces were retired. (#435-#439)
+
+### Fixed
+
+- Targeted pre-push selection recognizes Forge CLI surfaces, and Shepherd background processes stay hidden and derive required checks consistently on Windows and CI. (#420-#421, #438)
 
 ## [0.1.0-beta.3] - 2026-07-17
 
