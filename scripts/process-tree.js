@@ -749,11 +749,14 @@ function reconcileProcessManifests(options = {}) {
 }
 
 module.exports = {
+  DEFAULT_MANIFEST_DIR,
   INSTANCE_ENV,
   MANIFEST_ENV,
   MANIFEST_VERSION,
   TOKEN_ENV,
   createProcessTree,
+  defaultGetProcessIdentity,
+  isValidManifest,
   readProcessManifest,
   reapProcessManifest,
   reconcileProcessManifests,

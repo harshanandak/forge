@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { describe, test, expect } = require('bun:test');
 
@@ -945,6 +947,88 @@ describe('forge clean — close linked issues on merge', () => {
     expect(result.cleaned).toBe(1);
     expect(removed).toHaveLength(1);
     expect(result.closedIssues).toEqual([]);
+  });
+
+  test('runs claim reconciliation once as best-effort lifecycle maintenance', async () => {
+    const mod = require('../../lib/commands/clean');
+    let reconciliations = 0;
+
+    const result = await mod.handler([], {}, ROOT, {
+      _exec: () => Buffer.from(''),
+      _fs: { existsSync: () => false },
+      _syncMaster: noopSync,
+      _reconcileClaims: async () => {
+        reconciliations += 1;
+        throw new Error('unverifiable marker');
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(reconciliations).toBe(1);
+  });
+
+  test('clean lifecycle invokes manifest-backed exact claim reconciliation', async () => {
+    const mod = require('../../lib/commands/clean');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-clean-claim-'));
+    const manifestDir = path.join(root, 'manifests');
+    fs.mkdirSync(manifestDir);
+    const claim = {
+      id: 'claim-clean', issue_id: 'issue-clean', actor: 'actor-clean', state: 'active',
+      session_id: 'session-clean', worktree_id: 'worktree-clean',
+    };
+    fs.writeFileSync(path.join(manifestDir, 'run-clean.json'), JSON.stringify({
+      version: 1,
+      token: claim.session_id,
+      owner: { pid: 5100, identity: 'process-start-5100', startedAt: '2026-08-09T00:00:00.000Z' },
+      children: [],
+    }));
+    let mutations = 0;
+    const driver = {
+      listActiveClaims: () => claim.state === 'active' ? [claim] : [],
+      listWorktrees: () => [{
+        id: claim.worktree_id,
+        issue_id: claim.issue_id,
+        path: path.join(root, 'missing-worktree'),
+        state: 'active',
+      }],
+      releaseExactClaim: (candidate) => {
+        if (candidate.id !== claim.id || claim.state !== 'active') return false;
+        claim.state = 'released';
+        mutations += 1;
+        return true;
+      },
+    };
+
+    try {
+      const result = await mod.handler([], {}, root, {
+        _exec: () => Buffer.from(''),
+        _fs: fs,
+        _syncMaster: noopSync,
+        _kernelDriver: driver,
+        _manifestDir: manifestDir,
+        _isProcessAlive: () => false,
+      });
+
+      expect(result.success).toBe(true);
+      expect(claim.state).toBe('released');
+      expect(mutations).toBe(1);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('dry-run never reconciles claims', async () => {
+    const mod = require('../../lib/commands/clean');
+    let reconciliations = 0;
+
+    await mod.handler([], { '--dry-run': true }, ROOT, {
+      _exec: () => Buffer.from(''),
+      _fs: { existsSync: () => false },
+      _syncMaster: noopSync,
+      _reconcileClaims: async () => { reconciliations += 1; },
+    });
+
+    expect(reconciliations).toBe(0);
   });
 
   test('an unlinked branch is reported as nothing closed', async () => {
