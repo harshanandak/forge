@@ -227,4 +227,55 @@ describe('forge gate events (approve/reject/status/check)', () => {
     const status = await gateCommand.handler(['status', issue], { json: true }, root, opts(deps));
     expect(JSON.parse(status.output).events).toHaveLength(0);
   });
+
+  test('approve and reject strictly reject unscoped, project, unknown, and trailing input', async () => {
+    const root = makeProject();
+    const deps = await freshKernel();
+    const issue = await seedIssue(deps, 'forge-gate-strict');
+    const invalid = [
+      ['approve', issue, 'gate.merge', '--project'],
+      ['approve', issue, 'gate.merge', '--unknown'],
+      ['approve', 'gate.merge'],
+      ['approve', 'gate.merge', '--ttl', '5m'],
+      ['approve', issue, 'gate.merge', 'trailing'],
+      ['reject', issue, 'gate.merge', '--project'],
+      ['reject', issue, 'gate.merge', '--unknown'],
+      ['reject', 'gate.merge'],
+      ['reject', issue, 'gate.merge', 'trailing'],
+    ];
+
+    for (const args of invalid) {
+      const result = await gateCommand.handler(args, {}, root, opts(deps));
+      expect(result.success).toBe(false);
+    }
+    const status = await gateCommand.handler(['status', issue], { json: true }, root, opts(deps));
+    expect(JSON.parse(status.output).events).toHaveLength(0);
+  });
+
+  test('same requested TTL replay at a later clock retains the first durable event and expiry', async () => {
+    const root = makeProject();
+    const deps = await freshKernel();
+    const issue = await seedIssue(deps, 'forge-gate-clock-replay');
+    const args = ['approve', issue, 'gate.merge', '--ttl', '5m'];
+
+    const first = await gateCommand.handler(args, {}, root, opts(deps));
+    const replay = await gateCommand.handler(args, {}, root, {
+      ...opts(deps), now: '2026-08-09T10:01:00.000Z',
+    });
+    expect(first.duplicate).toBe(false);
+    expect(replay.duplicate).toBe(true);
+
+    const status = await gateCommand.handler(['status', issue], { json: true }, root, opts(deps));
+    const events = JSON.parse(status.output).events;
+    expect(events).toHaveLength(1);
+    expect(events[0].expires_at).toBe('2026-08-09T10:05:00.000Z');
+
+    const differentTtl = await gateCommand.handler(
+      ['approve', issue, 'gate.merge', '--ttl', '10m'], {}, root,
+      { ...opts(deps), now: '2026-08-09T10:01:00.000Z' },
+    );
+    expect(differentTtl.duplicate).toBe(false);
+    const updated = await gateCommand.handler(['status', issue], { json: true }, root, opts(deps));
+    expect(JSON.parse(updated.output).events).toHaveLength(2);
+  });
 });
