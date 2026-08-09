@@ -12,11 +12,11 @@ describe('session-learning nudge', () => {
     expect(result.text).not.toContain('block');
   });
 
-  test('an existing explicit session summary suppresses the reminder', () => {
+  test('a historical session summary does not suppress a future-session reminder', () => {
     const result = buildMemoryDigest({
       notes: [{ note: 'Learned the hook contract.', tags: ['type:session-summary'] }],
       claimed: [{ id: 'i1', title: 'Hook lane' }],
     });
-    expect(result.text).not.toContain('forge remember --session-summary');
+    expect(result.text.match(/forge remember --session-summary/g)).toHaveLength(1);
   });
 });
