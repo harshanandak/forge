@@ -36,45 +36,48 @@ function jobSection(workflow, name) {
 	return match?.[1] || '';
 }
 
+function resolveNpmDistTag(version) {
+	const output = path.join(os.tmpdir(), `forge-npm-dist-tag-${process.pid}-${Date.now()}`);
+	try {
+		const result = spawnSync(bashExecutable, ['-c', renderNpmDistTagResolverScript()], {
+			encoding: 'utf8',
+			env: { ...process.env, VERSION: version, GITHUB_OUTPUT: output },
+		});
+		return {
+			...result,
+			output: fs.existsSync(output) ? fs.readFileSync(output, 'utf8') : '',
+		};
+	} finally {
+		fs.rmSync(output, { force: true });
+	}
+}
+
 describe('Forge-owned npm publish workflow', () => {
 	test('resolves beta, RC, and stable versions to distinct npm dist-tags', () => {
-		const script = renderNpmDistTagResolverScript();
-		const resolve = version => {
-			const output = path.join(os.tmpdir(), `forge-npm-dist-tag-${process.pid}-${Date.now()}`);
-			try {
-				const result = spawnSync(bashExecutable, ['-c', script], {
-					encoding: 'utf8',
-					env: { ...process.env, VERSION: version, GITHUB_OUTPUT: output },
-				});
-				return {
-					...result,
-					output: fs.existsSync(output) ? fs.readFileSync(output, 'utf8') : '',
-				};
-			} finally {
-				fs.rmSync(output, { force: true });
-			}
-		};
+		expect(resolveNpmDistTag('0.1.0-beta.5')).toMatchObject({ status: 0, output: 'tag=beta\n' });
+		expect(resolveNpmDistTag('0.1.0-beta')).toMatchObject({ status: 0, output: 'tag=beta\n' });
+		expect(resolveNpmDistTag('0.1.0-rc.1')).toMatchObject({ status: 0, output: 'tag=rc\n' });
+		expect(resolveNpmDistTag('0.1.0-rc')).toMatchObject({ status: 0, output: 'tag=rc\n' });
+		expect(resolveNpmDistTag('0.1.0')).toMatchObject({ status: 0, output: 'tag=latest\n' });
+		expect(resolveNpmDistTag('0.1.0+build.7')).toMatchObject({ status: 0, output: 'tag=latest\n' });
+		expect(resolveNpmDistTag('0.1.0-rc.2+build.7')).toMatchObject({ status: 0, output: 'tag=rc\n' });
+	}, 15_000);
 
-		expect(resolve('0.1.0-beta.5')).toMatchObject({ status: 0, output: 'tag=beta\n' });
-		expect(resolve('0.1.0-beta')).toMatchObject({ status: 0, output: 'tag=beta\n' });
-		expect(resolve('0.1.0-rc.1')).toMatchObject({ status: 0, output: 'tag=rc\n' });
-		expect(resolve('0.1.0-rc')).toMatchObject({ status: 0, output: 'tag=rc\n' });
-		expect(resolve('0.1.0')).toMatchObject({ status: 0, output: 'tag=latest\n' });
-	});
-
-	test('fails closed for unsupported prerelease identifiers', () => {
-		const output = path.join(os.tmpdir(), `forge-npm-dist-tag-deny-${process.pid}-${Date.now()}`);
-		try {
-			const result = spawnSync(bashExecutable, ['-c', renderNpmDistTagResolverScript()], {
-				encoding: 'utf8',
-				env: { ...process.env, VERSION: '0.1.0-alpha.1', GITHUB_OUTPUT: output },
-			});
+	test.each([
+		'0.1.0-alpha.1',
+		'1.0.0-alpha-rc.1',
+		'1.0.0-foo-beta.1',
+		'1.0.0-beta.foo',
+		'1.0.0-rc.01',
+		'1.0.0-',
+		'01.0.0',
+		'1.0',
+		'',
+	])('fails closed for unsupported or malformed version %p', version => {
+		const result = resolveNpmDistTag(version);
 			expect(result.status).toBe(1);
-			expect(`${result.stdout}${result.stderr}`).toContain('Unsupported npm prerelease');
-			expect(fs.existsSync(output)).toBe(false);
-		} finally {
-			fs.rmSync(output, { force: true });
-		}
+		expect(`${result.stdout}${result.stderr}`).toMatch(/Unsupported npm prerelease|Invalid npm version/);
+		expect(result.output).toBe('');
 	});
 
 	test('the checked-in workflow is exactly the deterministic generator output', () => {

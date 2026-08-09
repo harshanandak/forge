@@ -121,21 +121,26 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
-          case "$VERSION" in
-            *-beta|*-beta.*)
-              echo "tag=beta" >> "$GITHUB_OUTPUT"
-              ;;
-            *-rc|*-rc.*)
-              echo "tag=rc" >> "$GITHUB_OUTPUT"
-              ;;
-            *-*)
-              echo "::error::Unsupported npm prerelease: $VERSION"
-              exit 1
-              ;;
-            *)
-              echo "tag=latest" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
+          CORE_RE='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
+          NUMERIC_ID_RE='(0|[1-9][0-9]*)'
+          BUILD_RE='(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?'
+          BETA_RE="^${CORE_RE}-beta(\.${NUMERIC_ID_RE})*${BUILD_RE}$"
+          RC_RE="^${CORE_RE}-rc(\.${NUMERIC_ID_RE})*${BUILD_RE}$"
+          STABLE_RE="^${CORE_RE}${BUILD_RE}$"
+
+          if [[ "$VERSION" =~ $BETA_RE ]]; then
+            echo "tag=beta" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" =~ $RC_RE ]]; then
+            echo "tag=rc" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" =~ $STABLE_RE ]]; then
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" == *-* ]]; then
+            echo "::error::Unsupported npm prerelease: $VERSION"
+            exit 1
+          else
+            echo "::error::Invalid npm version: $VERSION"
+            exit 1
+          fi
       - name: Publish to npm
         shell: bash
         run: |
