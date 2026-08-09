@@ -1,6 +1,75 @@
 schema_id: forge.validation.risk-manifest.v1
 revision: 1
 
+commands:
+  - id: validation.command.affected-platform
+    executable: bun
+    argv: [test, --timeout, "15000", test/integration]
+  - id: validation.command.contract-baseline
+    executable: bun
+    argv: [test, --timeout, "15000", test/integration]
+  - id: validation.command.facade-package
+    executable: bun
+    argv: [test, --timeout, "15000", test/commands]
+  - id: validation.command.flow-package
+    executable: bun
+    argv: [test, --timeout, "15000", test/workflow]
+  - id: validation.command.g0-static
+    executable: bun
+    argv: [x, eslint, ., --max-warnings, "0"]
+  - id: validation.command.g1-manifest-check
+    executable: node
+    argv: [scripts/generate-risk-manifest.js, --check]
+  - id: validation.command.g1-selector
+    executable: bun
+    argv: [test, --timeout, "15000", test/validation/risk-manifest.test.js, test/validation/risk-manifest-generator.test.js]
+  - id: validation.command.g3-contract
+    executable: bun
+    argv: [test, --timeout, "15000", test/integration]
+  - id: validation.command.g4-authority
+    executable: bun
+    argv: [test, --timeout, "15000", test/kernel]
+  - id: validation.command.g5-data
+    executable: bun
+    argv: [test, --timeout, "15000", test/memory]
+  - id: validation.command.g6-platform
+    executable: bun
+    argv: [test, --timeout, "15000", test/integration]
+  - id: validation.command.g7-journey
+    executable: bun
+    argv: [test, --timeout, "15000", test/e2e]
+  - id: validation.command.kernel-package
+    executable: bun
+    argv: [test, --timeout, "15000", test/kernel]
+  - id: validation.command.memory-package
+    executable: bun
+    argv: [test, --timeout, "15000", test/memory]
+  - id: validation.command.repository-baseline
+    executable: bun
+    argv: [run, test:full:parallel]
+  - id: validation.command.validation-selector
+    executable: bun
+    argv: [test, --timeout, "15000", test/validation/risk-manifest.test.js, test/validation/risk-manifest-generator.test.js]
+
+gates:
+  - { id: G0, command_ids: [validation.command.g0-static] }
+  - { id: G1, command_ids: [validation.command.g1-manifest-check, validation.command.g1-selector] }
+  - { id: G3, command_ids: [validation.command.g3-contract] }
+  - { id: G4, command_ids: [validation.command.g4-authority] }
+  - { id: G5, command_ids: [validation.command.g5-data] }
+  - { id: G6, command_ids: [validation.command.g6-platform] }
+  - { id: G7, command_ids: [validation.command.g7-journey] }
+
+lanes:
+  - { id: affected-platform-baseline, command_ids: [validation.command.affected-platform] }
+  - { id: contract-baseline, command_ids: [validation.command.contract-baseline] }
+  - { id: facade-package, command_ids: [validation.command.facade-package] }
+  - { id: flow-package, command_ids: [validation.command.flow-package] }
+  - { id: kernel-package, command_ids: [validation.command.kernel-package] }
+  - { id: memory-package, command_ids: [validation.command.memory-package] }
+  - { id: repository-baseline, command_ids: [validation.command.repository-baseline] }
+  - { id: validation-selector, command_ids: [validation.command.validation-selector] }
+
 risks:
   - id: authority-integrity
     severity: S0

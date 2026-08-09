@@ -10,6 +10,9 @@
     "source_hash",
     "manifest_hash",
     "generator_version",
+    "commands",
+    "gates",
+    "lanes",
     "risks",
     "owners",
     "unknown_owner_fallback"
@@ -20,6 +23,21 @@
     "source_hash": { "$ref": "#/$defs/digest" },
     "manifest_hash": { "$ref": "#/$defs/digest" },
     "generator_version": { "type": "string", "minLength": 1 },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/command" }
+    },
+    "gates": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/commandReference" }
+    },
+    "lanes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/commandReference" }
+    },
     "risks": {
       "type": "array",
       "minItems": 1,
@@ -46,6 +64,28 @@
       "type": "array",
       "minItems": 1,
       "items": { "type": "string", "minLength": 1 }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "executable", "argv"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "executable": { "type": "string", "minLength": 1 },
+        "argv": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "commandReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "command_ids"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "command_ids": { "$ref": "#/$defs/nonEmptyStrings" }
+      }
     },
     "risk": {
       "type": "object",

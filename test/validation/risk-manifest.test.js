@@ -77,21 +77,71 @@ describe('risk-owned validation manifest', () => {
       'contract-baseline',
       'kernel-package',
     ]);
+    expect(selected.dependent_routes).toEqual(['memory-contract']);
+    expect(selected.platform_runtime_additions).toEqual(['linux-sqlite', 'windows-sqlite']);
   });
 
-  test('maps public commands and contract schemas through the same ownership contract', () => {
+  test('workflow run selection carries dependent routes and every declared platform addition', () => {
     const manifest = loadRiskManifest(MANIFEST_PATH);
     const selected = selectValidation({
       manifest,
-      changedSurfaces: [
-        { kind: 'command', value: 'forge issue list' },
-        { kind: 'schema', value: 'forge.kernel.issue.v1' },
-      ],
+      changedSurfaces: [{ kind: 'path', value: 'lib/workflow/run.js' }],
+    });
+
+    expect(selected.dependent_routes).toEqual(['flow-memory-contract']);
+    expect(selected.platform_runtime_additions).toEqual([
+      'linux-process',
+      'macos-process',
+      'windows-process',
+    ]);
+    expect(selected.lanes).toEqual(['flow-package']);
+    expect(selected.owner_selections).toEqual([{
+      owner_id: 'workflow-runtime',
+      product: 'flow',
+      package: 'forge-flow',
+      risk_ids: ['contract-compatibility', 'monitor-cleanup'],
+      lanes: ['flow-package'],
+      canonical_test_ids: ['test/workflow/**/*.test.js'],
+      dependent_routes: ['flow-memory-contract'],
+      platform_runtime_additions: ['linux-process', 'macos-process', 'windows-process'],
+    }]);
+  });
+
+  test('issue CLI selection resolves G7 to deterministic argv commands', () => {
+    const manifest = loadRiskManifest(MANIFEST_PATH);
+    const selected = selectValidation({
+      manifest,
+      changedSurfaces: [{ kind: 'command', value: 'forge issue list' }],
     });
 
     expect(selected.status).toBe('exact');
-    expect(selected.owner_ids).toEqual(['facade-cli', 'kernel-authority']);
-    expect(selected.required_gates).toEqual(['G0', 'G1', 'G4', 'G7']);
+    expect(selected.owner_ids).toEqual(['facade-cli']);
+    expect(selected.required_gates).toEqual(['G0', 'G1', 'G7']);
+    expect(selected.dependent_routes).toEqual(['installed-cli']);
+    expect(selected.platform_runtime_additions).toEqual(['windows-shell']);
+    expect(selected.commands.find((command) => command.id === 'validation.command.g7-journey')).toEqual({
+      id: 'validation.command.g7-journey',
+      executable: 'bun',
+      argv: ['test', '--timeout', '15000', 'test/e2e'],
+    });
+    expect(selected.commands.every((command) => Array.isArray(command.argv))).toBe(true);
+  });
+
+  test('kernel broker selection includes Windows and Linux runtime additions', () => {
+    const manifest = loadRiskManifest(MANIFEST_PATH);
+    const selected = selectValidation({
+      manifest,
+      changedSurfaces: [{ kind: 'path', value: 'lib/kernel/broker.js' }],
+    });
+
+    expect(selected.platform_runtime_additions).toEqual(['linux-sqlite', 'windows-sqlite']);
+    expect(selected.commands.map((command) => command.id)).toEqual([
+      'validation.command.g0-static',
+      'validation.command.g1-manifest-check',
+      'validation.command.g1-selector',
+      'validation.command.g4-authority',
+      'validation.command.kernel-package',
+    ]);
   });
 
   test('fails closed to the repository baseline for an unowned changed surface', () => {
@@ -106,6 +156,12 @@ describe('risk-owned validation manifest', () => {
     expect(selected.owner_ids).toEqual([]);
     expect(selected.lanes).toEqual(['repository-baseline']);
     expect(selected.unowned_surfaces).toEqual([{ kind: 'path', value: 'experimental/unowned.js' }]);
+    expect(selected.commands.map((command) => command.id)).toEqual([
+      'validation.command.g0-static',
+      'validation.command.g1-manifest-check',
+      'validation.command.g1-selector',
+      'validation.command.repository-baseline',
+    ]);
   });
 
   test('does not claim targeted PASS when no changed surfaces were supplied', () => {
@@ -128,6 +184,14 @@ describe('risk-owned validation manifest', () => {
     overlapping.manifest_hash = hashManifest(overlapping);
 
     expect(() => loadRiskManifest(overlapping)).toThrow(/selectors overlap/i);
+  });
+
+  test('rejects any gate or lane whose executable command cannot be resolved', () => {
+    const original = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+    original.commands = original.commands.filter((command) => command.id !== 'validation.command.g4-authority');
+    original.manifest_hash = hashManifest(original);
+
+    expect(() => loadRiskManifest(original)).toThrow(/unknown command/i);
   });
 
   test('normalizes and de-duplicates changed surfaces before selection', () => {

@@ -33,6 +33,18 @@ function normalizeSource(source) {
     revision: parsed.revision,
     source_hash: sha256(canonicalSource),
     generator_version: 'forge-risk-manifest-generator.v1',
+    commands: sortById(parsed.commands).map((command) => ({
+      ...command,
+      argv: [...command.argv],
+    })),
+    gates: sortById(parsed.gates).map((gate) => ({
+      ...gate,
+      command_ids: [...gate.command_ids].sort(compareText),
+    })),
+    lanes: sortById(parsed.lanes).map((lane) => ({
+      ...lane,
+      command_ids: [...lane.command_ids].sort(compareText),
+    })),
     risks: sortById(parsed.risks).map((risk) => ({
       ...risk,
       gate_ids: [...risk.gate_ids].sort(),

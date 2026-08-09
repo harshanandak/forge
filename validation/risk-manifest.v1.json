@@ -1,6 +1,262 @@
 {
+  "commands": [
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/integration"
+      ],
+      "executable": "bun",
+      "id": "validation.command.affected-platform"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/integration"
+      ],
+      "executable": "bun",
+      "id": "validation.command.contract-baseline"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/commands"
+      ],
+      "executable": "bun",
+      "id": "validation.command.facade-package"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/workflow"
+      ],
+      "executable": "bun",
+      "id": "validation.command.flow-package"
+    },
+    {
+      "argv": [
+        "x",
+        "eslint",
+        ".",
+        "--max-warnings",
+        "0"
+      ],
+      "executable": "bun",
+      "id": "validation.command.g0-static"
+    },
+    {
+      "argv": [
+        "scripts/generate-risk-manifest.js",
+        "--check"
+      ],
+      "executable": "node",
+      "id": "validation.command.g1-manifest-check"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/validation/risk-manifest.test.js",
+        "test/validation/risk-manifest-generator.test.js"
+      ],
+      "executable": "bun",
+      "id": "validation.command.g1-selector"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/integration"
+      ],
+      "executable": "bun",
+      "id": "validation.command.g3-contract"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/kernel"
+      ],
+      "executable": "bun",
+      "id": "validation.command.g4-authority"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/memory"
+      ],
+      "executable": "bun",
+      "id": "validation.command.g5-data"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/integration"
+      ],
+      "executable": "bun",
+      "id": "validation.command.g6-platform"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/e2e"
+      ],
+      "executable": "bun",
+      "id": "validation.command.g7-journey"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/kernel"
+      ],
+      "executable": "bun",
+      "id": "validation.command.kernel-package"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/memory"
+      ],
+      "executable": "bun",
+      "id": "validation.command.memory-package"
+    },
+    {
+      "argv": [
+        "run",
+        "test:full:parallel"
+      ],
+      "executable": "bun",
+      "id": "validation.command.repository-baseline"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/validation/risk-manifest.test.js",
+        "test/validation/risk-manifest-generator.test.js"
+      ],
+      "executable": "bun",
+      "id": "validation.command.validation-selector"
+    }
+  ],
+  "gates": [
+    {
+      "command_ids": [
+        "validation.command.g0-static"
+      ],
+      "id": "G0"
+    },
+    {
+      "command_ids": [
+        "validation.command.g1-manifest-check",
+        "validation.command.g1-selector"
+      ],
+      "id": "G1"
+    },
+    {
+      "command_ids": [
+        "validation.command.g3-contract"
+      ],
+      "id": "G3"
+    },
+    {
+      "command_ids": [
+        "validation.command.g4-authority"
+      ],
+      "id": "G4"
+    },
+    {
+      "command_ids": [
+        "validation.command.g5-data"
+      ],
+      "id": "G5"
+    },
+    {
+      "command_ids": [
+        "validation.command.g6-platform"
+      ],
+      "id": "G6"
+    },
+    {
+      "command_ids": [
+        "validation.command.g7-journey"
+      ],
+      "id": "G7"
+    }
+  ],
   "generator_version": "forge-risk-manifest-generator.v1",
-  "manifest_hash": "sha256:3c38e59d6ab084f6871b330e863c747e769118f2a5999d7d1787bbeae65b4d74",
+  "lanes": [
+    {
+      "command_ids": [
+        "validation.command.affected-platform"
+      ],
+      "id": "affected-platform-baseline"
+    },
+    {
+      "command_ids": [
+        "validation.command.contract-baseline"
+      ],
+      "id": "contract-baseline"
+    },
+    {
+      "command_ids": [
+        "validation.command.facade-package"
+      ],
+      "id": "facade-package"
+    },
+    {
+      "command_ids": [
+        "validation.command.flow-package"
+      ],
+      "id": "flow-package"
+    },
+    {
+      "command_ids": [
+        "validation.command.kernel-package"
+      ],
+      "id": "kernel-package"
+    },
+    {
+      "command_ids": [
+        "validation.command.memory-package"
+      ],
+      "id": "memory-package"
+    },
+    {
+      "command_ids": [
+        "validation.command.repository-baseline"
+      ],
+      "id": "repository-baseline"
+    },
+    {
+      "command_ids": [
+        "validation.command.validation-selector"
+      ],
+      "id": "validation-selector"
+    }
+  ],
+  "manifest_hash": "sha256:403354dc63f2f0cb7344bedcce8e4fba1022577ca58f3bd848bc42a970a6803a",
   "owners": [
     {
       "canonical_test_ids": [
@@ -252,7 +508,7 @@
     }
   ],
   "schema_id": "forge.validation.risk-manifest.v1",
-  "source_hash": "sha256:a804175455227f87a4f0ef6b08c790a252a8a2849539baa00379d804ce221537",
+  "source_hash": "sha256:4dde512a7669b83e5e6c87cebbac69b525ed8864d4fa95b7cd3ece91b4295fe4",
   "unknown_owner_fallback": {
     "lane": "repository-baseline",
     "required_gates": [
