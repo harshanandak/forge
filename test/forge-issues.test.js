@@ -7,6 +7,22 @@ const path = require('node:path');
 const { DEFAULT_LEASE_TTL_MS } = require('../lib/kernel/lease-enforcer');
 
 describe('forge issue service contract', () => {
+	test('resolves only the explicit issue-contract readiness configuration', () => {
+		const { resolveIssueContractPolicy } = require('../lib/forge-issues');
+		const loadConfig = ({ projectRoot }) => ({
+			config: projectRoot === '/configured'
+				? { issues: { readiness: { contracts: { enabled: true, workClasses: ['task', 'bug'] } } } }
+				: {},
+			errors: [],
+		});
+
+		expect(resolveIssueContractPolicy('/configured', { loadRuntimeGraphConfig: loadConfig })).toEqual({
+			enabled: true,
+			workClasses: ['task', 'bug'],
+		});
+		expect(resolveIssueContractPolicy('/legacy', { loadRuntimeGraphConfig: loadConfig })).toBeNull();
+	});
+
   test('exports service factory and operation runner', () => {
     const forgeIssues = require('../lib/forge-issues');
 
@@ -306,6 +322,25 @@ describe('forge issue service contract', () => {
     expect(captured.worktreeId).toBeUndefined();
     expect(captured.leaseTtlMs).toBeUndefined();
   });
+
+	test('threads configured issue-contract policy into the Kernel read context', async () => {
+		const { runIssueOperation } = require('../lib/forge-issues');
+		let captured;
+		await runIssueOperation('ready', [], '/repo', {
+			createService: () => ({
+				async run(_operation, _args, context) {
+					captured = context;
+					return { success: true };
+				},
+			}),
+			loadRuntimeGraphConfig: () => ({
+				config: { issues: { readiness: { contracts: { enabled: true, workClasses: ['task'] } } } },
+				errors: [],
+			}),
+		});
+
+		expect(captured.contractPolicy).toEqual({ enabled: true, workClasses: ['task'] });
+	});
 
   test('FORGE_LEASE_TTL_MS=0 opts out of expiry (null lease), omitting leaseTtlMs from context', async () => {
     const { runIssueOperation } = require('../lib/forge-issues');

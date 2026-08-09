@@ -105,6 +105,8 @@ describe('renderIssueShow', () => {
     dependencies: [UUID_B],
     dependents: [],
     blocked_by: [UUID_B],
+	readiness_state: 'backlog',
+	readiness_reasons: [{ code: 'contract_missing', field: 'risk' }],
     created_at: '2026-07-01T00:00:00.000Z',
     updated_at: '2026-07-06T00:00:00.000Z',
     acceptance_criteria: 'ready/list/show default to text.',
@@ -137,6 +139,12 @@ describe('renderIssueShow', () => {
     expect(out).toContain('d71a824b');
     expect(out).not.toContain(UUID_B);
   });
+
+	test('renders the same readiness state and reasons exposed by JSON', () => {
+		const out = renderIssueShow(envelope('issue.show', data));
+		expect(out).toContain('Readiness: backlog');
+		expect(out).toContain('contract_missing (risk)');
+	});
 
   test('renders the body and acceptance criteria', () => {
     const out = renderIssueShow(envelope('issue.show', data));
