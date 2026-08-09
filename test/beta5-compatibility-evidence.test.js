@@ -130,7 +130,8 @@ describe('beta.5 compatibility evidence', () => {
     const proof = await proveBackupRestore(root, workspace);
 
     expect(proof.status).toBe('PASS');
-    expect(proof.files).toEqual(['.forge/config.yaml', '.forge/issues.jsonl', 'package.json']);
+    expect(proof.fileCount).toBe(3);
+    expect(proof.categories).toEqual({ config: 1, issueProjection: 1, package: 1 });
     expect(proof.backupHash).toBe(proof.restoreHash);
     expect(sha256File(path.join(root, '.forge', 'issues.jsonl'))).toBe(before);
     expect(fs.existsSync(path.join(workspace, 'backup', '.forge', 'issues.jsonl'))).toBe(true);
@@ -177,16 +178,88 @@ describe('beta.5 compatibility evidence', () => {
     const linked = buildStateTreeManifest(root);
 
     expect(clean.status).toBe('PASS');
-    expect(clean.files.map(file => file.path)).toEqual(expect.arrayContaining([
-      '.forge/comments.jsonl',
-      '.forge/dependencies.jsonl',
-      '.forge/kernel.sqlite',
-      '.forge/projections/issues.jsonl',
-      '.forge/runs/run.json',
-      '.forge/worktrees.jsonl',
-      'package.json',
-    ]));
+    expect(clean.fileCount).toBeGreaterThanOrEqual(9);
+    expect(clean.categories).toMatchObject({
+      commentProjection: 1,
+      dependencyProjection: 1,
+      kernel: 1,
+      projection: 1,
+      runEvidence: 1,
+      worktreeProjection: 1,
+    });
+    expect(clean.files).toBeUndefined();
     expect(linked).toMatchObject({ status: 'INCOMPLETE', reasons: ['state_tree_contains_link'] });
+  });
+
+  test('never emits arbitrary source filenames in backup or dry-run evidence', async () => {
+    const root = makeBeta5State({ kernel: true });
+    const secretName = 'customer-acme-private-token.json';
+    fs.writeFileSync(path.join(root, '.forge', secretName), '{"secret":"not evidence"}');
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-private-backup-'));
+    const dryRunRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-private-dryrun-'));
+
+    const backup = await proveBackupRestore(root, backupRoot);
+    const dryRun = await runBeta5MigrationDryRun(root, { proofRoot: dryRunRoot });
+    const evidence = JSON.stringify({ backup, dryRun });
+
+    expect(backup.status).toBe('PASS');
+    expect(dryRun.status).toBe('PASS');
+    expect(evidence).not.toContain(secretName);
+    expect(evidence).not.toContain('not evidence');
+    expect(evidence).not.toContain(root);
+  });
+
+  test('returns INCOMPLETE at deterministic tree, file, byte, JSONL, and SQLite row bounds', () => {
+    const root = makeBeta5State({ kernel: true });
+    const deep = path.join(root, '.forge', 'one', 'two', 'three');
+    fs.mkdirSync(deep, { recursive: true });
+    fs.writeFileSync(path.join(deep, 'deep.json'), '{}');
+    fs.writeFileSync(path.join(root, '.forge', 'large.bin'), Buffer.alloc(128));
+
+    const depth = buildStateTreeManifest(root, { limits: { maxDepth: 2 } });
+    const fileSize = buildStateTreeManifest(root, { limits: { maxFileBytes: 64 } });
+    const totalBytes = buildStateTreeManifest(root, { limits: { maxBytes: 64 } });
+    const fileCount = buildStateTreeManifest(root, { limits: { maxFiles: 2 } });
+    const jsonl = buildPrivacySafeInventory(root, { limits: { maxJsonlRows: 1 } });
+    const sqlite = buildPrivacySafeInventory(root, { limits: { maxSqliteRows: 0 } });
+
+    expect(depth).toMatchObject({ status: 'INCOMPLETE', reasons: ['state_tree_depth_limit'] });
+    expect(fileSize).toMatchObject({ status: 'INCOMPLETE', reasons: ['state_tree_file_size_limit'] });
+    expect(totalBytes).toMatchObject({ status: 'INCOMPLETE', reasons: ['state_tree_byte_limit'] });
+    expect(fileCount).toMatchObject({ status: 'INCOMPLETE', reasons: ['state_tree_file_limit'] });
+    expect(jsonl.status).toBe('INCOMPLETE');
+    expect(jsonl.unknowns).toContain('issue_row_limit');
+    expect(sqlite.status).toBe('INCOMPLETE');
+    expect(sqlite.unknowns).toContain('kernel_row_limit');
+  });
+
+  test('rejects a source swapped to a link between scan and copy without following it', async () => {
+    const root = makeBeta5State();
+    const proofRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-swap-proof-'));
+    const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-swap-external-'));
+    const external = path.join(externalRoot, 'external.jsonl');
+    fs.writeFileSync(external, '{"private":"outside"}\n');
+    let swapped = false;
+
+    const proof = await proveBackupRestore(root, proofRoot, {
+      testHooks: {
+        beforeSourceOpen({ sourcePath }) {
+          if (swapped || path.basename(sourcePath) !== 'issues.jsonl') return;
+          swapped = true;
+          fs.rmSync(sourcePath);
+          fs.symlinkSync(
+            process.platform === 'win32' ? externalRoot : external,
+            sourcePath,
+            process.platform === 'win32' ? 'junction' : 'file',
+          );
+        },
+      },
+    });
+
+    expect(swapped).toBe(true);
+    expect(proof).toMatchObject({ status: 'FAIL', reason: 'source_link_refused' });
+    expect(JSON.stringify(proof)).not.toContain('issues.jsonl');
+    expect(JSON.stringify(proof)).not.toContain(external);
   });
 
   test('returns deterministic PASS and proves the dry-run never mutates its full source tree', async () => {
