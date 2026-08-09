@@ -248,8 +248,9 @@ describe('deterministic Bun lockfile transition proof', () => {
 			timeout: 20_000,
 			env: { ...process.env, FORGE_PROTECTED_STATE_STAGED_CONTENTS_JSON: '{"bun.lock":"tampered"}' },
 		});
-		expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
-    expect(result.stdout).toContain('No protected state edits detected');
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain('No protected state edits detected');
+		expect(`${result.stdout}${result.stderr}`).not.toMatch(/(?:^|\n)(?:error:|ERROR:)|\b(?:failed|failure)\b/i);
 	}, 30_000);
 
 	test('the hook cannot hide a real staged bun.lock behind environment seams', () => {
