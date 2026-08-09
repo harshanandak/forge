@@ -1,0 +1,16 @@
+{
+  "corpus_version": 1,
+  "base_input": { "ref": "contract-inputs.v1.json", "schema_id": "forge.memory.work-packet.v1" },
+  "cases": [
+    { "missing_field": "schema_id", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
+    { "missing_field": "schema_version", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
+    { "missing_field": "object_id", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
+    { "missing_field": "created_at", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
+    { "missing_field": "producer", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
+    { "missing_field": "capabilities_used", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
+    { "missing_field": "provenance", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
+    { "missing_field": "content_hash", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
+    { "missing_field": "payload", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
+    { "missing_field": "extensions", "operation": "remove", "expected_code": "MISSING_REQUIRED" }
+  ]
+}

@@ -1,1 +1,1 @@
-{"fixture_id":"retry-identical","schema_id":"forge.memory.work-packet.v1","operation":"classify-semantic-attempt","mutation":"none","expected":{"status":"retry-identical"}}
+{"fixture_id":"retry-identical","accepted_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"candidate_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"operation":"classify-semantic-attempt","expected":{"status":"retry-identical"}}

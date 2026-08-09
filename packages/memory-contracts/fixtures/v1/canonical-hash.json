@@ -1,1 +1,1 @@
-{"fixture_id":"canonical-hash","schema_id":"forge.memory.work-packet.v1","operation":"canonical-hash","expected":{"stable_under_key_reordering":true,"content_hash_excluded":true}}
+{"fixture_id":"canonical-hash","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"operation":"canonical-hash","expected":{"stable_under_key_reordering":true,"content_hash_excluded":true}}

@@ -1,7 +1,7 @@
 "use strict";
 
 const { computeContentHash } = require("./canonical.js");
-const { CONTRACTS } = require("./definitions.js");
+const { CONTRACTS, PAYLOAD_FIELDS } = require("./definitions.js");
 
 const ENVELOPE_FIELDS = Object.freeze([
   "schema_id", "schema_version", "object_id", "created_at", "producer",
@@ -10,6 +10,19 @@ const ENVELOPE_FIELDS = Object.freeze([
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
 const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+const LIVE_EVIDENCE_FIELDS = Object.freeze({
+  "forge.memory.work-packet.v1": ["issueRevision", "workflowConfigRevision", "capabilityManifestDigest", "exactHead"],
+  "forge.memory.context-packet.v1": ["workPacketHash", "privacyScopeHash", "redactionPolicyRevision", "allowedDisclosureClasses"],
+  "forge.memory.claim-request.v1": ["issueRevision", "actorId"],
+  "forge.memory.lease-receipt.v1": ["issueRevision", "actorId", "leaseEpoch", "observedAt"],
+  "forge.memory.capability-manifest.v1": ["providerId", "configRevision", "observedAt"],
+  "forge.memory.run-receipt.v1": ["packetHash", "workflowConfigRevision", "capabilityManifestDigest", "exactHead"],
+  "forge.memory.feedback-report.v1": ["consentEventId", "redactionPolicyRevision"],
+  "forge.memory.structured-error.v1": ["parentObjectHash"],
+  "forge.memory.monitor-event.v1": ["monitorId", "subjectRevision"],
+  "forge.memory.delivery-receipt.v1": ["eventId", "target"],
+  "forge.memory.monitor-receipt.v1": ["monitorId", "ownerRunId"],
+});
 
 function error(errors, path, code) {
   errors.push({ path, code });
@@ -34,7 +47,9 @@ function validateEnvelope(value, options = {}) {
   if (!Array.isArray(value.capabilities_used)) error(errors, "$.capabilities_used", "INVALID_TYPE");
   else {
     const keys = value.capabilities_used.map((item) => `${item?.capability_id ?? ""}:${item?.manifest_digest ?? ""}`);
-    if (keys.some((key) => !key.includes(":" ) || key.startsWith(":"))) error(errors, "$.capabilities_used", "INVALID_CAPABILITY_BINDING");
+    if (value.capabilities_used.some((item) => !item || typeof item !== "object" || Array.isArray(item) || typeof item.capability_id !== "string" || item.capability_id.length === 0 || !SHA256.test(item.manifest_digest))) {
+      error(errors, "$.capabilities_used", "INVALID_CAPABILITY_BINDING");
+    }
     if (keys.join("\0") !== [...keys].sort().join("\0")) error(errors, "$.capabilities_used", "NOT_SORTED");
   }
   if (!value.provenance || typeof value.provenance !== "object" || Array.isArray(value.provenance)) error(errors, "$.provenance", "INVALID_TYPE");
@@ -69,8 +84,45 @@ function compare(errors, actual, expected, path, code) {
   if (expected !== undefined && actual !== expected) error(errors, path, code);
 }
 
+function isType(value, type) {
+  if (type === "integer") return Number.isInteger(value);
+  if (type === "array") return Array.isArray(value);
+  if (type === "object") return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  return typeof value === type;
+}
+
+function validateShape(value, shape, path, errors) {
+  if (!isType(value, shape.type)) {
+    error(errors, path, "INVALID_TYPE");
+    return;
+  }
+  if (shape.enum && !shape.enum.includes(value)) error(errors, path, "INVALID_ENUM");
+  if (shape.minLength !== undefined && value.length < shape.minLength) error(errors, path, "INVALID_LENGTH");
+  if (shape.minimum !== undefined && value < shape.minimum) error(errors, path, "OUT_OF_RANGE");
+  if (shape.pattern && !new RegExp(shape.pattern).test(value)) error(errors, path, "INVALID_FORMAT");
+  if (shape.format === "date-time" && (!RFC3339_UTC.test(value) || Number.isNaN(Date.parse(value)))) error(errors, path, "INVALID_TIMESTAMP");
+  if (shape.type === "array" && shape.items) value.forEach((item, index) => validateShape(item, shape.items, `${path}[${index}]`, errors));
+  if (shape.type === "object") {
+    for (const field of shape.required ?? []) {
+      if (!Object.hasOwn(value, field)) error(errors, `${path}.${field}`, "MISSING_REQUIRED");
+    }
+    for (const [field, fieldShape] of Object.entries(shape.properties ?? {})) {
+      if (Object.hasOwn(value, field)) validateShape(value[field], fieldShape, `${path}.${field}`, errors);
+    }
+    if (shape.additionalProperties === false) {
+      const allowed = new Set(Object.keys(shape.properties ?? {}));
+      for (const field of Object.keys(value)) if (!allowed.has(field)) error(errors, `${path}.${field}`, "UNKNOWN_FIELD");
+    }
+  }
+}
+
 function validateConsequentialEvidence(value, expected, errors) {
-  if (!expected || !value?.payload) return;
+  if (!value?.payload) return;
+  const requiredEvidence = LIVE_EVIDENCE_FIELDS[value.schema_id] ?? [];
+  for (const field of requiredEvidence) {
+    if (!expected || !Object.hasOwn(expected, field)) error(errors, `$.live_expected.${field}`, "MISSING_LIVE_EVIDENCE");
+  }
+  if (!expected) return;
   const payload = value.payload;
   if (value.schema_id === "forge.memory.work-packet.v1") {
     compare(errors, payload.expected_issue_revision, expected.issueRevision, "$.payload.expected_issue_revision", "STALE_ISSUE_REVISION");
@@ -90,6 +142,32 @@ function validateConsequentialEvidence(value, expected, errors) {
     compare(errors, payload.manifest_digest, expected.capabilityManifestDigest, "$.payload.manifest_digest", "WRONG_CAPABILITY_DIGEST");
     compare(errors, payload.exact_head, expected.exactHead, "$.payload.exact_head", "STALE_EXACT_HEAD");
     compare(errors, payload.lease_epoch, expected.leaseEpoch, "$.payload.lease_epoch", "STALE_LEASE_EPOCH");
+  } else if (value.schema_id === "forge.memory.claim-request.v1") {
+    compare(errors, payload.expected_issue_revision, expected.issueRevision, "$.payload.expected_issue_revision", "STALE_ISSUE_REVISION");
+    compare(errors, payload.actor_id, expected.actorId, "$.payload.actor_id", "STALE_ACTOR");
+  } else if (value.schema_id === "forge.memory.lease-receipt.v1") {
+    compare(errors, payload.issue_revision, expected.issueRevision, "$.payload.issue_revision", "STALE_ISSUE_REVISION");
+    compare(errors, payload.actor_id, expected.actorId, "$.payload.actor_id", "STALE_ACTOR");
+    compare(errors, payload.lease_epoch, expected.leaseEpoch, "$.payload.lease_epoch", "STALE_LEASE_EPOCH");
+    if (Date.parse(payload.expires_at) <= Date.parse(expected.observedAt)) error(errors, "$.payload.expires_at", "STALE_LEASE");
+  } else if (value.schema_id === "forge.memory.capability-manifest.v1") {
+    compare(errors, payload.provider_id, expected.providerId, "$.payload.provider_id", "STALE_PROVIDER");
+    compare(errors, payload.config_revision, expected.configRevision, "$.payload.config_revision", "STALE_CAPABILITY_CONFIG");
+    if (Date.parse(payload.expires_at) <= Date.parse(expected.observedAt)) error(errors, "$.payload.expires_at", "STALE_CAPABILITY_MANIFEST");
+  } else if (value.schema_id === "forge.memory.feedback-report.v1") {
+    compare(errors, payload.consent_event_id, expected.consentEventId, "$.payload.consent_event_id", "STALE_CONSENT");
+    compare(errors, payload.redaction_policy_revision, expected.redactionPolicyRevision, "$.payload.redaction_policy_revision", "STALE_REDACTION_POLICY");
+  } else if (value.schema_id === "forge.memory.structured-error.v1") {
+    compare(errors, payload.parent_object_hash, expected.parentObjectHash, "$.payload.parent_object_hash", "STALE_PARENT_OBJECT");
+  } else if (value.schema_id === "forge.memory.monitor-event.v1") {
+    compare(errors, payload.monitor_id, expected.monitorId, "$.payload.monitor_id", "STALE_MONITOR");
+    compare(errors, payload.subject_revision, expected.subjectRevision, "$.payload.subject_revision", "STALE_SUBJECT");
+  } else if (value.schema_id === "forge.memory.delivery-receipt.v1") {
+    compare(errors, payload.event_id, expected.eventId, "$.payload.event_id", "STALE_EVENT");
+    compare(errors, payload.target, expected.target, "$.payload.target", "STALE_DELIVERY_TARGET");
+  } else if (value.schema_id === "forge.memory.monitor-receipt.v1") {
+    compare(errors, payload.monitor_id, expected.monitorId, "$.payload.monitor_id", "STALE_MONITOR");
+    compare(errors, payload.owner_run_id, expected.ownerRunId, "$.payload.owner_run_id", "STALE_OWNER_RUN");
   }
 }
 
@@ -104,6 +182,7 @@ function validateContract(value, options = {}) {
     const allowed = new Set([...definition.required, ...definition.optional]);
     for (const field of Object.keys(value.payload)) {
       if (!allowed.has(field)) error(errors, `$.payload.${field}`, "UNKNOWN_PAYLOAD_FIELD");
+      else validateShape(value.payload[field], PAYLOAD_FIELDS[value.schema_id][field], `$.payload.${field}`, errors);
     }
   }
   validateExtensions(value?.extensions, errors);

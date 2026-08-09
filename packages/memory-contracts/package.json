@@ -9,7 +9,8 @@
     "src/",
     "schemas/",
     "fixtures/",
-    "contract-baseline.v1.json"
+    "contract-baseline.v1.json",
+    "compatibility-matrix.v1.json"
   ],
   "scripts": {
     "test": "bun test test",

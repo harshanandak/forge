@@ -188,7 +188,14 @@ describe("extension compatibility", () => {
       },
     });
     packet.content_hash = computeContentHash(packet);
-    const parsed = parseContract(canonicalize(packet));
+    const parsed = parseContract(canonicalize(packet), {
+      expected: {
+        issueRevision: packet.payload.expected_issue_revision,
+        workflowConfigRevision: packet.payload.workflow_config_revision,
+        capabilityManifestDigest: packet.payload.capability_manifest_digest,
+        exactHead: packet.payload.target_head,
+      },
+    });
     expect(parsed.extensions).toEqual(packet.extensions);
     expect(parsed.content_hash).toBe(packet.content_hash);
   });

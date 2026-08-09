@@ -69,4 +69,83 @@ const CONTRACTS = Object.freeze({
   },
 });
 
-module.exports = { CONTRACTS };
+const STRING = Object.freeze({ type: "string", minLength: 1 });
+const INTEGER = Object.freeze({ type: "integer", minimum: 0 });
+const POSITIVE_INTEGER = Object.freeze({ type: "integer", minimum: 1 });
+const BOOLEAN = Object.freeze({ type: "boolean" });
+const OBJECT = Object.freeze({ type: "object" });
+const STRING_ARRAY = Object.freeze({ type: "array", items: { type: "string" } });
+const OBJECT_ARRAY = Object.freeze({ type: "array", items: { type: "object" } });
+const HASH = Object.freeze({ type: "string", pattern: "^[0-9a-f]{64}$" });
+const HEAD = Object.freeze({ type: "string", pattern: "^[0-9a-f]{40}(?:[0-9a-f]{24})?$" });
+const TIMESTAMP = Object.freeze({ type: "string", format: "date-time" });
+
+const PAYLOAD_FIELDS = Object.freeze({
+  "forge.memory.work-packet.v1": {
+    issue_id: STRING, expected_issue_revision: INTEGER, packet_id: STRING, packet_revision: POSITIVE_INTEGER,
+    repository_id: STRING, target_head: HEAD, objective: STRING,
+    authority: { type: "object", required: ["kind", "issue_revision"], properties: { kind: STRING, issue_revision: INTEGER } },
+    allowed_mutations: STRING_ARRAY, workflow_config_revision: STRING, capability_manifest_digest: HASH,
+    acceptance_criteria: STRING_ARRAY, prohibited_actions: STRING_ARRAY, dependencies: STRING_ARRAY,
+    constraints: OBJECT, risk: OBJECT, platform: OBJECT, context_references: OBJECT_ARRAY,
+    expected_outputs: STRING_ARRAY, target: OBJECT, receipt_requirements: OBJECT, idempotency_key: STRING,
+    token_budget: POSITIVE_INTEGER, budget_metric: { type: "string", enum: ["provider_reported_total_tokens"] }, risk_manifest_digest: HASH,
+  },
+  "forge.memory.context-packet.v1": {
+    work_packet_hash: HASH, context_selection_revision: POSITIVE_INTEGER, privacy_scope_hash: HASH,
+    retention_class: { type: "string", enum: ["public_metadata", "local_sensitive", "remote_redacted", "restricted"] },
+    disclosure_class: { type: "string", enum: ["public_metadata", "local_sensitive", "remote_redacted", "restricted"] },
+    references: OBJECT_ARRAY, summaries: OBJECT_ARRAY, redaction_policy_revision: STRING,
+  },
+  "forge.memory.claim-request.v1": {
+    issue_id: STRING, expected_issue_revision: INTEGER, actor_id: STRING, request_id: STRING,
+    requested_scope: OBJECT, idempotency_key: STRING,
+  },
+  "forge.memory.lease-receipt.v1": {
+    claim_request_id: STRING, lease_id: STRING, lease_epoch: POSITIVE_INTEGER, issue_revision: INTEGER,
+    actor_id: STRING, scope: OBJECT, expires_at: TIMESTAMP, durable: BOOLEAN, authority_signature: STRING,
+  },
+  "forge.memory.capability-manifest.v1": {
+    provider_id: STRING, manifest_revision: POSITIVE_INTEGER, config_revision: STRING,
+    executable_identity: OBJECT, provider_version: STRING, probe_revision: STRING, result_hash: HASH,
+    capabilities: { type: "array", items: { type: "object", required: ["capability_id", "available"], properties: { capability_id: STRING, available: BOOLEAN } } },
+    evaluator_status: { type: "string", enum: ["approved", "unavailable", "quarantined"] }, probed_at: TIMESTAMP, expires_at: TIMESTAMP,
+  },
+  "forge.memory.run-receipt.v1": {
+    packet_hash: HASH, run_id: STRING, attempt_id: STRING, exact_head: HEAD, packet_revision: POSITIVE_INTEGER,
+    manifest_digest: HASH, workflow_config_revision: STRING, status: { type: "string", enum: ["PASS", "FAIL", "INCOMPLETE"] },
+    executor: OBJECT, started_at: TIMESTAMP, ended_at: TIMESTAMP, evidence_refs: OBJECT_ARRAY, validation: OBJECT, cleanup: OBJECT,
+    lease_epoch: POSITIVE_INTEGER, tokens: OBJECT, retries: INTEGER, corrections: INTEGER,
+    mutations_attempted: STRING_ARRAY, mutations_authorized: STRING_ARRAY, structured_error: OBJECT,
+    active_time_ms: INTEGER, passive_time_ms: INTEGER,
+  },
+  "forge.memory.feedback-report.v1": {
+    report_id: STRING, product_version: STRING, contract_version: POSITIVE_INTEGER, stable_error_code: STRING,
+    affected_capability: STRING, redacted_reproduction_steps: STRING_ARRAY, expected_classification: STRING,
+    actual_classification: STRING, occurrence_count: POSITIVE_INTEGER, content_fingerprint: HASH,
+    consent_event_id: STRING, redaction_policy_revision: STRING, proposed_fix: STRING, return_channel: OBJECT,
+  },
+  "forge.memory.structured-error.v1": {
+    parent_object_hash: HASH, error_occurrence_id: STRING, code: STRING,
+    terminal_classification: { type: "string", enum: ["FAIL", "INCOMPLETE"] }, safe_details: OBJECT,
+    retryable: BOOLEAN, evidence_refs: OBJECT_ARRAY,
+  },
+  "forge.memory.monitor-event.v1": {
+    monitor_id: STRING, event_id: STRING, sequence: INTEGER, subject_revision: STRING, type: STRING,
+    actionability: { type: "string", enum: ["advisory", "action_required", "terminal"] }, observed_at: TIMESTAMP,
+    bounded_payload: OBJECT, artifact_digest: HASH,
+  },
+  "forge.memory.delivery-receipt.v1": {
+    event_id: STRING, target: STRING, transport_tier: { type: "string", enum: ["T0", "T1", "T2", "T3", "T4"] },
+    attempt: POSITIVE_INTEGER, delivered_at: TIMESTAMP, acknowledged: BOOLEAN,
+    outcome: { type: "string", enum: ["delivered", "pending", "failed", "acknowledged"] },
+  },
+  "forge.memory.monitor-receipt.v1": {
+    monitor_id: STRING, owner_run_id: STRING,
+    terminal_state: { type: "string", enum: ["PASS", "FAIL", "INCOMPLETE", "CANCELLED"] }, terminal_reason: STRING,
+    last_sequence: INTEGER, evidence_digest: HASH, cancellation_acknowledged: BOOLEAN,
+    process_cleanup: OBJECT, lease_cleanup: OBJECT, undelivered_cursor: INTEGER,
+  },
+});
+
+module.exports = { CONTRACTS, PAYLOAD_FIELDS };

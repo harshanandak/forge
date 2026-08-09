@@ -1,0 +1,71 @@
+{
+  "corpus_version": 1,
+  "inputs": [
+    {
+      "schema_id": "forge.memory.work-packet.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000001", "created_at": "2026-08-09T12:00:00.000Z",
+      "producer": { "product_id": "forge-memory", "product_version": "0.1.0-beta.6", "instance_id": "fixture" }, "capabilities_used": [],
+      "provenance": { "source_kind": "fixture", "actor_class": "system", "actor_id": "fixture" }, "content_hash": "b5b6527735acceed41f41cb4b7ae778ad8e3d3fd517832c4936e8c632881c10c",
+      "payload": { "issue_id": "issue-1", "expected_issue_revision": 1, "packet_id": "packet-1", "packet_revision": 1, "repository_id": "github.com/example/forge", "target_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "objective": "fixture objective", "authority": { "kind": "kernel", "issue_revision": 1 }, "allowed_mutations": ["files"], "workflow_config_revision": "config-1", "capability_manifest_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }, "extensions": {}
+    },
+    {
+      "schema_id": "forge.memory.context-packet.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000002", "created_at": "2026-08-09T12:00:00.000Z",
+      "producer": { "product_id": "forge-memory", "product_version": "0.1.0-beta.6", "instance_id": "fixture" }, "capabilities_used": [],
+      "provenance": { "source_kind": "fixture", "actor_class": "system", "actor_id": "fixture" }, "content_hash": "278663383d458667b71eb25f6bed8c5828445e070b5af2369a46bc2953b34999",
+      "payload": { "work_packet_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "context_selection_revision": 1, "privacy_scope_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "retention_class": "local_sensitive", "disclosure_class": "remote_redacted", "redaction_policy_revision": "redaction-1", "summaries": [{ "kind": "issue", "text": "redacted fixture" }] }, "extensions": {}
+    },
+    {
+      "schema_id": "forge.memory.claim-request.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000003", "created_at": "2026-08-09T12:00:00.000Z",
+      "producer": { "product_id": "forge-memory", "product_version": "0.1.0-beta.6", "instance_id": "fixture" }, "capabilities_used": [],
+      "provenance": { "source_kind": "fixture", "actor_class": "agent", "actor_id": "agent-1" }, "content_hash": "aa1972081945dbfff1b9a800ce139968f6bc8581f19d5f243906181565a665aa",
+      "payload": { "issue_id": "issue-1", "expected_issue_revision": 1, "actor_id": "agent-1", "request_id": "request-1", "requested_scope": { "mutations": ["files"] }, "idempotency_key": "claim-1" }, "extensions": {}
+    },
+    {
+      "schema_id": "forge.memory.lease-receipt.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000004", "created_at": "2026-08-09T12:00:00.000Z",
+      "producer": { "product_id": "forge-memory", "product_version": "0.1.0-beta.6", "instance_id": "fixture" }, "capabilities_used": [],
+      "provenance": { "source_kind": "kernel", "actor_class": "authority", "actor_id": "kernel" }, "content_hash": "f3fdc336f2da33d69ed4e1e360e455d9903123add962464062d29f373cabe3d0",
+      "payload": { "claim_request_id": "request-1", "lease_id": "lease-1", "lease_epoch": 1, "issue_revision": 1, "actor_id": "agent-1", "scope": { "mutations": ["files"] }, "expires_at": "2026-08-09T13:00:00.000Z", "durable": true, "authority_signature": "fixture-signature" }, "extensions": {}
+    },
+    {
+      "schema_id": "forge.memory.capability-manifest.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000005", "created_at": "2026-08-09T12:00:00.000Z",
+      "producer": { "product_id": "forge-flow", "product_version": "0.1.0-beta.6", "instance_id": "fixture" }, "capabilities_used": [],
+      "provenance": { "source_kind": "probe", "actor_class": "system", "actor_id": "probe" }, "content_hash": "296ff678e04103e339231fef672db2220f5bd23981fefdc96dcfcd6f338f355e",
+      "payload": { "provider_id": "codex", "manifest_revision": 1, "config_revision": "config-1", "executable_identity": { "path_hash": "fixture" }, "provider_version": "1.0.0", "probe_revision": "probe-1", "result_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "capabilities": [{ "capability_id": "flow.execute", "available": true }], "evaluator_status": "approved", "probed_at": "2026-08-09T12:00:00.000Z", "expires_at": "2026-08-09T13:00:00.000Z" }, "extensions": {}
+    },
+    {
+      "schema_id": "forge.memory.run-receipt.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000006", "created_at": "2026-08-09T12:30:00.000Z",
+      "producer": { "product_id": "forge-flow", "product_version": "0.1.0-beta.6", "instance_id": "run-1" }, "capabilities_used": [],
+      "provenance": { "source_kind": "execution", "actor_class": "agent", "actor_id": "agent-1" }, "content_hash": "4f919795d2c62ad6520b54fc526c215621ef046a59326f673aa6e41a1f6fc751",
+      "payload": { "packet_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "run_id": "run-1", "attempt_id": "attempt-1", "exact_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "packet_revision": 1, "manifest_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "workflow_config_revision": "config-1", "status": "PASS", "executor": { "product": "forge-flow" }, "started_at": "2026-08-09T12:00:00.000Z", "ended_at": "2026-08-09T12:30:00.000Z", "evidence_refs": [], "validation": { "status": "PASS" }, "cleanup": { "status": "PASS" } }, "extensions": {}
+    },
+    {
+      "schema_id": "forge.memory.feedback-report.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000007", "created_at": "2026-08-09T12:00:00.000Z",
+      "producer": { "product_id": "forge-memory", "product_version": "0.1.0-beta.6", "instance_id": "fixture" }, "capabilities_used": [],
+      "provenance": { "source_kind": "feedback", "actor_class": "anonymous-user", "actor_id": "report-1" }, "content_hash": "3adb5b3f1b726b7b67032bf607ab89e54aee3f9eeefa6d4cdbd29340bee555c1",
+      "payload": { "report_id": "report-1", "product_version": "0.1.0-beta.6", "contract_version": 1, "stable_error_code": "FORGE_FIXTURE", "affected_capability": "flow.execute", "redacted_reproduction_steps": ["run fixture"], "expected_classification": "PASS", "actual_classification": "FAIL", "occurrence_count": 1, "content_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "consent_event_id": "consent-1", "redaction_policy_revision": "redaction-1" }, "extensions": {}
+    },
+    {
+      "schema_id": "forge.memory.structured-error.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000008", "created_at": "2026-08-09T12:00:00.000Z",
+      "producer": { "product_id": "forge-memory", "product_version": "0.1.0-beta.6", "instance_id": "fixture" }, "capabilities_used": [],
+      "provenance": { "source_kind": "execution", "actor_class": "system", "actor_id": "forge" }, "content_hash": "50d181d71714a308539f5612fee7dfa854a4abe9591981842303de24db64982d",
+      "payload": { "parent_object_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "error_occurrence_id": "error-1", "code": "FORGE_FIXTURE", "terminal_classification": "FAIL", "safe_details": { "summary": "fixture failure" } }, "extensions": {}
+    },
+    {
+      "schema_id": "forge.memory.monitor-event.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000009", "created_at": "2026-08-09T12:00:00.000Z",
+      "producer": { "product_id": "forge-flow", "product_version": "0.1.0-beta.6", "instance_id": "monitor-1" }, "capabilities_used": [],
+      "provenance": { "source_kind": "monitor", "actor_class": "system", "actor_id": "monitor" }, "content_hash": "01b1e7086a5ba2ddf521ad8e8901db925d9f9e8fe2db75c43ca5eea941d68559",
+      "payload": { "monitor_id": "monitor-1", "event_id": "event-1", "sequence": 0, "subject_revision": "head-1", "type": "check.completed", "actionability": "advisory", "observed_at": "2026-08-09T12:00:00.000Z", "bounded_payload": { "status": "PASS" } }, "extensions": {}
+    },
+    {
+      "schema_id": "forge.memory.delivery-receipt.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000010", "created_at": "2026-08-09T12:00:00.000Z",
+      "producer": { "product_id": "forge-flow", "product_version": "0.1.0-beta.6", "instance_id": "delivery-1" }, "capabilities_used": [],
+      "provenance": { "source_kind": "delivery", "actor_class": "system", "actor_id": "adapter" }, "content_hash": "0bfe86d8a48be6ac271c92c1e767ec53ce0f7bfc2e228a47832522eefa44b40a",
+      "payload": { "event_id": "event-1", "target": "agent-1", "transport_tier": "T1", "attempt": 1, "delivered_at": "2026-08-09T12:00:00.000Z", "acknowledged": true, "outcome": "acknowledged" }, "extensions": {}
+    },
+    {
+      "schema_id": "forge.memory.monitor-receipt.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000011", "created_at": "2026-08-09T12:00:00.000Z",
+      "producer": { "product_id": "forge-flow", "product_version": "0.1.0-beta.6", "instance_id": "monitor-1" }, "capabilities_used": [],
+      "provenance": { "source_kind": "monitor", "actor_class": "system", "actor_id": "monitor" }, "content_hash": "01da8754bae5d5a17501a7e20bfc93959e274227add6a31e451424b2c1ac7251",
+      "payload": { "monitor_id": "monitor-1", "owner_run_id": "run-1", "terminal_state": "PASS", "terminal_reason": "predicate satisfied", "last_sequence": 0, "evidence_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "cancellation_acknowledged": true, "process_cleanup": { "status": "PASS" }, "lease_cleanup": { "status": "PASS" } }, "extensions": {}
+    }
+  ]
+}
