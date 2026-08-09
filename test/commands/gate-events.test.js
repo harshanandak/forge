@@ -278,4 +278,58 @@ describe('forge gate events (approve/reject/status/check)', () => {
     const updated = await gateCommand.handler(['status', issue], { json: true }, root, opts(deps));
     expect(JSON.parse(updated.output).events).toHaveLength(2);
   });
+
+  test('expired or rejected approval starts a new authoritative generation', async () => {
+    const root = makeProject();
+    const deps = await freshKernel();
+    const issue = await seedIssue(deps, 'forge-gate-generations');
+    const args = ['approve', issue, 'gate.merge', '--ttl', '1m'];
+
+    const first = await gateCommand.handler(args, {}, root, opts(deps));
+    const activeRetry = await gateCommand.handler(args, {}, root, {
+      ...opts(deps), now: '2026-08-09T10:00:30.000Z',
+    });
+    expect(first.duplicate).toBe(false);
+    expect(activeRetry.duplicate).toBe(true);
+
+    const afterExpiry = await gateCommand.handler(args, {}, root, {
+      ...opts(deps), now: '2026-08-09T10:01:00.000Z',
+    });
+    expect(afterExpiry.duplicate).toBe(false);
+    expect(afterExpiry.event.expires_at).toBe('2026-08-09T10:02:00.000Z');
+
+    // Same timestamp is intentionally adversarial: authoritative insertion order
+    // must make reject terminal, then the renewal authoritative after it.
+    await gateCommand.handler(['reject', issue, 'gate.merge'], {}, root, {
+      ...opts(deps), now: '2026-08-09T10:01:30.000Z',
+    });
+    const afterReject = await gateCommand.handler(args, {}, root, {
+      ...opts(deps), now: '2026-08-09T10:01:30.000Z',
+    });
+    expect(afterReject.duplicate).toBe(false);
+    const check = await gateCommand.handler(['check', issue, 'gate.merge'], {}, root, {
+      ...opts(deps), now: '2026-08-09T10:01:31.000Z',
+    });
+    expect(check.success).toBe(true);
+    expect(check.event.issued_at).toBe('2026-08-09T10:01:30.000Z');
+
+    const status = await gateCommand.handler(['status', issue], { json: true }, root, opts(deps));
+    expect(JSON.parse(status.output).events.map(event => event.decision)).toEqual([
+      'approved', 'approved', 'rejected', 'approved',
+    ]);
+  });
+
+  test('TTL expiry outside the JS Date range fails closed without throwing or writing', async () => {
+    const root = makeProject();
+    const deps = await freshKernel();
+    const issue = await seedIssue(deps, 'forge-gate-date-range');
+    const result = await gateCommand.handler(
+      ['approve', issue, 'gate.merge', '--ttl', '1d'], {}, root,
+      { ...opts(deps), now: '+275760-09-12T23:59:59.999Z' },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/date range/i);
+    const status = await gateCommand.handler(['status', issue], { json: true }, root, opts(deps));
+    expect(JSON.parse(status.output).events).toHaveLength(0);
+  });
 });
