@@ -9,7 +9,7 @@ CREATE TABLE kernel_stage_runs (id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, sta
 CREATE TABLE kernel_projections (id TEXT PRIMARY KEY, target TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, status TEXT NOT NULL);
 CREATE TABLE kernel_events (id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, event_type TEXT NOT NULL);
 INSERT INTO kernel_migrations VALUES ('001_initial_kernel_schema', '2026-08-09T00:00:00.000Z');
-INSERT INTO kernel_issues VALUES ('synthetic-issue-1', 'Synthetic issue', 'open', 2);
+INSERT INTO kernel_issues VALUES ('synthetic-issue-1', 'Synthetic issue', 'open', 2); -- NOSONAR S1192: repeated synthetic foreign key preserves fixture readability.
 INSERT INTO kernel_comments VALUES ('synthetic-comment-1', 'synthetic-issue-1', 'Synthetic comment', 'fixture');
 INSERT INTO kernel_dependencies VALUES ('synthetic-dependency-1', 'synthetic-issue-1', 'synthetic-issue-2');
 INSERT INTO kernel_claims VALUES ('synthetic-claim-1', 'synthetic-issue-1', 'fixture', 'active');

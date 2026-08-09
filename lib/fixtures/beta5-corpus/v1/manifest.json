@@ -10,7 +10,7 @@
     "lib/workflow/stages.js": "0b7ae32bddcbb9bd6dd52a07ca22e43364621918"
   },
   "hash_algorithm": "sha256",
-  "content_hash": "abfa1a73c9590069267fe03785883b21e34665168b55d628395a456be4a88082",
+  "content_hash": "747d00eb4846877d1f5127961cfbeb6ac37694370493db1d622c5e1c217f8787",
   "files": [
     { "path": "README.md", "sha256": "3cfcc78856e397f2cfd3fee9fa2fffb630e27ea3e76ee8d8b5d9a77cb366a709" },
     { "path": "contract/command-contract.json", "sha256": "8b4f885091fa8afe72b7b5a5a8039869c871f4fb1dc3344728b2c4322f491a84" },
@@ -20,6 +20,6 @@
     { "path": "state/config.yaml", "sha256": "0b877d9180cf14951657254b50cd771e131970e92582a7c0337f36418a35e1c0" },
     { "path": "state/dependencies.jsonl", "sha256": "52320d34a6dd702396ea292f3f10fce7f9e31f545f473e12c18b1aae1ac0aee8" },
     { "path": "state/issues.jsonl", "sha256": "579f2455b2c4c23c93a584990153356ba7cc633af8b74c6284edf622217e064d" },
-    { "path": "state/kernel.sql", "sha256": "f053d579b777355c4d6f6042174435dde291dc41bce2150050c05c8d43834145" }
+    { "path": "state/kernel.sql", "sha256": "e768ae54329017361f5c3fc3782ba33b6fd98b0c36aefe8533c7949b7de440b2" }
   ]
 }
