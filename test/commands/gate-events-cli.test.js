@@ -69,6 +69,7 @@ describe('real forge gate CLI JSON and global flags', () => {
       ok: true,
       issue_id: ISSUE_ID,
     });
+    expect(parseJson(status.stdout)).not.toHaveProperty('gate_id');
 
     const check = run(__dirname, [
       'gate', 'check', ISSUE_ID, 'gate.merge', '--json', '--path', root,
@@ -120,5 +121,15 @@ describe('real forge gate CLI JSON and global flags', () => {
         ok: false,
       });
     }
+  });
+
+  test('invalid decision input never reports an option token as gate_id', () => {
+    const root = tempRoots[0];
+    const invalid = run(__dirname, [
+      'gate', 'approve', ISSUE_ID, '--ttl', '5m', '--json', '--path', root,
+    ]);
+
+    expect(invalid.status).toBe(1);
+    expect(parseJson(invalid.stdout)).not.toHaveProperty('gate_id');
   });
 });

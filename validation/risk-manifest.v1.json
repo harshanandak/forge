@@ -256,7 +256,7 @@
       "id": "validation-selector"
     }
   ],
-  "manifest_hash": "sha256:403354dc63f2f0cb7344bedcce8e4fba1022577ca58f3bd848bc42a970a6803a",
+  "manifest_hash": "sha256:d7b0d384d2e3636e37d6544f79aaf881ef63850acb20439e1d8a5cf80ab300b6",
   "owners": [
     {
       "canonical_test_ids": [
@@ -367,6 +367,7 @@
     },
     {
       "canonical_test_ids": [
+        "test/validation/risk-manifest-generator.test.js",
         "test/validation/risk-manifest.test.js"
       ],
       "dependent_routes": [
@@ -508,12 +509,14 @@
     }
   ],
   "schema_id": "forge.validation.risk-manifest.v1",
-  "source_hash": "sha256:4dde512a7669b83e5e6c87cebbac69b525ed8864d4fa95b7cd3ece91b4295fe4",
+  "source_hash": "sha256:c8bc469125e76a562d62218e25bbfa60bb4541190c9012b22421bcb3f5d87d96",
   "unknown_owner_fallback": {
     "lane": "repository-baseline",
     "required_gates": [
       "G0",
-      "G1"
+      "G1",
+      "G3",
+      "G6"
     ]
   }
 }

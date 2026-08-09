@@ -43,6 +43,27 @@ function manifestFor(candidate, overrides = {}) {
 }
 
 describe('kernel claim reconciler', () => {
+	test('forwards claim read context and config to the driver', async () => {
+		const received = [];
+		const context = { actor: 'review-agent' };
+		const config = { backend: 'kernel' };
+		const result = await reconcileKernelClaims({
+			driver: {
+				listWorktrees: () => [],
+				releaseExactClaimIfWorktreeMissing: () => false,
+				listActiveClaims: (...args) => {
+					received.push(args);
+					return [];
+				},
+			},
+			context,
+			config,
+		});
+
+		expect(received).toEqual([[context, config]]);
+		expect(result).toEqual({ examined: 0, released: [] });
+	});
+
 	test('uses one propagated runtime token for the process manifest and claim session', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claim-runtime-'));
 		tempDirs.push(root);

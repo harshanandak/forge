@@ -100,6 +100,31 @@ describe('B4: plan --issue links an existing issue instead of forking a new one'
     });
   });
 
+  test('executePlan does not hide arbitrary plan snapshot read failures', async () => {
+    const repo = makeRepoWithResearch('snapshot-failure', 'Snapshot Failure');
+    nodeExecFileSync('git', ['checkout', '-q', '-b', 'feat/snapshot-failure'], { cwd: repo });
+    const existingId = 'kernel-snapshot-failure';
+    const driver = {
+      listWorktrees: () => [],
+      registerWorktree: () => {},
+      loadPlanSnapshot: () => {
+        throw new Error('corrupt issue metadata');
+      },
+    };
+
+    await withRepo(repo, async () => {
+      const result = await executePlan('snapshot failure', {
+        projectRoot: repo,
+        issue: existingId,
+        driver,
+        runIssueOperation: async () => ({ ok: true, data: { id: existingId } }),
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('corrupt issue metadata');
+    });
+  });
+
   test('F5: --issue with no value errors and never creates a duplicate', async () => {
     const repo = makeRepoWithResearch('novalue-demo', 'No Value Demo');
     const ops = [];

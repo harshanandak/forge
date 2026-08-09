@@ -144,7 +144,7 @@ owners:
       - { kind: path, prefix: "validation/" }
       - { kind: schema, prefix: "forge.validation." }
     risk_ids: [validation-selection]
-    canonical_test_ids: ["test/validation/risk-manifest.test.js"]
+    canonical_test_ids: ["test/validation/risk-manifest.test.js", "test/validation/risk-manifest-generator.test.js"]
     dependent_routes: [work-packet, run-receipt]
     platform_runtime_additions: []
     lanes: [validation-selector]
@@ -163,4 +163,4 @@ owners:
 
 unknown_owner_fallback:
   lane: repository-baseline
-  required_gates: [G0, G1]
+  required_gates: [G0, G1, G3, G6]

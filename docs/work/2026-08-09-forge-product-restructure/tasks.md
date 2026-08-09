@@ -100,4 +100,4 @@
 
 ## Development start
 
-The next authorized action is Task 0. Production implementation begins only after its admission evidence passes; the first code branch is PR 1, not PR 4A or the Shepherd specialization.
+Task 0 is complete with passing admission evidence. The next authorized action is PR 1, not PR 4A or the Shepherd specialization.

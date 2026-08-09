@@ -25,7 +25,6 @@ Common acceptance rules for every row below:
 | `765a4cd8` | Merge authority accepts passing required checks plus successful optional `SKIPPED`/`NEUTRAL` observations. Required failure, optional failure, stale head, or unresolved actionable thread blocks; neutral `forge/pr-monitor` never becomes a false blocker. |
 | `7f8c8471` | Packaged Smith/claim-safety references resolve or use a documented supported primitive. Asset scan finds every reference; invocation succeeds or deterministically falls back; claim-safety still proves a live owned lease and rejects foreign/expired leases. |
 | `94f782e0` | Foreign-lease reconcile child exits deterministically on Windows. Repeated affected Windows/Node fixture exits successfully within its bound; a valid lease remains active and untouched; recurrent environmental failure becomes separate evidence/fix, not a weakened assertion. |
-| `9f6ffb42` | Kernel trace exposes issue→worktree→work folder→plan/tasks/decisions→PR→iterations. Ship/merge emits idempotent links; one trace returns the joined envelope with explicit null gaps; duplicate events do not duplicate rows. |
 | `b977b0a2` | Existing `forge gate approve <issue-id> <gate-id>` events remain the only approval surface and gain bounded issue-scoped TTL where required. Valid approval satisfies the gate; expired/rejected/missing/wrong-issue/wrong-gate evidence fails closed; replay is idempotent and audit-visible. `forge control` remains policy classification, and unscoped/project-scoped approval is rejected. |
 | `c29f3952` | Kernel status honestly exposes live sessions, held leases, and last-seen. Active fixture reports actor/issues/activity; closed/expired/unverifiable session is offline; read does not mutate leases. |
 | `eea2f9ce` | Claim-safety refuses work without a current actor-owned unexpired lease. Owned/unexpired passes; foreign/expired/missing/duplicate-collapsed fails before work; proof comes from live Kernel state rather than a local claim token. |
@@ -62,6 +61,7 @@ Common acceptance rules for every row below:
 
 | Issue | Outcome and machine-verifiable acceptance |
 | --- | --- |
+| `9f6ffb42` | Kernel trace exposes issue→worktree→work folder→plan/tasks/decisions→PR→iterations. Ship/merge emits idempotent links; one trace returns the joined envelope with explicit null gaps; duplicate events do not duplicate rows. |
 | `57fb8889` | Shepherd reconciles PRs independently of sessions, survives restart/reboot, and retires cleanly. Replay covers restart/reclaim/orphan/closure and deduplicated events; no model polling or merge authority. Epic closes only after mapped Shepherd children. |
 | `9af1ee0a` | Every reproducible Fable Shepherd audit gap is fixed or represented by an owned regression, including pull/bundle paths. Audit checklist has zero unowned reproducible gaps; exact-head Shepherd/pull/bundle replay passes. |
 | `c2d398e5` | Singleton agent-agnostic monitor reconciles all PRs and emits only new actionable events. Tick/replay proves coverage, deduplication, event order, and stop when no PR remains; no per-agent scheduler/model poll. Epic closes only after mapped monitor/event children. |
@@ -83,11 +83,13 @@ Common acceptance rules for every row below:
 
 ## PR 5 — Facade, harness, and capabilities
 
+`e8e72233` was created after the approved snapshot with acceptance criteria already present and verified at revision 0. It is therefore a pre-admitted exclusion from the 48-issue amendment batch, as recorded by the evidence selection rule.
+
 | Issue | Outcome and machine-verifiable acceptance |
 | --- | --- |
 | `7268bc9b` | Hook adapter evaluates mandatory/optional/permission controls and reports honest per-harness downgrade. Policy matrix covers deny/warn/TTL approval/expiry; observational-only harnesses never claim enforcement; decisions are auditable. |
 | `9658c21a` | MCP registry renders/drift-checks control state and consent at render time only. Fixtures cover control types, toggles, drift, consent expiry, and stable capability/config digests without claiming runtime enforcement. |
-| `e8e72233` | `forge doctor` is the one read-only, bounded, manifest-driven Health surface and is exhaustive across canonical command families. Versioned JSON reports `PASS|WARN|FAIL|INCOMPLETE`, privacy-safe evidence and remediation; scope/check selectors, parity, no-side-effect, timeout, unsupported-provider, redaction, deterministic ordering, and Windows/macOS/Linux fixtures pass. No competing health verb exists. |
+| `e8e72233` | `forge doctor` is the one read-only, bounded, manifest-driven Health surface and is exhaustive across canonical command families. Versioned JSON reports `PASS\|WARN\|FAIL\|INCOMPLETE`, privacy-safe evidence and remediation; scope/check selectors, parity, no-side-effect, timeout, unsupported-provider, redaction, deterministic ordering, and Windows/macOS/Linux fixtures pass. No competing health verb exists. |
 
 ## PR 6 — Migration and extraction readiness
 
@@ -112,6 +114,6 @@ After proposal approval and before any implementation branch or WorkPacket:
 1. Generate a canonical amendment batch for the 48 actionable `AC=no` issues from this document.
 2. For each issue, compare the expected revision from the approved snapshot, write its contract to the Kernel, and read it back.
 3. Refuse partial silent success: conflicts remain unadmitted and are reported; successfully amended issues retain their new revision and receipt.
-4. Recompute the disposition snapshot and prove every one of the 71 work outcomes has acceptance criteria, PR owner, product owner, affected contract/risk, and validation owner. The release tracking root may be admitted only for PR 7 promotion.
+4. Recompute the disposition snapshot and prove every one of the 68 architecture/control outcomes and three release-gate outcomes has acceptance criteria, PR owner, product owner, affected contract/risk, and validation owner. The release tracking root may be admitted only for PR 7 promotion.
 5. Epic admission additionally requires an explicit mapped-child list; epic closure remains impossible while a mapped child lacks accepted completion or approved deferral evidence.
 6. Publish `admission-evidence.v1.json` with before/after revisions, contract hashes, conflicts, and aggregate `PASS|FAIL|INCOMPLETE`. Only aggregate `PASS` authorizes PR 1 implementation.

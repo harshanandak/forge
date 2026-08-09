@@ -435,6 +435,24 @@ describe('forge issue service contract', () => {
 		});
 	});
 
+	test('rejects invalid issue-contract policy before creating a service', async () => {
+		const { runIssueOperation } = require('../lib/forge-issues');
+		let created = 0;
+
+		await expect(runIssueOperation('ready', [], '/repo', {
+			createService: () => {
+				created += 1;
+				return { run: async () => ({ success: true }) };
+			},
+			loadRuntimeGraphConfig: () => ({
+				config: { issues: { readiness: { contracts: { enabled: 'true' } } } },
+				errors: [],
+			}),
+		})).rejects.toThrow('issues.readiness.contracts.enabled must be a boolean');
+
+		expect(created).toBe(0);
+	});
+
 	test('threads only an injected authoritative adoption verifier, never configured strings', async () => {
 		const { runIssueOperation } = require('../lib/forge-issues');
 		const verifier = () => true;

@@ -146,6 +146,26 @@ describe('renderIssueShow', () => {
 		expect(out).toContain('contract_missing (risk)');
 	});
 
+	test('renders expected, actual, and declared contract reason values', () => {
+		const out = renderIssueShow(envelope('issue.show', {
+			...data,
+			readiness_reasons: [
+				{ code: 'contract_invalid', field: 'version', expected: 1, actual: 2 },
+				{
+					code: 'contract_mismatch',
+					field: 'dependencies',
+					expected: ['issue-a'],
+					declared: ['issue-b'],
+				},
+			],
+		}));
+
+		expect(out).toContain('contract_invalid (version, expected 1, actual 2)');
+		expect(out).toContain(
+			'contract_mismatch (dependencies, expected ["issue-a"], declared ["issue-b"])',
+		);
+	});
+
   test('renders the body and acceptance criteria', () => {
     const out = renderIssueShow(envelope('issue.show', data));
     expect(out).toContain('Default output becomes text');

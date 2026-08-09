@@ -16,10 +16,11 @@ The facade routes but owns no product authority. Bare legacy commands are compat
 | `migrate --from beads`; Kernel `export` | Memory / migration/export capability | Native Memory authority; inbound Beads only | `FORGE_MEMORY_UNAVAILABLE` |
 | `sync`, `team`, `inbox` | Memory / team sync/inbox | Server acceptance required for team writes | `FORGE_MEMORY_UNAVAILABLE` |
 | `stage`; `gate` policy/config; `control`; `role` | Memory / workflow graph and gates | Native Memory authority | `FORGE_MEMORY_UNAVAILABLE` |
+| `gate approve <issue-id> <gate-id>` | Memory / issue-bound gate approval | Exact issue and gate scope; bounded TTL where required | `FORGE_MEMORY_UNAVAILABLE`; wrong/missing scope fails closed |
 | `options`, `explain`, `skill for` | Memory / workflow/provider read | Memory read | `FORGE_MEMORY_UNAVAILABLE` |
 | `skill eval` | Flow / evaluator execution | Memory-authorized WorkPacket; Memory ingests receipt | Flow or Memory unavailable diagnostic |
 | `skill scores`, `skill coverage` | Memory / evaluator evidence read | Memory read | `FORGE_MEMORY_UNAVAILABLE` |
-| `doctor` | Facade aggregation of `memory doctor` and optional `flow doctor` | Memory required; Flow state explicit | Memory absence is failure; Flow absence reported, never hidden |
+| `doctor` | Facade aggregation of the current filesystem check, non-fatal Memory check, and optional `flow doctor` | Filesystem check determines the current overall result; Memory and Flow state remain explicit | Memory or Flow absence is reported without changing the filesystem-derived overall result |
 | `status`, `prime`, `orient`, `recap` | Facade read aggregation | Memory read required; optional Flow runtime view | Memory absence is failure; Flow absence is explicit partial state |
 | `plan` | Flow / `flow.plan.v1` | Memory creates/links issue and authorizes packet/run | Flow or Memory unavailable diagnostic |
 | `dev`, `validate` | Flow / execute/validate | Current lease required before shared mutation; Memory records stage/gates | Flow, Memory, or capability unavailable diagnostic |

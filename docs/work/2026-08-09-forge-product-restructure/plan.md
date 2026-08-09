@@ -1,6 +1,6 @@
 # Forge 0.1.0 Product Restructuring
 
-**Status:** Approved development plan; implementation is gated by §9 admission evidence
+**Status:** Approved development plan; §9 admission completed with passing evidence
 **Date:** 2026-08-09
 **Epic:** `d6a74dc8-10f7-4be9-9761-2467c3df4798`
 **Classification:** Critical architecture and migration
@@ -268,7 +268,7 @@ The common envelope is field-level normative:
 | `provenance` | object containing source kind, actor class/id, repository identity when applicable, and exact head when applicable |
 | `content_hash` | 64-character lowercase SHA-256 hex over the canonical object with this field omitted |
 | `payload` | contract-specific object; unknown top-level payload fields are rejected unless registered by that schema version |
-| `extensions` | object keyed by namespaced extension id; each value is `{ impact: advisory|consequential, schema_version, value }` |
+| `extensions` | object keyed by namespaced extension id; each value is `{ impact: advisory\|consequential, schema_version, value }` |
 
 Unknown advisory extensions are preserved byte-for-byte through read/write cycles and may be ignored. Unknown consequential extensions reject the object before execution or transition.
 
@@ -591,7 +591,7 @@ An issue enters the 0.1.0 train only if it is required to:
 
 Every included issue must have acceptance criteria, owner wave, product owner, affected contract, and validation owner. Current labels alone are insufficient.
 
-The snapshot maps 70 candidate work outcomes, but 47 implementation/migration candidates and the stable-release tracking root currently lack explicit Kernel acceptance criteria. They are not admitted merely because they appear in the ledger. The approved contracts in [acceptance-contracts.md](./acceptance-contracts.md) must be revision-checked, written to Kernel authority, read back, and aggregated into a passing `admission-evidence.v1.json` before PR 1 implementation begins. This is a pre-implementation admission checkpoint, not an eighth code PR.
+The train maps 68 architecture/control outcomes plus three release-gate outcomes. The approved snapshot contained 48 actionable implementation/migration issues without acceptance criteria; `e8e72233` was added afterward with acceptance criteria already verified at revision 0 and is explicitly excluded from that amendment population. The 48 issues were revision-checked, written to Kernel authority, read back, and aggregated into passing [`admission-evidence.v1.json`](./admission-evidence.v1.json). The admission checkpoint is complete and authorizes PR 1; it is not an eighth code PR.
 
 ### 9.2 Existing release issues
 
@@ -855,31 +855,29 @@ The train stops before merge or release when any of the following occurs:
 
 ## 16. Requirement traceability and completion definition
 
-| Required planning dimension | Authoritative evidence | Remaining decision |
+| Required planning dimension | Authoritative evidence | Decision state |
 | --- | --- | --- |
-| Product boundaries and architecture | §§4–6; `decision-register.md` R6–R10; `facade-routing.md` | Approve R6–R10 |
-| Migration, cutover, and rollback | §8; PR 6 in §10; G5 and the RC matrix in `validation-matrix.md` | Approve sole-writer and extraction timing |
-| Beta.5 compatibility | §§6.5, 8.3–8.4; facade routing ledger; beta.5 corpus gates | Approve R9–R10 |
-| Release sequencing and provenance | §§6.6, 13; G8; signed BOM/verifier rules | Approve R12–R13 |
-| Issue disposition and admission | §9; `issue-disposition.md`; `acceptance-contracts.md` | Approve R11, then perform revision-checked Kernel admission before code |
-| Implementation waves and merge order | §§10–11; seven milestones/eight PRs; disjoint ownership table | Approve R2/R11 train details |
-| Validation and token efficiency | §§7.1, 12; `validation-matrix.md`; risk manifest and 20/30/35/39 policy | Approve targeted-plus-final-matrix strategy |
+| Product boundaries and architecture | §§4–6; `decision-register.md` R6–R10; `facade-routing.md` | Approved and locked |
+| Migration, cutover, and rollback | §8; PR 6 in §10; G5 and the RC matrix in `validation-matrix.md` | Approved and locked |
+| Beta.5 compatibility | §§6.5, 8.3–8.4; facade routing ledger; beta.5 corpus gates | Approved and locked |
+| Release sequencing and provenance | §§6.6, 13; G8; signed BOM/verifier rules | Approved and locked |
+| Issue disposition and admission | §9; `issue-disposition.md`; `acceptance-contracts.md` | Approved; admission complete with aggregate `PASS` |
+| Implementation waves and merge order | §§10–11; seven milestones/eight PRs; disjoint ownership table | Approved and locked |
+| Validation and token efficiency | §§7.1, 12; `validation-matrix.md`; risk manifest and 20/30/35/39 policy | Approved and locked |
 | Market, standards, harnesses, and security | §§3.4–3.5; advisory Parallel reports; Context7/official-doc evidence; OWASP/TDD mapping | Re-probe capability manifests during PR 5; no assumption becomes a gate |
 
-Every row has normative evidence and an explicit authority. The only unresolved planning state is user disposition of proposed decisions R6–R14; there is no hidden technical prerequisite to that decision.
-
-Planning is complete only when the user approves:
+Every row has normative evidence and an explicit authority. The user approved the decisions below, and the revision-checked admission gate completed with aggregate `PASS`:
 
 - the asymmetric Memory-foundation/optional-Flow ownership;
 - package, repository, and CLI topology;
 - beta.5 compatibility and rollback guarantees;
 - seven-milestone/eight-PR implementation train and merge order;
-- 67-issue architecture/control train, three separate release gates, and disposition rules;
+- 68-issue architecture/control train, three separate release gates, and disposition rules;
 - risk-based validation lanes and budgets;
 - beta.6/beta.7/RC/stable sequence;
 - evaluation boundary and stop conditions.
 
-Implementation is not authorized by approving this draft. After approval, this document is committed and opened as a strategic proposal PR. Implementation planning and task decomposition begin only after that proposal merges.
+Planning and admission are complete. PR 1 is the authorized implementation action; later PRs remain sequenced behind their documented predecessors and stage gates.
 
 ## 17. Approval questions
 

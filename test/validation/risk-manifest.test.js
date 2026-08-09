@@ -53,6 +53,7 @@ describe('risk-owned validation manifest', () => {
     expect(selected.required_gates).toEqual(['G0', 'G1', 'G4']);
     expect(selected.test_ids).toEqual([
       'test/kernel/**/*.test.js',
+      'test/validation/risk-manifest-generator.test.js',
       'test/validation/risk-manifest.test.js',
     ]);
     expect(selected.changed_surfaces.map((surface) => surface.value)).toEqual([
@@ -100,6 +101,10 @@ describe('risk-owned validation manifest', () => {
 
     expect(exactFile.status).toBe('exact');
     expect(exactFile.owner_ids).toEqual(['validation-control']);
+    expect(exactFile.test_ids).toEqual([
+      'test/validation/risk-manifest-generator.test.js',
+      'test/validation/risk-manifest.test.js',
+    ]);
     expect(directoryRoot.status).toBe('exact');
     expect(directoryRoot.owner_ids).toEqual(['kernel-authority']);
   });
@@ -204,6 +209,8 @@ describe('risk-owned validation manifest', () => {
       'validation.command.g0-static',
       'validation.command.g1-manifest-check',
       'validation.command.g1-selector',
+      'validation.command.g3-contract',
+      'validation.command.g6-platform',
       'validation.command.repository-baseline',
     ]);
   });
@@ -236,6 +243,14 @@ describe('risk-owned validation manifest', () => {
     original.manifest_hash = hashManifest(original);
 
     expect(() => loadRiskManifest(original)).toThrow(/unknown command/i);
+  });
+
+  test('rejects a conservative fallback that drops a mandatory gate', () => {
+    const original = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+    original.unknown_owner_fallback.required_gates = ['G0', 'G1', 'G3'];
+    original.manifest_hash = hashManifest(original);
+
+    expect(() => loadRiskManifest(original)).toThrow(/conservative fallback.*G6/i);
   });
 
   test('normalizes and de-duplicates changed surfaces before selection', () => {

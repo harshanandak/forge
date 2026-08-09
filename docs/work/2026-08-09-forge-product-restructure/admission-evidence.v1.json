@@ -5,7 +5,18 @@
   "epic_id": "d6a74dc8-10f7-4be9-9761-2467c3df4798",
   "source_plan_commit": "cf1d6b4a8dd42cd11e83066d74eac6a887400b7e",
   "source_ledger_sha256": "6c51735a75e89cea81d43c622808f260d1c11d59d9ccc2893c7519337caa79ca",
-  "source_acceptance_contracts_sha256": "a289e673790895eefa1a076f5d072700754a9c8dea792b77695a7133d0f2d29e",
+  "source_acceptance_contracts_sha256": "dd6647769f1127f2cae12171bd1df89394e4a73e2f9e32ea6d2bbb06a741f2c6",
+  "selection_rule": {
+    "id": "approved-snapshot-actionable-ac-no.v1",
+    "predicate": "approved snapshot row has action implement or migrate and acceptance criteria absent",
+    "pre_admitted_exclusions": [
+      {
+        "issue_id": "e8e72233-c31f-4a59-a4e4-deca433d00f8",
+        "verified_revision": 0,
+        "reason": "created after the approved snapshot with acceptance criteria already present"
+      }
+    ]
+  },
   "expected_count": 48,
   "observed_count": 48,
   "admitted_count": 48,
@@ -125,7 +136,7 @@
     {
       "issue_id": "9f6ffb42-6ee0-4a9c-a2ac-ca428866f6e9",
       "title": "P0 kernel linkage: issue->worktree->work-folder->files provenance (kernel_worktrees writes)",
-      "delivery": "PR1",
+      "delivery": "PR4B",
       "product_owner": "Memory",
       "validation_owner": "Memory Kernel provenance/authority suite",
       "bucket": "control-plane/debt",
