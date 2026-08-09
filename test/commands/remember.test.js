@@ -133,4 +133,22 @@ describe('forge remember command', () => {
   test('--session-summary is advertised in the command flags', () => {
     expect(remember.flags['--session-summary']).toBeDefined();
   });
+
+  test('repeated identical session summaries are idempotent and carry deterministic metadata', async () => {
+    const projectRoot = makeProjectRoot();
+    const args = ['--session-summary', '--what', 'implemented hook', '--why', 'preserve learnings',
+      '--where', 'lib/hook-renderer.js', '--learned', 'supported hooks only', '--json'];
+    const first = JSON.parse((await remember.handler(args, {}, projectRoot)).output);
+    const second = JSON.parse((await remember.handler(args, {}, projectRoot)).output);
+    const notes = await recalledNotes(projectRoot);
+    expect(notes).toHaveLength(1);
+    expect(first.id).toBeString();
+    expect(second.id).toBe(first.id);
+    expect(second.type).toBe('session-summary');
+    expect(second.metadata).toEqual(first.metadata);
+    expect(second.metadata).toEqual({
+      kind: 'session-summary',
+      content_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+  });
 });
