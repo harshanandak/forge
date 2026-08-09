@@ -419,6 +419,26 @@ describe('deterministic Bun lockfile transition proof', () => {
 		expect(installArguments?.filter(argument => argument.startsWith('--cwd='))).toHaveLength(1);
 	});
 
+	test('canonicalizes an 8.3 TEMP alias before accepting a byte-identical lock', () => {
+		const root = tempRepo();
+		commitBase(root);
+		const proposed = Buffer.from('generated:2.0.0\n');
+		stageProof(root, { name: 'fixture', version: '2.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, proposed);
+		let proofRoot;
+		let nativeProofRoot;
+		const spawn = (_command, args, options) => {
+			if (args[0] === '--version') return { status: 0, stdout: `${RUNTIME_BUN_VERSION}\n`, stderr: '' };
+			proofRoot = options.cwd;
+			nativeProofRoot = fs.realpathSync.native(options.cwd);
+			fs.writeFileSync(path.join(options.cwd, 'bun.lock'), proposed);
+			return { status: 0, stdout: '', stderr: '' };
+		};
+
+		expect(verifyBunLockfileRegeneration(root, { spawnSync: spawn })).toMatchObject({ allowed: true });
+		expect(proofRoot).toBe(nativeProofRoot);
+		expect(Buffer.from('generated:2.0.0\n')).toEqual(proposed);
+	});
+
 	test('the hook cannot hide a real staged bun.lock behind environment seams', () => {
 		const root = tempRepo();
 		fs.writeFileSync(
