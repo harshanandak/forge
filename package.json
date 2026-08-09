@@ -1,6 +1,7 @@
 {
   "name": "forge-workflow",
   "version": "0.1.0-beta.5",
+  "packageManager": "bun@1.3.6",
   "description": "Local runtime control plane for AI-assisted engineering workflows, gates, evidence, and all AI agents",
   "bin": {
     "forge": "bin/forge.js",

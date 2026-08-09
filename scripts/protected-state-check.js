@@ -6,6 +6,7 @@ const {
 	recordProtectedStateAuditEvent,
 } = require('../lib/protected-state-surfaces');
 const { authorizeAndConsumeProtectedStateWrites } = require('../lib/protected-state-authority');
+const { verifyBunLockfileRegeneration } = require('../lib/bun-lockfile-proof');
 
 function parseNameStatus(output) {
 	const files = [];
@@ -24,22 +25,38 @@ function parseNameStatus(output) {
 }
 
 function getStagedFiles() {
+	let stagedFiles;
 	if (process.env.FORGE_PROTECTED_STATE_STAGED_NAME_STATUS !== undefined) {
-		return parseNameStatus(process.env.FORGE_PROTECTED_STATE_STAGED_NAME_STATUS);
-	}
-
-	if (process.env.FORGE_PROTECTED_STATE_STAGED_FILES !== undefined) {
-		return process.env.FORGE_PROTECTED_STATE_STAGED_FILES
+		stagedFiles = parseNameStatus(process.env.FORGE_PROTECTED_STATE_STAGED_NAME_STATUS);
+	} else if (process.env.FORGE_PROTECTED_STATE_STAGED_FILES !== undefined) {
+		stagedFiles = process.env.FORGE_PROTECTED_STATE_STAGED_FILES
 			.split(/\r?\n/)
 			.map(line => line.trim())
 			.filter(Boolean);
+	} else {
+		const output = execFileSync('git', ['diff', '--cached', '--name-status', '--diff-filter=ACMRDT'], {
+			encoding: 'utf8',
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
+		stagedFiles = parseNameStatus(output);
 	}
 
-	const output = execFileSync('git', ['diff', '--cached', '--name-status', '--diff-filter=ACMRDT'], {
-		encoding: 'utf8',
-		stdio: ['ignore', 'pipe', 'pipe'],
-	});
-	return parseNameStatus(output);
+	if (process.env.FORGE_PROTECTED_STATE_STAGED_NAME_STATUS !== undefined || process.env.FORGE_PROTECTED_STATE_STAGED_FILES !== undefined) {
+		try {
+			execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+				encoding: 'utf8',
+				stdio: ['ignore', 'pipe', 'pipe'],
+			});
+		} catch (_error) {
+			return [...new Set(stagedFiles)];
+		}
+		const realOutput = execFileSync('git', ['diff', '--cached', '--name-status', '--diff-filter=ACMRDT'], {
+			encoding: 'utf8',
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
+		if (parseNameStatus(realOutput).includes('bun.lock')) stagedFiles.push('bun.lock');
+	}
+	return [...new Set(stagedFiles)];
 }
 
 function getStagedContent(file) {
@@ -69,6 +86,15 @@ async function main() {
 		.map(file => {
 			const probe = assertProtectedWriteAllowed(file, { actor, operation: 'staged_edit' });
 			if (!probe.requiredSurface) return { probe };
+			if (probe.path === 'bun.lock' && probe.requiredSurface === 'lockfiles') {
+				return {
+					probe,
+					directDecision: {
+						...probe,
+						...verifyBunLockfileRegeneration(process.cwd()),
+					},
+				};
+			}
 
 			const content = getStagedContent(probe.path);
 			if (content === null) return { probe };
@@ -91,6 +117,7 @@ async function main() {
 	let authorizationIndex = 0;
 	const decisions = probes
 		.map(entry => {
+			if (entry.directDecision) return entry.directDecision;
 			if (!entry.request) return entry.probe;
 			const trustedDecision = authorization.decisions[authorizationIndex++];
 			return trustedDecision.allowed
