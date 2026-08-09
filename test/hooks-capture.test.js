@@ -64,6 +64,27 @@ describe('forge hooks capture (context hook — capture on exit)', () => {
     expect(store.writes).toHaveLength(1);
   });
 
+  test('dedupe: equivalent captures ignore issue ordering and volatile fields', async () => {
+    const store = recordingStore();
+    const base = { append: store.append, fetchNotes: store.fetchNotes };
+    await run(['capture', '--harness', 'claude', '--trigger', 'stop'], {
+      ...base,
+      fetchIssues: () => [
+        { id: 'i2', title: 'Fix head-branch bug', updated_at: 'old', revision: 1 },
+        { id: 'i1', title: 'Wire auto-file rail', updated_at: 'old', revision: 1 },
+      ],
+    });
+    await run(['capture', '--harness', 'claude', '--trigger', 'stop'], {
+      ...base,
+      fetchIssues: () => [
+        { revision: 99, updated_at: 'new', title: 'Wire auto-file rail', id: 'i1' },
+        { revision: 99, updated_at: 'new', title: 'Fix head-branch bug', id: 'i2' },
+      ],
+    });
+
+    expect(store.writes).toHaveLength(1);
+  });
+
   test('a changed in-progress set DOES write a fresh capture (not deduped)', async () => {
     const store = recordingStore();
     const base = { append: store.append, fetchNotes: store.fetchNotes };
