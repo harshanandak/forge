@@ -14,6 +14,21 @@ const {
 
 const HOOK_PATH = path.resolve(__dirname, '../scripts/protected-state-check.js');
 const tempDirs = [];
+const RUNTIME_BUN_VERSION = readRuntimeBunVersion();
+const RUNTIME_PACKAGE_MANAGER = `bun@${RUNTIME_BUN_VERSION}`;
+const MISMATCH_BUN_VERSION = incrementPatchVersion(RUNTIME_BUN_VERSION);
+
+function readRuntimeBunVersion() {
+	const result = spawnSync('bun', ['--version'], { encoding: 'utf8', timeout: 5_000 });
+	if (result.status !== 0) throw new Error('Focused lock proof tests require Bun');
+	parseBunVersion(result.stdout);
+	return result.stdout.trim();
+}
+
+function incrementPatchVersion(version) {
+	const parsed = parseBunVersion(version);
+	return `${parsed.major}.${parsed.minor}.${parsed.patch + 1}`;
+}
 
 function tempRepo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bun-lock-proof-'));
@@ -31,7 +46,7 @@ function run(command, args, cwd) {
 }
 
 function commitBase(root, packageJson = { name: 'fixture', version: '1.0.0' }) {
-	packageJson.packageManager ||= 'bun@1.3.6';
+	packageJson.packageManager ||= RUNTIME_PACKAGE_MANAGER;
   fs.writeFileSync(path.join(root, 'package.json'), `${JSON.stringify(packageJson, null, 2)}\n`);
   fs.writeFileSync(path.join(root, 'bun.lock'), 'base-lock\n');
   run('git', ['add', 'package.json', 'bun.lock'], root);
@@ -47,7 +62,7 @@ function stageProof(root, packageJson, lockContent) {
 function fakeBun(lockFactory, overrides = {}) {
   return (_command, args, options) => {
     if (args[0] === '--version') {
-      return overrides.versionResult || { status: 0, stdout: '1.3.6\n', stderr: '' };
+      return overrides.versionResult || { status: 0, stdout: `${RUNTIME_BUN_VERSION}\n`, stderr: '' };
     }
 		if (overrides.installResult) return overrides.installResult;
 		const projectRoot = bunProjectRoot(args, options);
@@ -71,7 +86,7 @@ describe('deterministic Bun lockfile transition proof', () => {
 		fs.writeFileSync(path.join(root, 'bunfig.toml'), '[install]\nregistry = "https://invalid.example"\n');
 		run('git', ['add', 'bunfig.toml'], root);
 		const proposed = Buffer.from('generated:2.0.0\n');
-		stageProof(root, { name: 'fixture', version: '2.0.0', packageManager: 'bun@1.3.6' }, proposed);
+		stageProof(root, { name: 'fixture', version: '2.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, proposed);
 		const result = verifyBunLockfileRegeneration(root, {
 			spawnSync: fakeBun((manifest, options) => {
 				expect(fs.existsSync(path.join(options.projectRoot, 'bunfig.toml'))).toBe(false);
@@ -87,17 +102,20 @@ describe('deterministic Bun lockfile transition proof', () => {
 		commitBase(root);
 		const spawn = fakeBun(manifest => `generated:${manifest.version}\n`);
 
-		stageProof(root, { name: 'fixture', version: '2.0.0', packageManager: 'bun@1.3.6' }, 'tampered\n');
+		stageProof(root, { name: 'fixture', version: '2.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, 'tampered\n');
 		expect(verifyBunLockfileRegeneration(root, { spawnSync: spawn }).allowed).toBe(false);
 
-		fs.writeFileSync(path.join(root, 'package.json'), '{"name":"fixture","version":"dirty","packageManager":"bun@1.3.6"}\n');
+		fs.writeFileSync(
+			path.join(root, 'package.json'),
+			`${JSON.stringify({ name: 'fixture', version: 'dirty', packageManager: RUNTIME_PACKAGE_MANAGER })}\n`,
+		);
 		expect(verifyBunLockfileRegeneration(root, { spawnSync: spawn }).allowed).toBe(false);
 	});
 
 	test('never seeds regeneration from an arbitrary proposed lock', () => {
 		const root = tempRepo();
 		commitBase(root);
-		stageProof(root, { name: 'fixture', version: '2.0.0', packageManager: 'bun@1.3.6' }, 'attacker-controlled\n');
+		stageProof(root, { name: 'fixture', version: '2.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, 'attacker-controlled\n');
 		let seed;
 		const result = verifyBunLockfileRegeneration(root, {
 			spawnSync: fakeBun((_manifest, options) => {
@@ -109,20 +127,32 @@ describe('deterministic Bun lockfile transition proof', () => {
 		expect(result).toMatchObject({ allowed: false, reason: 'Regenerated bun.lock does not match the staged content' });
 	});
 
-  test('fails closed for missing, wrong, failed, or timed-out Bun processes', () => {
+	test('fails closed for missing, failed, or timed-out Bun processes', () => {
 		const root = tempRepo();
 		commitBase(root);
-		stageProof(root, { name: 'fixture', version: '1.0.0', packageManager: 'bun@1.3.6' }, 'generated:1.0.0\n');
+		stageProof(root, { name: 'fixture', version: '1.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, 'generated:1.0.0\n');
 		const missing = () => ({ status: null, error: Object.assign(new Error('missing'), { code: 'ENOENT' }) });
-		const wrong = fakeBun(() => 'generated:1.0.0\n', { versionResult: { status: 0, stdout: '1.2.0\n' } });
 		const failed = fakeBun(() => 'generated:1.0.0\n', { installResult: { status: 1, stderr: 'resolution failed' } });
 		const timedOut = fakeBun(() => 'generated:1.0.0\n', {
 			installResult: { status: null, signal: 'SIGTERM', error: Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }) },
 		});
 
-		for (const candidate of [missing, wrong, failed, timedOut]) {
+		for (const candidate of [missing, failed, timedOut]) {
 			expect(verifyBunLockfileRegeneration(root, { spawnSync: candidate }).allowed).toBe(false);
 		}
+	});
+
+	test('fails closed when the exact packageManager pin differs from the Bun runtime', () => {
+		const root = tempRepo();
+		commitBase(root);
+		stageProof(root, { name: 'fixture', version: '1.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, 'generated:1.0.0\n');
+		const wrongRuntime = fakeBun(() => 'generated:1.0.0\n', {
+			versionResult: { status: 0, stdout: `${MISMATCH_BUN_VERSION}\n`, stderr: '' },
+		});
+		expect(verifyBunLockfileRegeneration(root, { spawnSync: wrongRuntime })).toMatchObject({
+			allowed: false,
+			reason: 'Installed Bun does not match root packageManager',
+		});
 	});
 
 	test('rejects ambiguous pins, workspace escapes, symlinks, and index races', () => {
@@ -131,13 +161,13 @@ describe('deterministic Bun lockfile transition proof', () => {
 		const generated = 'generated:1.0.0\n';
 		const spawn = fakeBun(() => generated);
 
-		stageProof(root, { name: 'fixture', version: '1.0.0', packageManager: 'bun@^1.3.6' }, generated);
+		stageProof(root, { name: 'fixture', version: '1.0.0', packageManager: `bun@^${RUNTIME_BUN_VERSION}` }, generated);
 		expect(verifyBunLockfileRegeneration(root, { spawnSync: spawn }).allowed).toBe(false);
 
-		stageProof(root, { name: 'fixture', version: '1.0.0', packageManager: 'bun@1.3.6', workspaces: ['../outside'] }, generated);
+		stageProof(root, { name: 'fixture', version: '1.0.0', packageManager: RUNTIME_PACKAGE_MANAGER, workspaces: ['../outside'] }, generated);
 		expect(verifyBunLockfileRegeneration(root, { spawnSync: spawn }).allowed).toBe(false);
 
-		stageProof(root, { name: 'fixture', version: '1.0.0', packageManager: 'bun@1.3.6' }, generated);
+		stageProof(root, { name: 'fixture', version: '1.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, generated);
 		const hash = run('git', ['hash-object', 'package.json'], root).stdout.trim();
 		run('git', ['update-index', '--add', '--cacheinfo', `120000,${hash},packages/link/package.json`], root);
 		expect(verifyBunLockfileRegeneration(root, { spawnSync: spawn }).allowed).toBe(false);
@@ -151,7 +181,7 @@ describe('deterministic Bun lockfile transition proof', () => {
 
 		let installCalls = 0;
 		const racingSpawn = (command, args, options) => {
-			if (args[0] === '--version') return { status: 0, stdout: '1.3.6\n', stderr: '' };
+			if (args[0] === '--version') return { status: 0, stdout: `${RUNTIME_BUN_VERSION}\n`, stderr: '' };
 			installCalls += 1;
 			const projectRoot = bunProjectRoot(args, options);
 			fs.writeFileSync(path.join(projectRoot, 'bun.lock'), generated);
@@ -163,8 +193,9 @@ describe('deterministic Bun lockfile transition proof', () => {
 		expect(installCalls).toBe(1);
 	});
 
-  test('rejects path escapes and unsupported Bun versions', () => {
+	test('rejects path escapes and unsupported Bun versions', () => {
 		const root = tempRepo();
+		expect(require('../package.json').packageManager).toBe('bun@1.3.12');
 		expect(() => resolveContainedPath(root, '../package.json')).toThrow(/escape/i);
 		expect(() => resolveContainedPath(root, 'C:\\outside\\package.json')).toThrow(/escape/i);
 		expect(() => resolveContainedPath(root, 'C:/outside/package.json')).toThrow(/escape/i);
@@ -180,13 +211,13 @@ describe('deterministic Bun lockfile transition proof', () => {
 		const generated = 'generated:1.0.0\n';
 		const spawn = fakeBun(() => generated);
 		for (const workspace of ['C:\\outside\\*', 'C:/outside/*', '\\\\server\\share\\*', '{packages,../outside}/*']) {
-			stageProof(root, { name: 'fixture', version: '1.0.0', packageManager: 'bun@1.3.6', workspaces: [workspace] }, generated);
+			stageProof(root, { name: 'fixture', version: '1.0.0', packageManager: RUNTIME_PACKAGE_MANAGER, workspaces: [workspace] }, generated);
 			expect(verifyBunLockfileRegeneration(root, { spawnSync: spawn }).allowed).toBe(false);
 		}
 		stageProof(root, {
 			name: 'fixture',
 			version: '1.0.0',
-			packageManager: 'bun@1.3.6',
+			packageManager: RUNTIME_PACKAGE_MANAGER,
 			dependencies: { escaped: 'file:C:\\outside\\package' },
 		}, generated);
 		expect(verifyBunLockfileRegeneration(root, { spawnSync: spawn }).allowed).toBe(false);
@@ -196,9 +227,9 @@ describe('deterministic Bun lockfile transition proof', () => {
 		const root = tempRepo();
 		commitBase(root);
 		const generated = 'generated:2.0.0\n';
-		stageProof(root, { name: 'fixture', version: '2.0.0', packageManager: 'bun@1.3.6' }, generated);
+		stageProof(root, { name: 'fixture', version: '2.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, generated);
 		const racingSpawn = (command, args, options) => {
-			if (args[0] === '--version') return { status: 0, stdout: '1.3.6\n', stderr: '' };
+			if (args[0] === '--version') return { status: 0, stdout: `${RUNTIME_BUN_VERSION}\n`, stderr: '' };
 			const projectRoot = bunProjectRoot(args, options);
 			fs.writeFileSync(path.join(projectRoot, 'bun.lock'), generated);
 			run('git', ['commit', '--quiet', '-m', 'racing head'], root);
@@ -214,14 +245,26 @@ describe('deterministic Bun lockfile transition proof', () => {
 		const root = tempRepo();
 		fs.writeFileSync(
 			path.join(root, 'package.json'),
-			'{"name":"fixture","version":"1.0.0","private":true,"packageManager":"bun@1.3.6","dependencies":{"is-number":"6.0.0"}}\n',
+			`${JSON.stringify({
+				name: 'fixture',
+				version: '1.0.0',
+				private: true,
+				packageManager: RUNTIME_PACKAGE_MANAGER,
+				dependencies: { 'is-number': '6.0.0' },
+			})}\n`,
 		);
 		run('bun', ['install', '--lockfile-only', '--ignore-scripts'], root);
 		run('git', ['add', 'package.json', 'bun.lock'], root);
 		run('git', ['commit', '--quiet', '-m', 'base lock'], root);
 		fs.writeFileSync(
 			path.join(root, 'package.json'),
-			'{"name":"fixture","version":"1.0.0","private":true,"packageManager":"bun@1.3.6","dependencies":{"is-number":"7.0.0"}}\n',
+			`${JSON.stringify({
+				name: 'fixture',
+				version: '1.0.0',
+				private: true,
+				packageManager: RUNTIME_PACKAGE_MANAGER,
+				dependencies: { 'is-number': '7.0.0' },
+			})}\n`,
 		);
 		run('bun', ['install', '--lockfile-only', '--ignore-scripts'], root);
 		run('git', ['add', 'package.json', 'bun.lock'], root);
@@ -257,7 +300,13 @@ describe('deterministic Bun lockfile transition proof', () => {
 		const root = tempRepo();
 		fs.writeFileSync(
 			path.join(root, 'package.json'),
-			'{"name":"fixture","version":"1.0.0","private":true,"packageManager":"bun@1.3.6","dependencies":{"is-number":"7.0.0"}}\n',
+			`${JSON.stringify({
+				name: 'fixture',
+				version: '1.0.0',
+				private: true,
+				packageManager: RUNTIME_PACKAGE_MANAGER,
+				dependencies: { 'is-number': '7.0.0' },
+			})}\n`,
 		);
 		run('bun', ['install', '--lockfile-only', '--ignore-scripts'], root);
 		run('git', ['add', 'package.json', 'bun.lock'], root);
