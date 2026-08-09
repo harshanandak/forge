@@ -110,13 +110,21 @@ describe('forge memory command surface (25362344)', () => {
       { note: 'use bun for installs', timestamp: '2026-08-02' },
       { note: 'Do not use Bun for installs', timestamp: '2026-08-03' },
     ];
+    const calls = [];
     const result = await memory.handler(['review', '--json'], {}, projectRoot, {
-      listMemories: () => entries,
+      recentMemories: (_root, limit) => {
+        calls.push(limit);
+        return entries;
+      },
+      countMemories: () => 1_000,
     });
 
     expect(result.success).toBe(true);
     const parsed = JSON.parse(result.output);
     expect(parsed.scanned).toBe(3);
+    expect(parsed.total).toBe(1_000);
+    expect(parsed.truncated).toBe(true);
+    expect(calls).toEqual([200]);
     expect(parsed.findings.map(finding => finding.kind).sort()).toEqual(['contradiction', 'duplicate']);
     expect(parsed.findings.every(finding => /^memory-(duplicate|contradiction)-[a-f0-9]{16}$/.test(finding.review_id))).toBe(true);
   });

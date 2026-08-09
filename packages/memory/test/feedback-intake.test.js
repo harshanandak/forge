@@ -36,6 +36,16 @@ function report(overrides = {}, id = IDS[0]) {
   });
 }
 
+function consentFor(value) {
+  return {
+    approved: true,
+    eventId: value.payload.consent_event_id,
+    redactionPolicyRevision: value.payload.redaction_policy_revision,
+    reportId: value.payload.report_id,
+    contentHash: value.content_hash,
+  };
+}
+
 function atomicFeedbackStore() {
   const accepted = new Map();
   const calls = [];
@@ -75,6 +85,21 @@ describe('structured feedback intake', () => {
     expect(JSON.stringify(value)).not.toContain('userId');
   });
 
+  test('redacts privacy-sensitive content from every caller-controlled string field', () => {
+    const value = report({
+      stableErrorCode: 'token=ghp_123456789012345678901234567890',
+      affectedCapability: 'C:\\Users\\alice\\private-capability',
+      expectedClassification: 'secret=abcdefghijk',
+      returnChannel: { 'C:\\Users\\alice\\private-channel': 'safe' },
+    });
+    const serialized = JSON.stringify(value);
+
+    expect(validateContractStructure(value)).toEqual({ ok: true, errors: [] });
+    expect(serialized).not.toContain('ghp_');
+    expect(serialized).not.toContain('alice');
+    expect(serialized).not.toContain('abcdefghijk');
+  });
+
   test('preview is side-effect free and submission requires exact per-report consent', async () => {
     const store = atomicFeedbackStore();
     let deliveries = 0;
@@ -93,6 +118,8 @@ describe('structured feedback intake', () => {
       approved: true,
       eventId: 'wrong-consent',
       redactionPolicyRevision: 'redaction-1',
+      reportId: value.payload.report_id,
+      contentHash: value.content_hash,
     })).rejects.toMatchObject({ code: 'FEEDBACK_CONSENT_MISMATCH' });
     expect(store.calls).toHaveLength(0);
   });
@@ -105,21 +132,23 @@ describe('structured feedback intake', () => {
       deliverFeedback: async value => delivered.push(value.content_hash),
     });
     const value = report();
-    const consent = {
-      approved: true,
-      eventId: 'consent-101',
-      redactionPolicyRevision: 'redaction-1',
-    };
+    const consent = consentFor(value);
 
     expect(await intake.submit(value, consent)).toMatchObject({ status: 'accepted', accepted: true, delivered: true });
     expect(await intake.submit(value, consent)).toMatchObject({ status: 'retry-identical', accepted: false, delivered: false });
     expect(delivered).toHaveLength(1);
 
+    const otherReport = report({}, IDS[1]);
+    await expect(intake.submit(otherReport, consent)).rejects.toMatchObject({
+      code: 'FEEDBACK_CONSENT_MISMATCH',
+    });
+
     const conflict = structuredClone(value);
     conflict.payload.occurrence_count = 3;
     conflict.content_hash = computeContentHash(conflict);
-    await expect(intake.submit(conflict, consent)).rejects.toBeInstanceOf(FeedbackIntakeError);
-    await expect(intake.submit(conflict, consent)).rejects.toMatchObject({ code: 'FEEDBACK_IDENTITY_CONFLICT' });
+    const conflictConsent = consentFor(conflict);
+    await expect(intake.submit(conflict, conflictConsent)).rejects.toBeInstanceOf(FeedbackIntakeError);
+    await expect(intake.submit(conflict, conflictConsent)).rejects.toMatchObject({ code: 'FEEDBACK_IDENTITY_CONFLICT' });
     expect(delivered).toHaveLength(1);
   });
 
@@ -130,11 +159,8 @@ describe('structured feedback intake', () => {
       deliverFeedback: async () => { throw new Error('offline'); },
     });
 
-    expect(await intake.submit(report(), {
-      approved: true,
-      eventId: 'consent-101',
-      redactionPolicyRevision: 'redaction-1',
-    })).toMatchObject({
+    const value = report();
+    expect(await intake.submit(value, consentFor(value))).toMatchObject({
       status: 'accepted-local',
       accepted: true,
       delivered: false,

@@ -39,7 +39,15 @@ function redactValue(value) {
   if (typeof value === 'string') return redactString(value);
   if (Array.isArray(value)) return value.map(redactValue);
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, redactValue(child)]));
+  const output = {};
+  for (const [key, child] of Object.entries(value)) {
+    const safeKey = redactString(key);
+    if (Object.hasOwn(output, safeKey)) {
+      throw new TypeError('redaction produced duplicate returnChannel keys');
+    }
+    output[safeKey] = redactValue(child);
+  }
+  return output;
 }
 
 function sha256(value) {
@@ -65,13 +73,13 @@ function createFeedbackReport(input = {}, options = {}) {
   }
   const redactedSteps = reproductionSteps.map((step, index) =>
     redactString(requiredString(step, `reproductionSteps[${index}]`)));
-  const stableErrorCode = requiredString(input.stableErrorCode, 'stableErrorCode');
-  const affectedCapability = requiredString(input.affectedCapability, 'affectedCapability');
-  const expectedClassification = requiredString(input.expectedClassification, 'expectedClassification');
-  const actualClassification = requiredString(input.actualClassification, 'actualClassification');
-  const productVersion = requiredString(input.productVersion, 'productVersion');
-  const redactionPolicyRevision = requiredString(input.redactionPolicyRevision, 'redactionPolicyRevision');
-  const consentEventId = requiredString(input.consentEventId, 'consentEventId');
+  const stableErrorCode = redactString(requiredString(input.stableErrorCode, 'stableErrorCode'));
+  const affectedCapability = redactString(requiredString(input.affectedCapability, 'affectedCapability'));
+  const expectedClassification = redactString(requiredString(input.expectedClassification, 'expectedClassification'));
+  const actualClassification = redactString(requiredString(input.actualClassification, 'actualClassification'));
+  const productVersion = redactString(requiredString(input.productVersion, 'productVersion'));
+  const redactionPolicyRevision = redactString(requiredString(input.redactionPolicyRevision, 'redactionPolicyRevision'));
+  const consentEventId = redactString(requiredString(input.consentEventId, 'consentEventId'));
   const occurrenceCount = input.occurrenceCount ?? 1;
   if (!Number.isInteger(occurrenceCount) || occurrenceCount < 1) {
     throw new TypeError('occurrenceCount must be a positive integer');
@@ -128,7 +136,9 @@ function createFeedbackReport(input = {}, options = {}) {
 function assertConsent(report, consent) {
   if (!consent || consent.approved !== true) return false;
   if (consent.eventId !== report.payload.consent_event_id
-      || consent.redactionPolicyRevision !== report.payload.redaction_policy_revision) {
+      || consent.redactionPolicyRevision !== report.payload.redaction_policy_revision
+      || consent.reportId !== report.payload.report_id
+      || consent.contentHash !== report.content_hash) {
     throw new FeedbackIntakeError(
       'FEEDBACK_CONSENT_MISMATCH',
       'Feedback consent must match this report and redaction-policy revision',

@@ -35,6 +35,13 @@ function createMemoryAuthorityProvider({ broker } = {}) {
   for (const method of MEMORY_AUTHORITY_METHODS) {
     provider[method] = (...args) => broker[method](...args);
   }
+  provider.initialize = async (...args) => {
+    const result = await broker.initialize(...args);
+    if (!result || typeof result !== 'object' || Array.isArray(result)) {
+      throw new TypeError('Kernel broker initialize() must return an object');
+    }
+    return { success: result.success === true };
+  };
   return Object.freeze(provider);
 }
 
