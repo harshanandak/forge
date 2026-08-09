@@ -59,6 +59,45 @@ describe('forge issue service contract', () => {
 		}
 	});
 
+	test('contract policy rejects inherited activation and accessors without executing them', () => {
+		const { resolveIssueContractPolicy } = require('../lib/forge-issues');
+		const inherited = Object.create({ enabled: true, workClasses: ['task'] });
+		let getterExecuted = false;
+		const accessor = { workClasses: ['task'] };
+		Object.defineProperty(accessor, 'enabled', {
+			enumerable: true,
+			get: () => {
+				getterExecuted = true;
+				return true;
+			},
+		});
+
+		for (const contracts of [inherited, accessor]) {
+			expect(() => resolveIssueContractPolicy('/repo', {
+				loadRuntimeGraphConfig: () => ({
+					config: { issues: { readiness: { contracts } } },
+					errors: [],
+				}),
+			})).toThrow(/FORGE_ISSUE_CONTRACT_CONFIG_INVALID/);
+		}
+		expect(getterExecuted).toBe(false);
+	});
+
+	test('disabled contract policy still rejects trusted and unknown keys', () => {
+		const { resolveIssueContractPolicy } = require('../lib/forge-issues');
+		for (const contracts of [
+			{ enabled: false, trustedAdopters: ['maintainer@example.test'] },
+			{ enabled: false, unexpected: true },
+		]) {
+			expect(() => resolveIssueContractPolicy('/repo', {
+				loadRuntimeGraphConfig: () => ({
+					config: { issues: { readiness: { contracts } } },
+					errors: [],
+				}),
+			})).toThrow(/FORGE_ISSUE_CONTRACT_CONFIG_INVALID/);
+		}
+	});
+
   test('exports service factory and operation runner', () => {
     const forgeIssues = require('../lib/forge-issues');
 
