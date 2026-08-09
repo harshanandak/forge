@@ -1,0 +1,13 @@
+{
+  "name": "forge-workflow",
+  "version": "0.1.0-beta.5",
+  "release_commit": "ebeb4e5b31fc2dacdf23c5936c02fb2656990f49",
+  "binaries": {
+    "forge": "bin/forge.js",
+    "forge-workflow": "bin/forge.js",
+    "forge-preflight": "bin/forge-preflight.js"
+  },
+  "engines": {
+    "node": ">=22.16.0"
+  }
+}

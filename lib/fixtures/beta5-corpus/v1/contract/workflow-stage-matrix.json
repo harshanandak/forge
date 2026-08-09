@@ -1,0 +1,8 @@
+{
+  "critical": ["plan", "dev", "validate", "ship", "review", "verify"],
+  "standard": ["plan", "dev", "validate", "ship", "review"],
+  "refactor": ["plan", "dev", "validate", "ship"],
+  "simple": ["dev", "validate", "ship"],
+  "hotfix": ["dev", "validate", "ship"],
+  "docs": ["verify", "ship"]
+}
