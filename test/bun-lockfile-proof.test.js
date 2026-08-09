@@ -401,6 +401,24 @@ describe('deterministic Bun lockfile transition proof', () => {
 		expect(`${result.stdout}${result.stderr}`).not.toMatch(/(?:^|\n)(?:error:|ERROR:)|\b(?:failed|failure)\b/i);
 	}, 30_000);
 
+	test('passes the isolated proof root explicitly to Bun install', () => {
+		const root = tempRepo();
+		commitBase(root);
+		const proposed = 'generated:2.0.0\n';
+		stageProof(root, { name: 'fixture', version: '2.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, proposed);
+		let installArguments;
+		const spawn = (_command, args, options) => {
+			if (args[0] === '--version') return { status: 0, stdout: `${RUNTIME_BUN_VERSION}\n`, stderr: '' };
+			installArguments = args;
+			expect(args).toContain(`--cwd=${options.cwd}`);
+			fs.writeFileSync(path.join(options.cwd, 'bun.lock'), proposed);
+			return { status: 0, stdout: '', stderr: '' };
+		};
+
+		expect(verifyBunLockfileRegeneration(root, { spawnSync: spawn })).toMatchObject({ allowed: true });
+		expect(installArguments?.filter(argument => argument.startsWith('--cwd='))).toHaveLength(1);
+	});
+
 	test('the hook cannot hide a real staged bun.lock behind environment seams', () => {
 		const root = tempRepo();
 		fs.writeFileSync(
