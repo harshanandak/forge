@@ -1,0 +1,25 @@
+{
+  "schema_version": "forge.beta5-corpus.v1",
+  "corpus_version": 1,
+  "release_version": "0.1.0-beta.5",
+  "release_commit": "ebeb4e5b31fc2dacdf23c5936c02fb2656990f49",
+  "source_blobs": {
+    "package.json": "6f3f112341cd50e0e76fad615beb007b9e6dff2c",
+    "lib/commands/_manifest.js": "62595c38b66b139244ca1f54cb034f67d849247d",
+    "lib/commands/_aliases.js": "2b16d61d1cdb9ef3e594b5a5093206d05844b460",
+    "lib/workflow/stages.js": "0b7ae32bddcbb9bd6dd52a07ca22e43364621918"
+  },
+  "hash_algorithm": "sha256",
+  "content_hash": "abfa1a73c9590069267fe03785883b21e34665168b55d628395a456be4a88082",
+  "files": [
+    { "path": "README.md", "sha256": "3cfcc78856e397f2cfd3fee9fa2fffb630e27ea3e76ee8d8b5d9a77cb366a709" },
+    { "path": "contract/command-contract.json", "sha256": "8b4f885091fa8afe72b7b5a5a8039869c871f4fb1dc3344728b2c4322f491a84" },
+    { "path": "contract/package-contract.json", "sha256": "a65280ede51d62c1913140c83b40e6c3312c991c7a173e7a9ad52d3d5ea0fd47" },
+    { "path": "contract/workflow-stage-matrix.json", "sha256": "2aadafdb5f5c1817c8289dd6134d034e3ccc6579438935520bd3c6b90401e5bf" },
+    { "path": "state/comments.jsonl", "sha256": "ae4f694f207a11a22b6798943cc6d07487d1dc2be83a78ceadad947a3ff40113" },
+    { "path": "state/config.yaml", "sha256": "0b877d9180cf14951657254b50cd771e131970e92582a7c0337f36418a35e1c0" },
+    { "path": "state/dependencies.jsonl", "sha256": "52320d34a6dd702396ea292f3f10fce7f9e31f545f473e12c18b1aae1ac0aee8" },
+    { "path": "state/issues.jsonl", "sha256": "579f2455b2c4c23c93a584990153356ba7cc633af8b74c6284edf622217e064d" },
+    { "path": "state/kernel.sql", "sha256": "f053d579b777355c4d6f6042174435dde291dc41bce2150050c05c8d43834145" }
+  ]
+}

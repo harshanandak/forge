@@ -1,0 +1,26 @@
+{
+  "commands": ["adapter", "add", "audit", "blocked", "claim", "claims", "clean", "close", "comment", "control", "create", "dev", "doc-gate", "doctor", "explain", "export", "gate", "hooks", "inbox", "init", "insights", "issue", "issues", "lint", "list", "memory", "merge", "migrate", "new", "options", "orient", "orphans", "patch", "plan", "pr", "preflight", "prime", "push", "ready", "recall", "recap", "recommend", "release", "remember", "role", "serve", "setup", "shepherd", "ship", "show", "skill", "stage", "stale", "status", "sync", "team", "test", "update", "upgrade", "validate", "worktree"],
+  "aliases": {
+    "blocked": { "canonical": "issue blocked", "visible": false },
+    "claim": { "canonical": "issue claim", "visible": false },
+    "claims": { "canonical": "issue claims", "visible": false },
+    "close": { "canonical": "issue close", "visible": false },
+    "create": { "canonical": "issue create", "visible": false },
+    "doc-gate": { "canonical": "gate doc", "visible": false },
+    "insights": { "canonical": "memory insights", "visible": true },
+    "issues": { "canonical": "issue list", "visible": false },
+    "lint": { "canonical": "issue lint", "visible": false },
+    "list": { "canonical": "issue list", "visible": false },
+    "merge": { "canonical": "pr merge", "visible": false },
+    "orphans": { "canonical": "issue orphans", "visible": false },
+    "preflight": { "canonical": "pr preflight", "visible": true },
+    "ready": { "canonical": "issue ready", "visible": false },
+    "recall": { "canonical": "memory recall", "visible": true },
+    "remember": { "canonical": "memory add", "visible": true },
+    "shepherd": { "canonical": "pr shepherd", "visible": false },
+    "ship": { "canonical": "pr ship", "visible": true },
+    "show": { "canonical": "issue show", "visible": false },
+    "stale": { "canonical": "issue stale", "visible": false },
+    "update": { "canonical": "issue update", "visible": false }
+  }
+}

@@ -1,0 +1,6 @@
+workflow:
+  profile: default
+gates:
+  gate.issue_verify: true
+rails:
+  rail.kernel_tracking: true
