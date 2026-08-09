@@ -151,4 +151,22 @@ describe('forge remember command', () => {
       content_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
   });
+
+  test('session-summary idempotency is not limited to the newest 100 memories', async () => {
+    const projectRoot = makeProjectRoot();
+    const args = ['--session-summary', '--what', 'implemented hook', '--json'];
+    const first = JSON.parse((await remember.handler(args, {}, projectRoot)).output);
+    for (let index = 0; index < 101; index += 1) {
+      projectMemory.write(projectRoot, {
+        key: `newer-${index}`,
+        value: `newer note ${index}`,
+        sourceAgent: 'forge remember',
+        tags: [],
+        timestamp: `2099-08-09T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+      });
+    }
+
+    const repeated = JSON.parse((await remember.handler(args, {}, projectRoot)).output);
+    expect(repeated.id).toBe(first.id);
+  });
 });
