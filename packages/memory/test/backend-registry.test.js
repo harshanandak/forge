@@ -43,8 +43,106 @@ describe('@forge/memory backend registry', () => {
     expect(result.value).toEqual({ id: 'local', value: 'durable' });
     expect(result.receipt.status).toBe('degraded');
     expect(result.receipt.errors).toEqual([{
-      backend: 'graphiti', code: 'MEMORY_BACKEND_FAILED', message: 'sidecar down',
+      backend: 'graphiti', code: 'MEMORY_BACKEND_FAILED',
     }]);
+  });
+
+  test('fails closed on async adapters without leaking an unhandled rejection', async () => {
+    const unhandled = [];
+    const onUnhandled = error => unhandled.push(error);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const registry = createMemoryBackendRegistry({ local: backend() });
+      registry.register('async-sidecar', backend({
+        recall: async () => { throw new Error('remote secret'); },
+      }));
+      registry.select('async-sidecar');
+
+      const result = registry.recall();
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      expect(result.value).toEqual([{ id: 'local-1', value: 'local' }]);
+      expect(result.receipt.status).toBe('degraded');
+      expect(result.receipt.errors).toEqual([{
+        backend: 'async-sidecar', code: 'MEMORY_BACKEND_ASYNC_UNSUPPORTED',
+      }]);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  test('fails closed when the mandatory local floor returns a promise', async () => {
+    const unhandled = [];
+    const onUnhandled = error => unhandled.push(error);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const registry = createMemoryBackendRegistry({
+        local: backend({ add: async () => { throw new Error('local async failure'); } }),
+      });
+      expect(() => registry.add('note')).toThrow(/synchronous/i);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  test('isolates and freezes enricher input so it cannot mutate the local floor', () => {
+    const input = { note: 'original', nested: { tags: ['safe'] } };
+    const registry = createMemoryBackendRegistry({
+      local: backend({ add: value => value }),
+    });
+    let enricherInput;
+    registry.register('mutator', backend({
+      add: value => {
+        enricherInput = value;
+        expect(() => { value.note = 'mutated'; }).toThrow();
+        expect(() => { value.nested.tags.push('mutated'); }).toThrow();
+        return null;
+      },
+    }));
+    registry.select('mutator');
+
+    const result = registry.add(input);
+    expect(result.value).toEqual({ note: 'original', nested: { tags: ['safe'] } });
+    expect(result.value).not.toBe(input);
+    expect(enricherInput).not.toBe(input);
+    expect(input).toEqual({ note: 'original', nested: { tags: ['safe'] } });
+  });
+
+  test('never includes backend exception text in a receipt', () => {
+    const registry = createMemoryBackendRegistry({ local: backend() });
+    registry.register('remote', backend({
+      add: () => { throw new Error('token=sk_live_secret C:/Users/alice/private'); },
+    }));
+    registry.select('remote');
+
+    const serialized = JSON.stringify(registry.add('note').receipt);
+    expect(serialized).not.toContain('sk_live_secret');
+    expect(serialized).not.toContain('C:/Users');
+    expect(serialized.length).toBeLessThan(1024);
+  });
+
+  test('does not inspect properties on an untrusted thrown value', () => {
+    const registry = createMemoryBackendRegistry({ local: backend() });
+    const hostileError = Object.defineProperty({}, 'code', {
+      get() { throw new Error('getter must not run'); },
+    });
+    registry.register('remote', backend({ add: () => { throw hostileError; } }));
+    registry.select('remote');
+
+    expect(registry.add('note').receipt.errors).toEqual([{
+      backend: 'remote', code: 'MEMORY_BACKEND_FAILED',
+    }]);
+  });
+
+  test('rejects duplicate custom backend registration until explicitly unregistered', () => {
+    const registry = createMemoryBackendRegistry({ local: backend() });
+    registry.register('custom', backend());
+    expect(() => registry.register('custom', backend())).toThrow(/already registered/i);
+    registry.unregister('custom');
+    expect(() => registry.register('custom', backend())).not.toThrow();
   });
 
   test('never removes local recall results when enrichment fails', () => {

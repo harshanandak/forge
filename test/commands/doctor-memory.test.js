@@ -90,6 +90,7 @@ describe('forge doctor: memory backend check', () => {
     // Point at a real, existing directory so the presence check passes.
     const serverDir = path.join(projectRoot, 'mcp_server');
     fs.mkdirSync(serverDir, { recursive: true });
+    fs.writeFileSync(path.join(serverDir, 'main.py'), '# graphiti MCP entrypoint\n', 'utf8');
     const yamlPath = serverDir.replace(/\\/g, '/'); // forward-slash for clean YAML on Windows
     writeConfig(
       projectRoot,
@@ -101,6 +102,33 @@ describe('forge doctor: memory backend check', () => {
     expect(check.serverPathExists).toBe(true);
     expect(check.ok).toBe(true);
     expect(check.detail).toContain(yamlPath);
+  });
+
+  test('graphiti path must be a directory containing the configured server entrypoint', () => {
+    const projectRoot = makeProjectRoot();
+    const regularFile = path.join(projectRoot, 'not-a-server');
+    fs.writeFileSync(regularFile, 'not a directory', 'utf8');
+    const yamlPath = regularFile.replace(/\\/g, '/');
+    writeConfig(
+      projectRoot,
+      `memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: ${yamlPath}\n`,
+    );
+
+    let check = memoryCheck(doctor.buildDoctorReport(projectRoot, depsFor(projectRoot)));
+    expect(check.ok).toBe(false);
+    expect(check.serverPathExists).toBe(true);
+    expect(check.serverPathIsDirectory).toBe(false);
+
+    const emptyDir = path.join(projectRoot, 'empty-mcp-server');
+    fs.mkdirSync(emptyDir);
+    writeConfig(
+      projectRoot,
+      `memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: ${emptyDir.replace(/\\/g, '/')}\n`,
+    );
+    check = memoryCheck(doctor.buildDoctorReport(projectRoot, depsFor(projectRoot)));
+    expect(check.ok).toBe(false);
+    expect(check.serverPathIsDirectory).toBe(true);
+    expect(check.entrypointExists).toBe(false);
   });
 
   test('graphiti configured but the server path is missing warns (ok:false) yet keeps the report ok', () => {

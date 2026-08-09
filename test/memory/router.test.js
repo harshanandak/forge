@@ -134,6 +134,13 @@ describe('memory-router: backend resolution', () => {
     })).toBe('custom');
     router.unregisterMemoryBackend('custom');
   });
+
+  test('custom backend registration rejects an accidental override', () => {
+    const adapter = { add() {}, recall() {}, search() {}, capture() {}, digest() {} };
+    router.registerMemoryBackend('unique-custom', adapter);
+    expect(() => router.registerMemoryBackend('unique-custom', adapter)).toThrow(/already registered/i);
+    router.unregisterMemoryBackend('unique-custom');
+  });
 });
 
 describe('memory-router: config validation', () => {
@@ -260,6 +267,26 @@ describe('memory-router: graphiti backend (experimental — local kernel is alwa
     expect(result.receipt.selected_backend).toBe('graphiti');
     expect(result.receipt.status).toBe('degraded');
     expect(router.recall(projectRoot, {}, { store }).total).toBe(1);
+  });
+
+  test('graphiti receives a detached frozen note and cannot mutate the local result', () => {
+    const projectRoot = makeProjectRoot();
+    writeConfig(projectRoot, GRAPHITI_CONFIG);
+    const store = makeStore(projectRoot);
+
+    const result = router.appendWithReceipt(projectRoot, 'immutable local note', {
+      store,
+      graphitiEmitter: {
+        emit: entry => {
+          expect(() => { entry.note = 'mutated'; }).toThrow();
+          expect(() => { entry.tags.push('mutated'); }).toThrow();
+        },
+      },
+    });
+
+    expect(result.value.note).toBe('immutable local note');
+    expect(result.value.tags).toEqual([]);
+    expect(router.recall(projectRoot, {}, { store }).notes[0].note).toBe('immutable local note');
   });
 });
 
