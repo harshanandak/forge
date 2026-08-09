@@ -1,0 +1,22 @@
+{
+  "name": "@forge/memory-contracts",
+  "version": "0.1.0-beta.6",
+  "description": "Behavior-neutral packet and receipt contracts for Forge products",
+  "main": "index.js",
+  "type": "commonjs",
+  "files": [
+    "index.js",
+    "src/",
+    "schemas/",
+    "fixtures/",
+    "contract-baseline.v1.json"
+  ],
+  "scripts": {
+    "test": "bun test test",
+    "lint": "eslint . --max-warnings 0"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.16.0"
+  }
+}

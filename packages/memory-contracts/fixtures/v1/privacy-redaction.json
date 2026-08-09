@@ -1,0 +1,1 @@
+{"fixture_id":"privacy-redaction","schema_id":"forge.memory.context-packet.v1","operation":"validate-expected","mismatch":"privacy_scope_hash","expected":{"code":"STALE_PRIVACY_SCOPE","raw_content_embedded":false}}

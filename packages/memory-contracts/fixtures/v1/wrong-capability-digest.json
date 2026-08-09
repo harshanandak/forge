@@ -1,0 +1,1 @@
+{"fixture_id":"wrong-capability-digest","schema_id":"forge.memory.work-packet.v1","operation":"validate-expected","mismatch":"capability_manifest_digest","expected":{"code":"WRONG_CAPABILITY_DIGEST"}}

@@ -1,0 +1,1 @@
+{"fixture_id":"stale-authority-reject","schema_id":"forge.memory.work-packet.v1","operation":"validate-expected","mismatch":"expected_issue_revision","expected":{"code":"STALE_ISSUE_REVISION"}}
