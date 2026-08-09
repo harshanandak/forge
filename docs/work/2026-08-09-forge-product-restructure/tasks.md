@@ -77,6 +77,7 @@
 **Outcome:** the current CLI remains compatible while every installed harness receives truthful delivery behavior.
 
 - Thin the facade, preserve legacy bins/JSON/exit codes, and add `forge capabilities --json`.
+- Expand `forge doctor [--scope] [--check] [--json]` into the one manifest-driven Health surface whose coverage parity fails when any canonical command family lacks a check, shared dependency, or explicit not-applicable rationale; do not add a competing `forge health` verb.
 - Implement T0 durable pull, T1 next-turn injection, T2 active-session delivery, T3 resume/wake, and T4 human notification adapters.
 - Probe the installed Claude, Codex, Cursor, and Hermes versions and executable behavior; never infer support from harness name.
 - Use native monitor/channel/message facilities only when their probe passes; otherwise degrade to the next supported tier.

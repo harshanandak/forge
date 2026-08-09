@@ -6,16 +6,18 @@ Snapshot evidence:
 
 - Kernel snapshot SHA-256: `6a534378e84d4588cb06667f0d9dac7ddc4771c3e2b46b60cac0c716557f5ce4`
 - 1,168 total issues; 522 open or in progress; maximum issue revision 5
-- 79 explicitly classified rows: 72 architecture/control candidates, four release/root rows, and three close/supersede audits
+- 80 explicitly classified rows: 73 architecture/control candidates, four release/root rows, and three close/supersede audits
 - Five architecture/control candidates are explicitly deferred
-- The `0.1.0` train therefore contains 67 architecture/control issues plus three release-gate work issues: 70 actionable issue outcomes, consolidated into seven milestones/eight cohesive PRs—not 70 PRs
-- The 70 are candidate issue records, including epics and their children; they are not 70 independent code changes and receive no double completion credit
+- The `0.1.0` train therefore contains 68 architecture/control issues plus three release-gate work issues: 71 actionable issue outcomes, consolidated into seven milestones/eight cohesive PRs—not 71 PRs
+- The 71 are candidate issue records, including epics and their children; they are not 71 independent code changes and receive no double completion credit
 - The stable-release root issue tracks promotion and is not counted as another implementation outcome
 - The remaining 443 open/in-progress issues stay outside this train unless separately approved
 
 Forty-seven implementation/migration candidates plus the stable-release tracking root currently lack explicit Kernel acceptance criteria. They remain unadmitted until the contracts in [acceptance-contracts.md](./acceptance-contracts.md) are approved, revision-checked, written to Kernel authority, and read back before code begins.
 
 Actions are conservative. `verify-close` and `supersede` require evidence before any Kernel mutation. `defer` means outside `0.1.0`, not cancelled.
+
+The original snapshot hash remains immutable. The user-approved post-snapshot addition `e8e72233-c31f-4a59-a4e4-deca433d00f8` was created with acceptance criteria and verified at revision 0; final release convergence must regenerate the full snapshot and admission ledger rather than rewrite historical evidence.
 
 | ID | Title | Status | AC | Bucket | Primary owner | Delivery | Validation owner | Action |
 |---|---|---|---|---|---|---|---|---|
@@ -66,7 +68,7 @@ Actions are conservative. `verify-close` and `supersede` require evidence before
 |b4a63278-8f95-4c98-9b79-9b31526ff805|Smith: bounded worker contracts, lifecycle events, and scope-drift enforcement|open|yes|architecture/flow|Flow (Memory contract dependency PR2)|PR4A|Flow scope/lifecycle evaluation suite|implement|
 |b6bdf122-9945-4fa3-a73f-38f9fa2eec6d|EPIC: Knowledge architecture / OKF (info-arch 2026-07-04)|open|no|architecture/memory|Memory|PR3|Memory knowledge/recall suite|migrate|
 |b811a974-a866-47e0-8f83-3f5d2423aded|Eliminate Kernel-to-plan artifact split-brain across projects|open|yes|control-plane/debt|Memory|PR1|Memory Kernel plan-authority suite|implement|
-|b977b0a2-11f6-40d7-a230-8e2ff5f79115|[control-plane] Approval-event generalization -- project-scope + TTL for permission on non-issue items|open|no|control-plane/debt|Memory|PR1|Memory approval-authority suite|implement|
+|b977b0a2-11f6-40d7-a230-8e2ff5f79115|Keep permission approvals issue-bound on forge gate events|open|yes|control-plane/debt|Memory|PR1|Memory approval-authority suite|implement|
 |bec40cf9-05ed-47df-93af-9eb10969ef12|Phase B: forge recall -- cross-platform kernel-native history/memory recall (ctx-inspired; optional ctx adapter; NOT a ctx dependency; kernel corpus)|open|no|architecture/memory|Memory|PR3|Memory recall compatibility suite|migrate|
 |c29f3952-1229-4f13-afd7-416a426c916a|[online] Presence/lease surfacing -- agent live / holds lease on N / last-seen|open|no|control-plane/debt|Memory|PR1|Memory lease/presence suite|implement|
 |c66f076e-70a8-4f94-80e6-e98536ea1c9b|[shepherd] Retire .claude/scripts/review-resolve.sh into agent-agnostic forge verbs|open|no|architecture/flow|Flow|PR4B|Flow review-verb compatibility suite|implement|
@@ -98,3 +100,4 @@ Actions are conservative. `verify-close` and `supersede` require evidence before
 |28d67d69-c175-4542-bc29-f6091a784330|[memory] Add an end-to-end node bin/forge.js memory smoke test (the --type-vs-real-CLI class)|open|no|architecture/memory|Memory|PR7|Memory CLI hardening/smoke suite|implement|
 |bb5b054c-c8e1-45aa-a42d-3e57140c5dd9|[memory] recall --kind scans only the newest 1000-note window then filters — misses older typed notes while claiming capped:false|open|no|architecture/memory|Memory|PR3|Memory recall cap regression suite|implement|
 |f21279f4-473a-4d20-95d4-533ddbb1d102|Add an event-driven efficiency supervisor for Flow runs|open|yes|architecture/flow|Flow (Memory evidence dependency PR1)|PR4A|Flow efficiency thresholds/recommendation + Kernel evidence suite|implement|
+|e8e72233-c31f-4a59-a4e4-deca433d00f8|Expand forge doctor into manifest-driven health coverage|open|yes|architecture/facade|Facade|PR5|Facade doctor schema/coverage/portability suite|implement|

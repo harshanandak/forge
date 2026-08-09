@@ -398,6 +398,10 @@ Stateless mode cannot claim shared work, validate a live team lease, authorize a
 
 The generated command manifest becomes the exhaustive routing ledger in PR 2. Any command not assigned to exactly one owner fails the boundary gate. Installing both products does not change defaults; activation requires explicit config or command selection.
 
+`forge doctor [--scope <scope>] [--check <id>] [--json]` expands into the one canonical local Health/diagnostic surface; no parallel `forge health` verb is added. The generated command/capability manifest must assign every canonical non-alias command family either a stable health check, a shared dependency check, or an explicit not-applicable rationale; missing coverage fails manifest parity. Doctor is read-only and side-effect-free, groups checks by `core|memory|flow|integrations|release`, uses bounded concurrency and deadlines, redacts evidence, and returns versioned `PASS|WARN|FAIL|INCOMPLETE` results with actionable remediation. Default scope is fast, local, and project-aware; network/provider probes are explicit. `forge status` remains orientation, `forge verify` remains post-merge verification, and dashboard `GET /health` remains server liveness rather than a competing CLI contract.
+
+Parallel pro-fast run [`trun_2e10e9ca2b9743e493fa96a9a4ae3ec2`](https://platform.parallel.ai/play/deep-research/trun_2e10e9ca2b9743e493fa96a9a4ae3ec2) compared GitHub CLI, Docker, kubectl, Homebrew, npm, Rustup/Cargo, Claude Code, and Codex. It fixes these implementation constraints: coverage is a versioned contract rather than inventory; only allow-listed side-effect-free probes run by default; per-check status remains authoritative and `--json` never changes exit meaning; scope is explicit; timeout/unavailable evidence is `INCOMPLETE`; discovered capabilities without a safe adapter never pass; redaction occurs before serialization; and JSON uses stable check IDs, check versions, deterministic ordering, and forward-compatible fields.
+
 ### 6.6 Release BOM
 
 Every integrated candidate has a signed, canonical release bill of materials containing:
@@ -573,7 +577,7 @@ The latest 522 open/in-progress issues are partitioned conservatively. The count
 | Close/supersede audit | 3 | Close only after implementation/release evidence is verified |
 | Unrelated/defer | 443 | Keep out of 0.1.0 restructuring train |
 
-The 72 architecture/control candidates include five deliberately deferred items whose value is real but not required for 0.1.0. Therefore 67 issues enter the architecture train. Three separate release-gate issues require work, while the stable root is tracking only. The final actionable total is 70 issues, not 70 PRs.
+The original 72 architecture/control candidates plus the approved Health addition include five deliberately deferred items whose value is real but not required for 0.1.0. Therefore 68 issues enter the architecture train. Three separate release-gate issues require work, while the stable root is tracking only. The final actionable total is 71 issues, not 71 PRs.
 
 ### 9.1 Inclusion rule
 
@@ -676,6 +680,7 @@ PR 3 and PR 4A may be prepared in parallel after PR 2. They merge Memory first, 
 - move harness and GitHub edges to their owning product;
 - keep `@forge/skills` independent;
 - implement `forge capabilities --json`;
+- expand `forge doctor` into manifest-driven Health coverage with scoped, no-side-effect diagnostics; do not add a competing health verb;
 - implement T0-T4 delivery adapters for Claude, Codex, Cursor, and Hermes with truthful per-installed-version degradation;
 - regenerate projections from canonical sources.
 
@@ -882,6 +887,6 @@ Implementation is not authorized by approving this draft. After approval, this d
 2. Keep 0.1.0 as an extraction-ready modular monolith with independently releasable Memory and Flow packages, postponing physical repository separation until the measured post-stable triggers pass?
 3. Preserve beta.5 CLI/config/data behavior unless an explicit migration diagnostic and rollback path exists?
 4. Accept seven milestones delivered through eight cohesive PRs, with Flow core (4A) separated from Shepherd/review/merge semantics (4B), and the stated sequential merge order?
-5. Accept 67 architecture/control issues in the eight-PR train, three separate release-gate issues, five explicit candidate deferrals, and all unrelated work outside the train?
+5. Accept 68 architecture/control issues in the eight-PR train, three separate release-gate issues, five explicit candidate deferrals, and all unrelated work outside the train?
 6. Accept targeted PR validation plus one full exact-SHA release matrix?
 7. Decouple model-winner promotion from 0.1.0 unless default routing changes?

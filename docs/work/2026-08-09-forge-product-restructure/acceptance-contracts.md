@@ -26,7 +26,7 @@ Common acceptance rules for every row below:
 | `7f8c8471` | Packaged Smith/claim-safety references resolve or use a documented supported primitive. Asset scan finds every reference; invocation succeeds or deterministically falls back; claim-safety still proves a live owned lease and rejects foreign/expired leases. |
 | `94f782e0` | Foreign-lease reconcile child exits deterministically on Windows. Repeated affected Windows/Node fixture exits successfully within its bound; a valid lease remains active and untouched; recurrent environmental failure becomes separate evidence/fix, not a weakened assertion. |
 | `9f6ffb42` | Kernel trace exposes issue→worktree→work folder→plan/tasks/decisions→PR→iterations. Ship/merge emits idempotent links; one trace returns the joined envelope with explicit null gaps; duplicate events do not duplicate rows. |
-| `b977b0a2` | Approval events support issue/project scope and TTL through one control. Round-trip returns scope/expiry/control id; valid approval permits the protected write; wrong-scope/expired/missing approval denies; replay is idempotent and audit-visible. |
+| `b977b0a2` | Existing `forge gate approve <issue-id> <gate-id>` events remain the only approval surface and gain bounded issue-scoped TTL where required. Valid approval satisfies the gate; expired/rejected/missing/wrong-issue/wrong-gate evidence fails closed; replay is idempotent and audit-visible. `forge control` remains policy classification, and unscoped/project-scoped approval is rejected. |
 | `c29f3952` | Kernel status honestly exposes live sessions, held leases, and last-seen. Active fixture reports actor/issues/activity; closed/expired/unverifiable session is offline; read does not mutate leases. |
 | `eea2f9ce` | Claim-safety refuses work without a current actor-owned unexpired lease. Owned/unexpired passes; foreign/expired/missing/duplicate-collapsed fails before work; proof comes from live Kernel state rather than a local claim token. |
 | `c3952ba5` | Kernel graph automatically registers PRs, sessions, and Shepherd verdicts. Ship/orientation/Shepherd fixtures create the expected rows; replay is idempotent; one trace answers issue→claim→session→worktree→PR→verdict→events/comments with explicit gaps. |
@@ -87,6 +87,7 @@ Common acceptance rules for every row below:
 | --- | --- |
 | `7268bc9b` | Hook adapter evaluates mandatory/optional/permission controls and reports honest per-harness downgrade. Policy matrix covers deny/warn/TTL approval/expiry; observational-only harnesses never claim enforcement; decisions are auditable. |
 | `9658c21a` | MCP registry renders/drift-checks control state and consent at render time only. Fixtures cover control types, toggles, drift, consent expiry, and stable capability/config digests without claiming runtime enforcement. |
+| `e8e72233` | `forge doctor` is the one read-only, bounded, manifest-driven Health surface and is exhaustive across canonical command families. Versioned JSON reports `PASS|WARN|FAIL|INCOMPLETE`, privacy-safe evidence and remediation; scope/check selectors, parity, no-side-effect, timeout, unsupported-provider, redaction, deterministic ordering, and Windows/macOS/Linux fixtures pass. No competing health verb exists. |
 
 ## PR 6 — Migration and extraction readiness
 
@@ -111,6 +112,6 @@ After proposal approval and before any implementation branch or WorkPacket:
 1. Generate a canonical amendment batch for the 48 actionable `AC=no` issues from this document.
 2. For each issue, compare the expected revision from the approved snapshot, write its contract to the Kernel, and read it back.
 3. Refuse partial silent success: conflicts remain unadmitted and are reported; successfully amended issues retain their new revision and receipt.
-4. Recompute the disposition snapshot and prove every one of the 70 work outcomes has acceptance criteria, PR owner, product owner, affected contract/risk, and validation owner. The release tracking root may be admitted only for PR 7 promotion.
+4. Recompute the disposition snapshot and prove every one of the 71 work outcomes has acceptance criteria, PR owner, product owner, affected contract/risk, and validation owner. The release tracking root may be admitted only for PR 7 promotion.
 5. Epic admission additionally requires an explicit mapped-child list; epic closure remains impossible while a mapped child lacks accepted completion or approved deferral evidence.
 6. Publish `admission-evidence.v1.json` with before/after revisions, contract hashes, conflicts, and aggregate `PASS|FAIL|INCOMPLETE`. Only aggregate `PASS` authorizes PR 1 implementation.
