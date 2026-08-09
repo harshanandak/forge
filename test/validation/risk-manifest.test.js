@@ -62,10 +62,16 @@ describe('risk-owned validation manifest', () => {
   });
 
   test('uses package, contract, and platform baselines when package is known but surface is ambiguous', () => {
-    const manifest = loadRiskManifest(MANIFEST_PATH);
+    const narrowed = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+    const kernel = narrowed.owners.find((owner) => owner.id === 'kernel-authority');
+    kernel.selectors = kernel.selectors.map((selector) => selector.kind === 'path'
+      ? { kind: 'path', prefix: 'lib/kernel/broker.js' }
+      : selector);
+    narrowed.manifest_hash = hashManifest(narrowed);
+    const manifest = loadRiskManifest(narrowed);
     const selected = selectValidation({
       manifest,
-      changedSurfaces: [{ kind: 'path', value: 'lib/kernel-next/prototype.js' }],
+      changedSurfaces: [{ kind: 'path', value: 'lib/kernel/worker.js' }],
     });
 
     expect(selected.status).toBe('conservative-package');
@@ -79,6 +85,44 @@ describe('risk-owned validation manifest', () => {
     ]);
     expect(selected.dependent_routes).toEqual(['memory-contract']);
     expect(selected.platform_runtime_additions).toEqual(['linux-sqlite', 'windows-sqlite']);
+  });
+
+  test('path selectors match exact files and segment-bounded directories only', () => {
+    const manifest = loadRiskManifest(MANIFEST_PATH);
+    const exactFile = selectValidation({
+      manifest,
+      changedSurfaces: [{ kind: 'path', value: 'scripts/generate-risk-manifest.js' }],
+    });
+    const directoryRoot = selectValidation({
+      manifest,
+      changedSurfaces: [{ kind: 'path', value: 'lib/kernel' }],
+    });
+
+    expect(exactFile.status).toBe('exact');
+    expect(exactFile.owner_ids).toEqual(['validation-control']);
+    expect(directoryRoot.status).toBe('exact');
+    expect(directoryRoot.owner_ids).toEqual(['kernel-authority']);
+  });
+
+  test('lexical sibling paths are unowned and force the repository baseline', () => {
+    const manifest = loadRiskManifest(MANIFEST_PATH);
+    const selected = selectValidation({
+      manifest,
+      changedSurfaces: [
+        { kind: 'path', value: 'scripts/generate-risk-manifest.js.bak' },
+        { kind: 'path', value: 'lib/kernel-next/prototype.js' },
+        { kind: 'path', value: 'packages/binary/forge.js' },
+      ],
+    });
+
+    expect(selected.status).toBe('repository-baseline');
+    expect(selected.targeted_pass_allowed).toBe(false);
+    expect(selected.owner_ids).toEqual([]);
+    expect(selected.unowned_surfaces).toEqual([
+      { kind: 'path', value: 'lib/kernel-next/prototype.js' },
+      { kind: 'path', value: 'packages/binary/forge.js' },
+      { kind: 'path', value: 'scripts/generate-risk-manifest.js.bak' },
+    ]);
   });
 
   test('workflow run selection carries dependent routes and every declared platform addition', () => {
