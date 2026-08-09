@@ -9,3 +9,13 @@
 **Route**: BLOCKED
 **Choice made**: Keep `forge control` limited to mandatory/optional/permission policy configuration. Keep approval authority on the existing issue-bound gate event surface: `forge gate approve <issue-id> <gate-id>`. If bounded expiry is required, extend that existing event with `--ttl`; do not add project-scoped approval or a new `forge issue approve`/`forge control approve` command. Unscoped approval fails closed.
 **Status**: RESOLVED
+
+## Decision 2
+
+**Date**: 2026-08-09
+**Task**: PR 1 lane C — production issue/PR trace emission
+**Gap**: The trace primitive correctly requires issue revision, exact head SHA, WorkPacket hash, risk-manifest digest, and gate receipts, but current ship/merge callers do not possess the full authoritative envelope. PR 2 owns WorkPacket/receipt contracts, while PR 4B owns ship/merge lifecycle wiring. Synthesizing or accepting caller-asserted evidence in PR 1 would weaken authority.
+**Score**: 12/14; mandatory override — authority/security and persistent contract boundary
+**Route**: BLOCKED
+**Choice made**: Do not integrate the unused PR 1 trace commits. Move the production linkage outcome to PR 4B after PR 2 freezes the Memory-owned evidence contract, then wire ship/merge using the validated immutable receipt. Keep the Kernel primitive branch available for rebasing rather than inventing evidence.
+**Status**: RESOLVED
