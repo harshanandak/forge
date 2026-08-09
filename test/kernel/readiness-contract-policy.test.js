@@ -10,20 +10,30 @@ const {
 const POLICY = Object.freeze({
 	enabled: true,
 	workClasses: ['task', 'bug'],
+	trustedAdopters: ['maintainer@example.test'],
 });
 
-function completeIssue(overrides = {}) {
+function contractMetadata(contractOverrides = {}, metadataOverrides = {}) {
+	return JSON.stringify({
+		'forge.contract': {
+			version: 1,
+			risk: 'authority',
+			dependencies: [],
+			out_of_scope: 'Do not prescribe implementation reasoning.',
+			...contractOverrides,
+		},
+		...metadataOverrides,
+	});
+}
+
+function completeIssue(overrides = {}, contractOverrides = {}, metadataOverrides = {}) {
 	return {
 		id: 'work-1',
 		type: 'task',
 		status: 'open',
 		body: 'Make readiness select only executable work.',
 		acceptance_criteria: 'Given a complete contract, the issue appears in ready output.',
-		contract: {
-			risk: 'authority',
-			dependencies: [],
-			out_of_scope: 'Do not prescribe implementation reasoning.',
-		},
+		metadata: contractMetadata(contractOverrides, metadataOverrides),
 		...overrides,
 	};
 }
@@ -54,6 +64,7 @@ describe('issue-contract readiness policy', () => {
 			{ code: 'contract_missing', field: 'risk' },
 			{ code: 'contract_missing', field: 'dependencies' },
 			{ code: 'contract_missing', field: 'out_of_scope' },
+			{ code: 'contract_invalid', field: 'version', expected: 1, actual: null },
 		]);
 	});
 
@@ -94,16 +105,16 @@ describe('issue-contract readiness policy', () => {
 	});
 
 	test('trusted maintainer adoption lets imported and fork work use an explicit contract', () => {
-		for (const source of ['import', 'fork_pr']) {
-			const result = evaluateIssueContract(completeIssue({
-				origin: source,
-				contract: {
+		for (const origin of ['import', 'fork_pr']) {
+			const result = evaluateIssueContract(completeIssue(
+				{},
+				{
 					risk: 'compatibility',
-					dependencies: [],
 					out_of_scope: 'No upstream history rewrite.',
 					adopted_by: 'maintainer@example.test',
 				},
-			}), POLICY);
+				{ origin },
+			), POLICY);
 
 			expect(result).toEqual({ applicable: true, valid: true, reasons: [] });
 		}
@@ -111,24 +122,71 @@ describe('issue-contract readiness policy', () => {
 
 	test('imported and fork work never infer adoption from prose', () => {
 		for (const origin of ['import', 'fork_pr']) {
-			const result = evaluateIssueContract(completeIssue({ origin }), POLICY);
+			const result = evaluateIssueContract(completeIssue({}, {}, { origin }), POLICY);
 			expect(result.valid).toBe(false);
 			expect(result.reasons).toContainEqual({ code: 'contract_adoption_required' });
 		}
 	});
 
-	test('reads the versioned forge.contract object from existing metadata JSON', () => {
-		const issue = completeIssue({
-			contract: undefined,
-			metadata: JSON.stringify({
-				'forge.contract': {
-					version: 1,
-					risk: 'authority',
-					dependencies: [],
-					out_of_scope: 'No model-specific prose rules.',
-				},
-			}),
+	test('an untrusted adopter string cannot authorize imported or fork work', () => {
+		const issue = completeIssue(
+			{},
+			{ adopted_by: 'attacker@example.test' },
+			{ origin: 'import' },
+		);
+		const result = evaluateIssueContract(issue, POLICY);
+
+		expect(result.valid).toBe(false);
+		expect(result.reasons).toContainEqual({
+			code: 'contract_adopter_untrusted',
+			adopter: 'attacker@example.test',
 		});
+	});
+
+	test('an injected authority predicate can validate a trusted adopter', () => {
+		const issue = completeIssue(
+			{},
+			{ adopted_by: 'team-maintainer' },
+			{ origin: 'fork_pr' },
+		);
+		const result = evaluateIssueContract(
+			issue,
+			{ enabled: true, workClasses: ['task'] },
+			{ isTrustedAdopter: adopter => adopter === 'team-maintainer' },
+		);
+
+		expect(result).toEqual({ applicable: true, valid: true, reasons: [] });
+	});
+
+	test('top-level issue.contract cannot bypass versioned metadata authority', () => {
+		const issue = completeIssue({
+			metadata: null,
+			contract: {
+				version: 1,
+				risk: 'authority',
+				dependencies: [],
+				out_of_scope: 'Bypass attempt.',
+			},
+		});
+		const result = evaluateIssueContract(issue, POLICY);
+
+		expect(result.valid).toBe(false);
+		expect(result.reasons).toContainEqual({
+			code: 'contract_invalid', field: 'version', expected: 1, actual: null,
+		});
+		expect(result.reasons).toContainEqual({ code: 'contract_missing', field: 'risk' });
+	});
+
+	test('unknown metadata contract versions fail closed', () => {
+		const result = evaluateIssueContract(completeIssue({}, { version: 2 }), POLICY);
+		expect(result.valid).toBe(false);
+		expect(result.reasons).toContainEqual({
+			code: 'contract_invalid', field: 'version', expected: 1, actual: 2,
+		});
+	});
+
+	test('reads the versioned forge.contract object from existing metadata JSON', () => {
+		const issue = completeIssue({}, { out_of_scope: 'No model-specific prose rules.' });
 
 		expect(evaluateIssueContract(issue, POLICY)).toEqual({
 			applicable: true,
@@ -139,7 +197,7 @@ describe('issue-contract readiness policy', () => {
 
 	test('declared dependencies must agree with authority edges', () => {
 		const result = evaluateIssueContract(
-			completeIssue({ contract: { risk: 'authority', dependencies: [], out_of_scope: 'No extras.' } }),
+			completeIssue({}, { out_of_scope: 'No extras.' }),
 			POLICY,
 			{ dependencyIds: ['blocker'] },
 		);

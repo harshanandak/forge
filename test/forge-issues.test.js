@@ -11,7 +11,11 @@ describe('forge issue service contract', () => {
 		const { resolveIssueContractPolicy } = require('../lib/forge-issues');
 		const loadConfig = ({ projectRoot }) => ({
 			config: projectRoot === '/configured'
-				? { issues: { readiness: { contracts: { enabled: true, workClasses: ['task', 'bug'] } } } }
+				? { issues: { readiness: { contracts: {
+					enabled: true,
+					workClasses: ['task', 'bug'],
+					trustedAdopters: ['maintainer@example.test'],
+				} } } }
 				: {},
 			errors: [],
 		});
@@ -19,6 +23,7 @@ describe('forge issue service contract', () => {
 		expect(resolveIssueContractPolicy('/configured', { loadRuntimeGraphConfig: loadConfig })).toEqual({
 			enabled: true,
 			workClasses: ['task', 'bug'],
+			trustedAdopters: ['maintainer@example.test'],
 		});
 		expect(resolveIssueContractPolicy('/legacy', { loadRuntimeGraphConfig: loadConfig })).toBeNull();
 	});
@@ -334,12 +339,20 @@ describe('forge issue service contract', () => {
 				},
 			}),
 			loadRuntimeGraphConfig: () => ({
-				config: { issues: { readiness: { contracts: { enabled: true, workClasses: ['task'] } } } },
+				config: { issues: { readiness: { contracts: {
+					enabled: true,
+					workClasses: ['task'],
+					trustedAdopters: ['maintainer@example.test'],
+				} } } },
 				errors: [],
 			}),
 		});
 
-		expect(captured.contractPolicy).toEqual({ enabled: true, workClasses: ['task'] });
+		expect(captured.contractPolicy).toEqual({
+			enabled: true,
+			workClasses: ['task'],
+			trustedAdopters: ['maintainer@example.test'],
+		});
 	});
 
   test('FORGE_LEASE_TTL_MS=0 opts out of expiry (null lease), omitting leaseTtlMs from context', async () => {
