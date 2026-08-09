@@ -99,4 +99,26 @@ describe('real forge gate CLI JSON and global flags', () => {
       approved: false,
     });
   });
+
+  test('status and check reject unknown flags, extra operands, and duplicate JSON flags', () => {
+    const root = tempRoots[0];
+    const invalid = [
+      [['gate', 'status', ISSUE_ID, '--bogus', '--json', '--path', root], 'gate.status'],
+      [['gate', 'status', ISSUE_ID, 'extra', '--json', '--path', root], 'gate.status'],
+      [['gate', 'status', ISSUE_ID, '--json', '--json', '--path', root], 'gate.status'],
+      [['gate', 'check', ISSUE_ID, 'gate.merge', '--bogus', '--json', '--path', root], 'gate.check'],
+      [['gate', 'check', ISSUE_ID, 'gate.merge', 'extra', '--json', '--path', root], 'gate.check'],
+      [['gate', 'check', ISSUE_ID, 'gate.merge', '--json', '--json', '--path', root], 'gate.check'],
+    ];
+
+    for (const [args, command] of invalid) {
+      const result = run(__dirname, args);
+      expect(result.status).toBe(1);
+      expect(parseJson(result.stdout)).toMatchObject({
+        schema_version: 'forge.gate.v1',
+        command,
+        ok: false,
+      });
+    }
+  });
 });
