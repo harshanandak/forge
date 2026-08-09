@@ -41,6 +41,16 @@ describe('stripGlobalFlags', () => {
   test('leaves plain words that resemble flag names untouched', () => {
     expect(stripGlobalFlags(['force', 'sync', 'path'])).toEqual(['force', 'sync', 'path']);
   });
+
+  test('strips all supported global booleans plus space and equals value forms', () => {
+    expect(stripGlobalFlags([
+      '--quick', '-q', '--skip-external', '--skip-services', '--all', '--help', '-h',
+      '--version', '-V', '--yes', '-y', '--non-interactive', '--force', '--verbose',
+      '--dry-run', '--symlink', '--skills-only', '--no-hooks', '--interview',
+      '--path', '/tmp/project', '--agents=codex', '--merge', 'smart', '--type=standard',
+      '--budget', '1000', 'approve', 'issue-1', 'gate.merge', '--json',
+    ])).toEqual(['approve', 'issue-1', 'gate.merge', '--json']);
+  });
 });
 
 describe('firstPositionalIndex', () => {
