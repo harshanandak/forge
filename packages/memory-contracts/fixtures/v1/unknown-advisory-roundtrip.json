@@ -1,0 +1,1 @@
+{"fixture_id":"unknown-advisory-roundtrip","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"mutation":{"operation":"add","path":"extensions.vendor.example/advisory","value":{"impact":"advisory","schema_version":1,"value":{"note":"preserve"}},"rehash":true},"operation":"roundtrip-extension","expected":{"preserved":true}}

@@ -25,6 +25,7 @@ describe('risk manifest generator', () => {
     expect(generated.owners.map((owner) => owner.id)).toEqual([
       'facade-cli',
       'kernel-authority',
+      'memory-contracts',
       'memory-foundation',
       'validation-control',
       'workflow-runtime',

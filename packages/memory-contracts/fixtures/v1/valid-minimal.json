@@ -1,0 +1,1 @@
+{"fixture_id":"valid-minimal","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"operation":"validate-structure","authority_claim":false,"expected":{"ok":true}}

@@ -15,7 +15,8 @@
         "test",
         "--timeout",
         "15000",
-        "test/integration"
+        "test/integration",
+        "packages/memory-contracts"
       ],
       "executable": "bun",
       "id": "validation.command.contract-baseline"
@@ -35,7 +36,8 @@
         "test",
         "--timeout",
         "15000",
-        "test/workflow"
+        "test/workflow",
+        "packages/flow"
       ],
       "executable": "bun",
       "id": "validation.command.flow-package"
@@ -135,7 +137,8 @@
         "test",
         "--timeout",
         "15000",
-        "test/memory"
+        "test/memory",
+        "packages/memory"
       ],
       "executable": "bun",
       "id": "validation.command.memory-package"
@@ -256,7 +259,7 @@
       "id": "validation-selector"
     }
   ],
-  "manifest_hash": "sha256:d7b0d384d2e3636e37d6544f79aaf881ef63850acb20439e1d8a5cf80ab300b6",
+  "manifest_hash": "sha256:afc0f7b27d8bb39a465fba8f5c492085464e9b1a611a717bb90840f9fbafb52c",
   "owners": [
     {
       "canonical_test_ids": [
@@ -332,6 +335,34 @@
     },
     {
       "canonical_test_ids": [
+        "packages/memory-contracts/**/*.test.js"
+      ],
+      "dependent_routes": [
+        "flow-memory-contract"
+      ],
+      "id": "memory-contracts",
+      "lanes": [
+        "contract-baseline"
+      ],
+      "package": "@forge/memory-contracts",
+      "package_roots": [
+        "packages/memory-contracts"
+      ],
+      "platform_runtime_additions": [],
+      "product": "memory",
+      "risk_ids": [
+        "contract-compatibility"
+      ],
+      "selectors": [
+        {
+          "kind": "path",
+          "prefix": "packages/memory-contracts/"
+        }
+      ]
+    },
+    {
+      "canonical_test_ids": [
+        "packages/memory/**/*.test.js",
         "test/memory/**/*.test.js"
       ],
       "dependent_routes": [
@@ -343,7 +374,8 @@
       ],
       "package": "forge-memory",
       "package_roots": [
-        "lib/memory"
+        "lib/memory",
+        "packages/memory"
       ],
       "platform_runtime_additions": [
         "linux-sqlite",
@@ -358,6 +390,10 @@
         {
           "kind": "path",
           "prefix": "lib/memory/"
+        },
+        {
+          "kind": "path",
+          "prefix": "packages/memory/"
         },
         {
           "kind": "schema",
@@ -410,6 +446,7 @@
     },
     {
       "canonical_test_ids": [
+        "packages/flow/**/*.test.js",
         "test/workflow/**/*.test.js"
       ],
       "dependent_routes": [
@@ -421,7 +458,8 @@
       ],
       "package": "forge-flow",
       "package_roots": [
-        "lib/workflow"
+        "lib/workflow",
+        "packages/flow"
       ],
       "platform_runtime_additions": [
         "linux-process",
@@ -437,6 +475,10 @@
         {
           "kind": "path",
           "prefix": "lib/workflow/"
+        },
+        {
+          "kind": "path",
+          "prefix": "packages/flow/"
         },
         {
           "kind": "schema",
@@ -509,7 +551,7 @@
     }
   ],
   "schema_id": "forge.validation.risk-manifest.v1",
-  "source_hash": "sha256:c8bc469125e76a562d62218e25bbfa60bb4541190c9012b22421bcb3f5d87d96",
+  "source_hash": "sha256:4e86a985bdbc51cf7101fc1a0a9a90d03112a08b44440530f2bb7a56f17d9deb",
   "unknown_owner_fallback": {
     "lane": "repository-baseline",
     "required_gates": [

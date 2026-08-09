@@ -1,0 +1,1 @@
+{"fixture_id":"malformed-missing-required","input_ref":{"file":"malformed-envelope-inputs.v1.json"},"operation":"materialize-cases","expected":{"case_count":10,"code":"MISSING_REQUIRED"}}

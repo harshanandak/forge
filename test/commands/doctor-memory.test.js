@@ -90,6 +90,7 @@ describe('forge doctor: memory backend check', () => {
     // Point at a real, existing directory so the presence check passes.
     const serverDir = path.join(projectRoot, 'mcp_server');
     fs.mkdirSync(serverDir, { recursive: true });
+    fs.writeFileSync(path.join(serverDir, 'main.py'), '# graphiti MCP entrypoint\n', 'utf8');
     const yamlPath = serverDir.replace(/\\/g, '/'); // forward-slash for clean YAML on Windows
     writeConfig(
       projectRoot,
@@ -101,6 +102,44 @@ describe('forge doctor: memory backend check', () => {
     expect(check.serverPathExists).toBe(true);
     expect(check.ok).toBe(true);
     expect(check.detail).toContain(yamlPath);
+  });
+
+  test('graphiti path must be a directory containing the configured server entrypoint', () => {
+    const projectRoot = makeProjectRoot();
+    const regularFile = path.join(projectRoot, 'not-a-server');
+    fs.writeFileSync(regularFile, 'not a directory', 'utf8');
+    const yamlPath = regularFile.replace(/\\/g, '/');
+    writeConfig(
+      projectRoot,
+      `memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: ${yamlPath}\n`,
+    );
+
+    let check = memoryCheck(doctor.buildDoctorReport(projectRoot, depsFor(projectRoot)));
+    expect(check.ok).toBe(false);
+    expect(check.serverPathExists).toBe(true);
+    expect(check.serverPathIsDirectory).toBe(false);
+
+    const emptyDir = path.join(projectRoot, 'empty-mcp-server');
+    fs.mkdirSync(emptyDir);
+    writeConfig(
+      projectRoot,
+      `memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: ${emptyDir.replace(/\\/g, '/')}\n`,
+    );
+    check = memoryCheck(doctor.buildDoctorReport(projectRoot, depsFor(projectRoot)));
+    expect(check.ok).toBe(false);
+    expect(check.serverPathIsDirectory).toBe(true);
+    expect(check.entrypointExists).toBe(false);
+
+    const directoryEntrypoint = path.join(projectRoot, 'directory-entrypoint-server');
+    fs.mkdirSync(path.join(directoryEntrypoint, 'main.py'), { recursive: true });
+    writeConfig(
+      projectRoot,
+      `memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: ${directoryEntrypoint.replace(/\\/g, '/')}\n`,
+    );
+    check = memoryCheck(doctor.buildDoctorReport(projectRoot, depsFor(projectRoot)));
+    expect(check.ok).toBe(false);
+    expect(check.serverPathIsDirectory).toBe(true);
+    expect(check.entrypointExists).toBe(false);
   });
 
   test('graphiti configured but the server path is missing warns (ok:false) yet keeps the report ok', () => {
@@ -118,6 +157,18 @@ describe('forge doctor: memory backend check', () => {
     // A missing MCP server renders as a warning (ok:false), not a misleading ✓ …
     expect(check.ok).toBe(false);
     // … but must never drag the overall doctor report to failure (fs-class governs).
+    expect(report.ok).toBe(true);
+  });
+
+  test('an unknown enabled backend is reported clearly instead of silently passing local', () => {
+    const projectRoot = makeProjectRoot();
+    writeConfig(projectRoot, 'memory:\n  backend: unavailable-provider\n');
+    const report = doctor.buildDoctorReport(projectRoot, depsFor(projectRoot));
+    const check = memoryCheck(report);
+
+    expect(check.ok).toBe(false);
+    expect(check.backend).toBe('unavailable-provider');
+    expect(check.detail).toMatch(/not registered|unknown/i);
     expect(report.ok).toBe(true);
   });
 });

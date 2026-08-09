@@ -121,6 +121,32 @@ describe('memory-router: backend resolution', () => {
     writeConfig(projectRoot, ':::not: valid: yaml:::\n');
     expect(router.resolveMemoryBackend({ projectRoot, env: {} })).toBe('local');
   });
+
+  test('custom registered backend resolves deterministically from deps over env and config', () => {
+    const projectRoot = makeProjectRoot();
+    writeConfig(projectRoot, 'memory:\n  backend: graphiti\n');
+    const adapter = { add() {}, recall() {}, search() {}, capture() {}, digest() {} };
+    router.registerMemoryBackend('custom', adapter);
+    try {
+      expect(router.resolveMemoryBackend({
+        projectRoot,
+        env: { FORGE_MEMORY_BACKEND: 'graphiti' },
+        deps: { memoryBackend: 'custom' },
+      })).toBe('custom');
+    } finally {
+      router.unregisterMemoryBackend('custom');
+    }
+  });
+
+  test('custom backend registration rejects an accidental override', () => {
+    const adapter = { add() {}, recall() {}, search() {}, capture() {}, digest() {} };
+    router.registerMemoryBackend('unique-custom', adapter);
+    try {
+      expect(() => router.registerMemoryBackend('unique-custom', adapter)).toThrow(/already registered/i);
+    } finally {
+      router.unregisterMemoryBackend('unique-custom');
+    }
+  });
 });
 
 describe('memory-router: config validation', () => {
@@ -231,6 +257,42 @@ describe('memory-router: graphiti backend (experimental — local kernel is alwa
     expect(() => router.append(projectRoot, 'note a', { store, graphitiEmitter: throwing })).not.toThrow();
     expect(() => router.append(projectRoot, 'note b', { store, graphitiEmitter: rejecting })).not.toThrow();
     expect(router.recall(projectRoot, {}, { store }).total).toBe(2);
+  });
+
+  test('appendWithReceipt reports enricher failure without changing the local result', () => {
+    const projectRoot = makeProjectRoot();
+    writeConfig(projectRoot, GRAPHITI_CONFIG);
+    const store = makeStore(projectRoot);
+    const result = router.appendWithReceipt(projectRoot, 'receipt note', {
+      store,
+      graphitiEmitter: { emit: () => { throw new Error('sidecar down'); } },
+    });
+
+    expect(result.value.note).toBe('receipt note');
+    expect(result.receipt.schema_id).toBe('forge.memory.operation-receipt.v1');
+    expect(result.receipt.selected_backend).toBe('graphiti');
+    expect(result.receipt.status).toBe('degraded');
+    expect(router.recall(projectRoot, {}, { store }).total).toBe(1);
+  });
+
+  test('graphiti receives a detached frozen note and cannot mutate the local result', () => {
+    const projectRoot = makeProjectRoot();
+    writeConfig(projectRoot, GRAPHITI_CONFIG);
+    const store = makeStore(projectRoot);
+
+    const result = router.appendWithReceipt(projectRoot, 'immutable local note', {
+      store,
+      graphitiEmitter: {
+        emit: entry => {
+          expect(() => { entry.note = 'mutated'; }).toThrow();
+          expect(() => { entry.tags.push('mutated'); }).toThrow();
+        },
+      },
+    });
+
+    expect(result.value.note).toBe('immutable local note');
+    expect(result.value.tags).toEqual([]);
+    expect(router.recall(projectRoot, {}, { store }).notes[0].note).toBe('immutable local note');
   });
 });
 
