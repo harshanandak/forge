@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Workspace lockfile proofs are path-independent.** Bun regeneration now receives the isolated proof root explicitly, preventing temporary proof paths from leaking into workspace keys. (issue `3eb1db42-eaa3-4847-9878-7b77310d1beb`)
+- **Windows lockfile proofs canonicalize temporary roots.** Native path resolution prevents 8.3 TEMP aliases from changing regenerated lock bytes. (issue `3eb1db42-eaa3-4847-9878-7b77310d1beb`)
 - **Linked-worktree lockfile proofs no longer mutate shared Git configuration.** Internal proof Git commands discard inherited repository-local Git environment variables while preserving the host toolchain environment. (issue `93cb615f-2e6e-45ff-90c1-6c98e47f0fff`)
 
 ## [0.1.0-beta.5] - 2026-08-09
