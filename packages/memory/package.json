@@ -1,0 +1,18 @@
+{
+  "name": "@forge/memory",
+  "version": "0.1.0-beta.6",
+  "description": "Forge Memory public backend boundary",
+  "main": "index.js",
+  "type": "commonjs",
+  "files": [
+    "index.js",
+    "src"
+  ],
+  "scripts": {
+    "test": "bun test"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}

@@ -120,4 +120,16 @@ describe('forge doctor: memory backend check', () => {
     // … but must never drag the overall doctor report to failure (fs-class governs).
     expect(report.ok).toBe(true);
   });
+
+  test('an unknown enabled backend is reported clearly instead of silently passing local', () => {
+    const projectRoot = makeProjectRoot();
+    writeConfig(projectRoot, 'memory:\n  backend: unavailable-provider\n');
+    const report = doctor.buildDoctorReport(projectRoot, depsFor(projectRoot));
+    const check = memoryCheck(report);
+
+    expect(check.ok).toBe(false);
+    expect(check.backend).toBe('unavailable-provider');
+    expect(check.detail).toMatch(/not registered|unknown/i);
+    expect(report.ok).toBe(true);
+  });
 });

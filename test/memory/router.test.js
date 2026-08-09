@@ -121,6 +121,19 @@ describe('memory-router: backend resolution', () => {
     writeConfig(projectRoot, ':::not: valid: yaml:::\n');
     expect(router.resolveMemoryBackend({ projectRoot, env: {} })).toBe('local');
   });
+
+  test('custom registered backend resolves deterministically from deps over env and config', () => {
+    const projectRoot = makeProjectRoot();
+    writeConfig(projectRoot, 'memory:\n  backend: graphiti\n');
+    const adapter = { add() {}, recall() {}, search() {}, capture() {}, digest() {} };
+    router.registerMemoryBackend('custom', adapter);
+    expect(router.resolveMemoryBackend({
+      projectRoot,
+      env: { FORGE_MEMORY_BACKEND: 'graphiti' },
+      deps: { memoryBackend: 'custom' },
+    })).toBe('custom');
+    router.unregisterMemoryBackend('custom');
+  });
 });
 
 describe('memory-router: config validation', () => {
@@ -231,6 +244,22 @@ describe('memory-router: graphiti backend (experimental — local kernel is alwa
     expect(() => router.append(projectRoot, 'note a', { store, graphitiEmitter: throwing })).not.toThrow();
     expect(() => router.append(projectRoot, 'note b', { store, graphitiEmitter: rejecting })).not.toThrow();
     expect(router.recall(projectRoot, {}, { store }).total).toBe(2);
+  });
+
+  test('appendWithReceipt reports enricher failure without changing the local result', () => {
+    const projectRoot = makeProjectRoot();
+    writeConfig(projectRoot, GRAPHITI_CONFIG);
+    const store = makeStore(projectRoot);
+    const result = router.appendWithReceipt(projectRoot, 'receipt note', {
+      store,
+      graphitiEmitter: { emit: () => { throw new Error('sidecar down'); } },
+    });
+
+    expect(result.value.note).toBe('receipt note');
+    expect(result.receipt.schema_id).toBe('forge.memory.operation-receipt.v1');
+    expect(result.receipt.selected_backend).toBe('graphiti');
+    expect(result.receipt.status).toBe('degraded');
+    expect(router.recall(projectRoot, {}, { store }).total).toBe(1);
   });
 });
 
