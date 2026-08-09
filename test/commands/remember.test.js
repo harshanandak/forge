@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const { afterEach, describe, test, expect } = require('bun:test');
 
 const remember = require('../../lib/commands/remember');
@@ -150,6 +151,21 @@ describe('forge remember command', () => {
       kind: 'session-summary',
       content_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
+  });
+
+  test('session-summary metadata canonicalizes tags with locale-aware ordering', async () => {
+    const projectRoot = makeProjectRoot();
+    const payload = JSON.parse((await remember.handler(
+      ['--session-summary', '--what', 'implemented hook', '--tag', 'z', '--tag', 'ä', '--json'],
+      {},
+      projectRoot
+    )).output);
+    const expected = crypto.createHash('sha256').update(JSON.stringify({
+      body: 'What: implemented hook',
+      tags: ['ä', 'z'],
+      type: 'session-summary',
+    }), 'utf8').digest('hex');
+    expect(payload.metadata.content_hash).toBe(expected);
   });
 
   test('session-summary idempotency is not limited to the newest 100 memories', async () => {
