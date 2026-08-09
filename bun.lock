@@ -40,6 +40,9 @@
     "packages/memory": {
       "name": "@forge/memory",
       "version": "0.1.0-beta.6",
+      "dependencies": {
+        "@forge/memory-contracts": "0.1.0-beta.6",
+      },
     },
     "packages/memory-contracts": {
       "name": "@forge/memory-contracts",

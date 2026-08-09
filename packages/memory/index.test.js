@@ -1,6 +1,8 @@
 'use strict';
 
-const { expect, test } = require('bun:test');
+const { expect, mock, test } = require('bun:test');
+const contracts = require('../memory-contracts');
+mock.module('@forge/memory-contracts', () => contracts);
 const memory = require('./index');
 
 test('@forge/memory exposes the stable backend registry entrypoint', () => {
