@@ -10,7 +10,6 @@ const {
 const POLICY = Object.freeze({
 	enabled: true,
 	workClasses: ['task', 'bug'],
-	trustedAdopters: ['maintainer@example.test'],
 });
 
 function contractMetadata(contractOverrides = {}, metadataOverrides = {}) {
@@ -29,6 +28,7 @@ function contractMetadata(contractOverrides = {}, metadataOverrides = {}) {
 function completeIssue(overrides = {}, contractOverrides = {}, metadataOverrides = {}) {
 	return {
 		id: 'work-1',
+		revision: 7,
 		type: 'task',
 		status: 'open',
 		body: 'Make readiness select only executable work.',
@@ -106,7 +106,7 @@ describe('issue-contract readiness policy', () => {
 
 	test('trusted maintainer adoption lets imported and fork work use an explicit contract', () => {
 		for (const origin of ['import', 'fork_pr']) {
-			const result = evaluateIssueContract(completeIssue(
+			const issue = completeIssue(
 				{},
 				{
 					risk: 'compatibility',
@@ -114,7 +114,13 @@ describe('issue-contract readiness policy', () => {
 					adopted_by: 'maintainer@example.test',
 				},
 				{ origin },
-			), POLICY);
+			);
+			const result = evaluateIssueContract(issue, POLICY, {
+				isTrustedAdoption: evidence => evidence.actor === 'maintainer@example.test'
+					&& evidence.issue_id === 'work-1'
+					&& evidence.revision === 7
+					&& evidence.metadata['forge.contract'].version === 1,
+			});
 
 			expect(result).toEqual({ applicable: true, valid: true, reasons: [] });
 		}
@@ -134,28 +140,91 @@ describe('issue-contract readiness policy', () => {
 			{ adopted_by: 'attacker@example.test' },
 			{ origin: 'import' },
 		);
-		const result = evaluateIssueContract(issue, POLICY);
+		const result = evaluateIssueContract(issue, {
+			...POLICY,
+			trustedAdopters: ['attacker@example.test'],
+		});
 
 		expect(result.valid).toBe(false);
 		expect(result.reasons).toContainEqual({
-			code: 'contract_adopter_untrusted',
+			code: 'contract_adoption_unverified',
 			adopter: 'attacker@example.test',
 		});
 	});
 
-	test('an injected authority predicate can validate a trusted adopter', () => {
+	test('an injected authority predicate receives actor, issue id, revision, and metadata', () => {
 		const issue = completeIssue(
 			{},
 			{ adopted_by: 'team-maintainer' },
 			{ origin: 'fork_pr' },
 		);
+		let observed;
 		const result = evaluateIssueContract(
 			issue,
 			{ enabled: true, workClasses: ['task'] },
-			{ isTrustedAdopter: adopter => adopter === 'team-maintainer' },
+			{
+				isTrustedAdoption: evidence => {
+					observed = evidence;
+					return evidence.actor === 'team-maintainer'
+						&& evidence.issue_id === 'work-1'
+						&& evidence.revision === 7;
+				},
+			},
 		);
 
 		expect(result).toEqual({ applicable: true, valid: true, reasons: [] });
+		expect(observed).toMatchObject({
+			actor: 'team-maintainer',
+			issue_id: 'work-1',
+			revision: 7,
+			metadata: { 'forge.contract': { version: 1 } },
+		});
+	});
+
+	test('rejects inherited and accessor-backed metadata contract authority', () => {
+		const inherited = Object.create({
+			'forge.contract': {
+				version: 1,
+				risk: 'authority',
+				dependencies: [],
+				out_of_scope: 'Inherited data must not count.',
+			},
+		});
+		const accessor = {};
+		Object.defineProperty(accessor, 'forge.contract', {
+			enumerable: true,
+			get: () => JSON.parse(contractMetadata())['forge.contract'],
+		});
+
+		for (const metadata of [inherited, accessor]) {
+			const result = evaluateIssueContract(completeIssue({ metadata }), POLICY);
+			expect(result.valid).toBe(false);
+			expect(result.reasons).toContainEqual({
+				code: 'contract_invalid', field: 'version', expected: 1, actual: null,
+			});
+		}
+	});
+
+	test('rejects inherited contract fields and ignores inherited origin markers', () => {
+		const inheritedFields = Object.create({
+			version: 1,
+			risk: 'authority',
+			dependencies: [],
+			out_of_scope: 'Inherited contract fields.',
+		});
+		const metadata = { 'forge.contract': inheritedFields };
+		const invalid = evaluateIssueContract(completeIssue({ metadata }), POLICY);
+		expect(invalid.valid).toBe(false);
+
+		const accessorOrigin = {
+			'forge.contract': JSON.parse(contractMetadata())['forge.contract'],
+		};
+		Object.defineProperty(accessorOrigin, 'origin', {
+			enumerable: true,
+			get: () => 'import',
+		});
+		const native = evaluateIssueContract(completeIssue({ metadata: accessorOrigin }), POLICY);
+		expect(native).toEqual({ applicable: true, valid: true, reasons: [] });
 	});
 
 	test('top-level issue.contract cannot bypass versioned metadata authority', () => {
@@ -219,6 +288,17 @@ describe('issue-contract readiness policy', () => {
 		expect(index.readinessById.incomplete.status).toBe('open');
 		expect(index.readinessById.incomplete.state).toBe('backlog');
 		expect(index.readinessById.incomplete.reasons).toContainEqual({
+			code: 'contract_missing', field: 'purpose',
+		});
+	});
+
+	test('a parked backlog item still reports incomplete contract reasons', () => {
+		const issue = { id: 'parked', type: 'task', status: 'backlog', priority_rank: 0 };
+		const index = buildReadinessIndex({ issues: [issue], contractPolicy: POLICY, topK: 1 });
+
+		expect(index.readinessById.parked.state).toBe('backlog');
+		expect(index.readinessById.parked.contract_applicable).toBe(true);
+		expect(index.readinessById.parked.reasons).toContainEqual({
 			code: 'contract_missing', field: 'purpose',
 		});
 	});
