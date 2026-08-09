@@ -3,7 +3,7 @@
 const { describe, expect, mock, test } = require("bun:test");
 const contracts = require("../memory-contracts");
 mock.module("@forge/memory-contracts", () => contracts);
-const { computeContentHash, validateContract } = contracts;
+const { computeContentHash, validateContractStructure } = contracts;
 const { createRunReceiptSkeleton } = require(".");
 
 function makeWorkPacket() {
@@ -53,7 +53,7 @@ describe("Flow contract boundary", () => {
       producerInstanceId: "flow-1",
     });
 
-    expect(validateContract(receipt).ok).toBe(true);
+    expect(validateContractStructure(receipt).ok).toBe(true);
     expect(receipt.payload).toMatchObject({
       packet_hash: packet.content_hash,
       exact_head: packet.payload.target_head,

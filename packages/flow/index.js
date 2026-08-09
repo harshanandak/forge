@@ -1,6 +1,6 @@
 "use strict";
 
-const { computeContentHash, validateContract } = require("@forge/memory-contracts");
+const { computeContentHash, validateContractStructure } = require("@forge/memory-contracts");
 
 function requiredString(options, name) {
   const value = options[name];
@@ -11,7 +11,7 @@ function requiredString(options, name) {
 }
 
 function createRunReceiptSkeleton(workPacket, options = {}) {
-  const packetValidation = validateContract(workPacket);
+  const packetValidation = validateContractStructure(workPacket);
   if (!packetValidation.ok || workPacket.schema_id !== "forge.memory.work-packet.v1") {
     throw new TypeError("WorkPacket is invalid");
   }
@@ -57,7 +57,7 @@ function createRunReceiptSkeleton(workPacket, options = {}) {
     extensions: {},
   };
   receipt.content_hash = computeContentHash(receipt);
-  const receiptValidation = validateContract(receipt);
+  const receiptValidation = validateContractStructure(receipt);
   if (!receiptValidation.ok) {
     throw new TypeError("RunReceipt is invalid");
   }

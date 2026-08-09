@@ -21,36 +21,63 @@ function javascriptFiles(directory) {
   });
 }
 
+function skipTrivia(source, start) {
+  let cursor = start;
+  while (cursor < source.length) {
+    if (/\s/.test(source[cursor])) {
+      cursor += 1;
+    } else if (source.startsWith("/*", cursor)) {
+      const end = source.indexOf("*/", cursor + 2);
+      cursor = end === -1 ? source.length : end + 2;
+    } else if (source.startsWith("//", cursor)) {
+      const end = source.indexOf("\n", cursor + 2);
+      cursor = end === -1 ? source.length : end + 1;
+    } else {
+      break;
+    }
+  }
+  return cursor;
+}
+
+function readPlainString(source, start) {
+  const quote = source[start];
+  if (quote !== "\"" && quote !== "'") return null;
+  for (let cursor = start + 1; cursor < source.length; cursor += 1) {
+    if (source[cursor] === "\\") return null;
+    if (source[cursor] === quote) {
+      return { value: source.slice(start + 1, cursor), end: cursor + 1 };
+    }
+  }
+  return null;
+}
+
+function moduleCallsIn(source) {
+  const calls = [];
+  for (const match of source.matchAll(/\b(?:require|import)\b/g)) {
+    let cursor = skipTrivia(source, match.index + match[0].length);
+    if (source[cursor] !== "(") continue;
+    cursor = skipTrivia(source, cursor + 1);
+    const literal = readPlainString(source, cursor);
+    if (literal && source[skipTrivia(source, literal.end)] === ")") {
+      calls.push({ specifier: literal.value });
+      continue;
+    }
+    const end = source.indexOf(")", cursor);
+    const expression = source.slice(cursor, end === -1 ? source.length : end).trim();
+    calls.push({ expression: expression || "<empty>" });
+  }
+  return calls;
+}
+
 function importsIn(source) {
-  const imports = [];
-  const pattern = /(?:require\s*\(|import\s*\()\s*["']([^"']+)["']|(?:import|export)\s+(?:[^"']+\s+from\s+)?["']([^"']+)["']/g;
-  for (const match of source.matchAll(pattern)) imports.push(match[1] || match[2]);
+  const imports = moduleCallsIn(source).flatMap((call) => call.specifier ? [call.specifier] : []);
+  const pattern = /(?:import|export)\s+(?:[^"']+\s+from\s+)?["']([^"']+)["']/g;
+  for (const match of source.matchAll(pattern)) imports.push(match[1]);
   return imports;
 }
 
-function isStringLiteral(expression) {
-  const quote = expression[0];
-  if (quote !== "\"" && quote !== "'") return false;
-  for (let index = 1; index < expression.length; index += 1) {
-    if (expression[index] === "\\") {
-      index += 1;
-      continue;
-    }
-    if (expression[index] === quote) {
-      return expression.slice(index + 1).trim().length === 0;
-    }
-  }
-  return false;
-}
-
 function dynamicImportsIn(source) {
-  const dynamic = [];
-  const pattern = /\b(?:require|import)\s*\(([^)\r\n]*)\)/g;
-  for (const match of source.matchAll(pattern)) {
-    const expression = match[1].trim();
-    if (!isStringLiteral(expression)) dynamic.push(expression || "<empty>");
-  }
-  return dynamic;
+  return moduleCallsIn(source).flatMap((call) => call.expression ? [call.expression] : []);
 }
 
 describe("product package boundaries", () => {
@@ -58,8 +85,15 @@ describe("product package boundaries", () => {
     ["require variable", "require(privateModule)"],
     ["concatenated require", "require('@forge/memory-contracts/' + privatePath)"],
     ["template dynamic import", "import(`@forge/${product}/private`)"],
+    ["multiline require variable", "require(\n  privateModule\n)"],
+    ["multiline template import", "import(\n  `@forge/${product}/private`\n)"],
   ])("rejects a computed module specifier: %s", (_label, source) => {
     expect(dynamicImportsIn(source)).not.toEqual([]);
+  });
+
+  test("inspects a literal require separated from its call by a comment", () => {
+    expect(importsIn("require /* package boundary */ ('@forge/memory/private')"))
+      .toContain("@forge/memory/private");
   });
 
   for (const packageName of PACKAGES) {
