@@ -1,6 +1,6 @@
 # Forge 0.1.0 Missing Acceptance Contracts
 
-Status: normative proposal companion. These contracts must be written to the matching live Kernel issue and read back at the expected revision during the pre-implementation admission gate. They do not authorize implementation.
+Status: approved normative companion. These contracts must be written to the matching live Kernel issue and read back at the expected revision during the pre-implementation admission gate. Only a passing aggregate admission receipt authorizes PR 1 implementation.
 
 Snapshot facts:
 
