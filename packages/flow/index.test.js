@@ -78,4 +78,18 @@ describe("Flow contract boundary", () => {
       producerInstanceId: "flow-1",
     })).toThrow("WorkPacket is invalid");
   });
+
+  test.each([
+    ["malformed object id", { objectId: "not-a-uuid" }],
+    ["malformed timestamp", { createdAt: "tomorrow" }],
+  ])("validates the completed RunReceipt and rejects a %s", (_label, override) => {
+    expect(() => createRunReceiptSkeleton(makeWorkPacket(), {
+      objectId: "bb7cf5c2-8410-43d2-a309-c8b97e58d61d",
+      runId: "run-1",
+      attemptId: "attempt-1",
+      createdAt: "2026-08-09T12:01:00.000Z",
+      producerInstanceId: "flow-1",
+      ...override,
+    })).toThrow("RunReceipt is invalid");
+  });
 });

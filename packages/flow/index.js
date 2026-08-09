@@ -57,6 +57,10 @@ function createRunReceiptSkeleton(workPacket, options = {}) {
     extensions: {},
   };
   receipt.content_hash = computeContentHash(receipt);
+  const receiptValidation = validateContract(receipt);
+  if (!receiptValidation.ok) {
+    throw new TypeError("RunReceipt is invalid");
+  }
   return receipt;
 }
 

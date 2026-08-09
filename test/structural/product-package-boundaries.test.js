@@ -28,13 +28,50 @@ function importsIn(source) {
   return imports;
 }
 
+function isStringLiteral(expression) {
+  const quote = expression[0];
+  if (quote !== "\"" && quote !== "'") return false;
+  for (let index = 1; index < expression.length; index += 1) {
+    if (expression[index] === "\\") {
+      index += 1;
+      continue;
+    }
+    if (expression[index] === quote) {
+      return expression.slice(index + 1).trim().length === 0;
+    }
+  }
+  return false;
+}
+
+function dynamicImportsIn(source) {
+  const dynamic = [];
+  const pattern = /\b(?:require|import)\s*\(([^)\r\n]*)\)/g;
+  for (const match of source.matchAll(pattern)) {
+    const expression = match[1].trim();
+    if (!isStringLiteral(expression)) dynamic.push(expression || "<empty>");
+  }
+  return dynamic;
+}
+
 describe("product package boundaries", () => {
+  test.each([
+    ["require variable", "require(privateModule)"],
+    ["concatenated require", "require('@forge/memory-contracts/' + privatePath)"],
+    ["template dynamic import", "import(`@forge/${product}/private`)"],
+  ])("rejects a computed module specifier: %s", (_label, source) => {
+    expect(dynamicImportsIn(source)).not.toEqual([]);
+  });
+
   for (const packageName of PACKAGES) {
     test(`${packageName} imports only its public allowed dependencies`, () => {
       const packageRoot = path.join(ROOT, "packages", packageName);
       const violations = [];
       for (const file of javascriptFiles(packageRoot)) {
-        for (const specifier of importsIn(fs.readFileSync(file, "utf8"))) {
+        const source = fs.readFileSync(file, "utf8");
+        for (const expression of dynamicImportsIn(source)) {
+          violations.push(`${path.relative(ROOT, file)} -> dynamic module specifier: ${expression}`);
+        }
+        for (const specifier of importsIn(source)) {
           if (specifier.startsWith(".")) {
             const resolved = path.resolve(path.dirname(file), specifier);
             if (resolved !== packageRoot && !resolved.startsWith(`${packageRoot}${path.sep}`)) {
