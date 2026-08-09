@@ -1,7 +1,12 @@
 "use strict";
 
 const { canonicalize, computeContentHash, preflightCanonicalValue } = require("./canonical.js");
-const { CONTRACTS, PAYLOAD_FIELDS } = require("./definitions.js");
+const {
+  CONTRACTS,
+  EXTENSION_ID_MAX_LENGTH,
+  EXTENSION_ID_PATTERN,
+  PAYLOAD_FIELDS,
+} = require("./definitions.js");
 
 const ENVELOPE_FIELDS = Object.freeze([
   "schema_id", "schema_version", "object_id", "created_at", "producer",
@@ -23,9 +28,9 @@ const LIVE_EVIDENCE_FIELDS = Object.freeze({
   "forge.memory.delivery-receipt.v1": ["eventId", "target"],
   "forge.memory.monitor-receipt.v1": ["monitorId", "ownerRunId"],
 });
-const EXTENSION_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$/;
-const SECRET_PATTERN = /(?:gh[pousr]_[A-Za-z0-9]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,})/;
-const ABSOLUTE_USER_PATH = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+\/)/;
+const EXTENSION_ID = new RegExp(EXTENSION_ID_PATTERN);
+const SECRET_PATTERN = /(?:gh[pousr]_[A-Za-z0-9]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,})/i;
+const ABSOLUTE_USER_PATH = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+\/)/i;
 const BOUNDED_LIMITS = Object.freeze({ maxDepth: 8, maxItems: 128, maxProperties: 64, maxBytes: 16_384 });
 
 function error(errors, path, code) {
@@ -46,7 +51,7 @@ function validateEnvelope(value, options = {}) {
     if (!Object.hasOwn(value, field)) error(errors, `$.${field}`, "MISSING_REQUIRED");
   }
   if (errors.length > 0) return { ok: false, errors };
-  if (!CONTRACTS[value.schema_id]) error(errors, "$.schema_id", "UNSUPPORTED_SCHEMA");
+  if (!Object.hasOwn(CONTRACTS, value.schema_id)) error(errors, "$.schema_id", "UNSUPPORTED_SCHEMA");
   if (value.schema_version !== 1) error(errors, "$.schema_version", "UNSUPPORTED_VERSION");
   if (typeof value.schema_id !== "string" || value.schema_id.length === 0) error(errors, "$.schema_id", "INVALID_TYPE");
   if (!UUID.test(value.object_id)) error(errors, "$.object_id", "INVALID_UUID");
@@ -80,7 +85,7 @@ function validateExtensions(extensions, errors) {
   if (!extensions || typeof extensions !== "object" || Array.isArray(extensions)) return;
   for (const [extensionId, extension] of Object.entries(extensions)) {
     const path = `$.extensions[${JSON.stringify(extensionId)}]`;
-    if (!EXTENSION_ID.test(extensionId)) error(errors, path, "INVALID_EXTENSION_ID");
+    if (extensionId.length > EXTENSION_ID_MAX_LENGTH || !EXTENSION_ID.test(extensionId)) error(errors, path, "INVALID_EXTENSION_ID");
     if (!extension || typeof extension !== "object" || Array.isArray(extension)) {
       error(errors, path, "INVALID_EXTENSION");
       continue;
@@ -113,7 +118,7 @@ function validateShape(value, shape, path, errors) {
   if (shape.maxLength !== undefined && value.length > shape.maxLength) error(errors, path, "BOUNDED_VALUE_TOO_LARGE");
   if (shape.minimum !== undefined && value < shape.minimum) error(errors, path, "OUT_OF_RANGE");
   if (shape.pattern && !new RegExp(shape.pattern).test(value)) error(errors, path, "INVALID_FORMAT");
-  if (shape.not?.pattern && new RegExp(shape.not.pattern).test(value)) error(errors, path, "PRIVACY_PATTERN_REJECTED");
+  if (shape.not?.pattern && new RegExp(shape.not.pattern, "i").test(value)) error(errors, path, "PRIVACY_PATTERN_REJECTED");
   if (shape.format === "date-time" && (!RFC3339_UTC.test(value) || Number.isNaN(Date.parse(value)))) error(errors, path, "INVALID_TIMESTAMP");
   if (shape.type === "array" && shape.maxItems !== undefined && value.length > shape.maxItems) error(errors, path, "BOUNDED_VALUE_TOO_MANY_ITEMS");
   if (shape.type === "array" && shape.items) value.forEach((item, index) => validateShape(item, shape.items, `${path}[${index}]`, errors));
@@ -162,6 +167,10 @@ function validateBoundedPrivacy(value, errors) {
   if (value?.schema_id === "forge.memory.feedback-report.v1") {
     targets.push([value.payload?.redacted_reproduction_steps, "$.payload.redacted_reproduction_steps"]);
     if (value.payload?.proposed_fix !== undefined) targets.push([value.payload.proposed_fix, "$.payload.proposed_fix"]);
+    if (value.payload?.return_channel !== undefined) targets.push([value.payload.return_channel, "$.payload.return_channel"]);
+  } else if (value?.schema_id === "forge.memory.context-packet.v1") {
+    if (value.payload?.references !== undefined) targets.push([value.payload.references, "$.payload.references"]);
+    if (value.payload?.summaries !== undefined) targets.push([value.payload.summaries, "$.payload.summaries"]);
   } else if (value?.schema_id === "forge.memory.monitor-event.v1" && value.payload?.bounded_payload !== undefined) {
     targets.push([value.payload.bounded_payload, "$.payload.bounded_payload"]);
   } else if (value?.schema_id === "forge.memory.monitor-receipt.v1") {
@@ -184,6 +193,12 @@ function validateBoundedPrivacy(value, errors) {
       if (failure.code === "CANONICAL_BYTE_LIMIT") error(errors, path, "BOUNDED_VALUE_TOO_LARGE");
     }
   }
+}
+
+function isStale(expiresAt, observedAt) {
+  const expires = Date.parse(expiresAt);
+  const observed = Date.parse(observedAt);
+  return Number.isNaN(expires) || Number.isNaN(observed) || expires <= observed;
 }
 
 function validateConsequentialEvidence(value, expected, errors) {
@@ -222,11 +237,11 @@ function validateConsequentialEvidence(value, expected, errors) {
     compare(errors, payload.issue_revision, expected.issueRevision, "$.payload.issue_revision", "STALE_ISSUE_REVISION");
     compare(errors, payload.actor_id, expected.actorId, "$.payload.actor_id", "STALE_ACTOR");
     compare(errors, payload.lease_epoch, expected.leaseEpoch, "$.payload.lease_epoch", "STALE_LEASE_EPOCH");
-    if (Date.parse(payload.expires_at) <= Date.parse(expected.observedAt)) error(errors, "$.payload.expires_at", "STALE_LEASE");
+    if (isStale(payload.expires_at, expected.observedAt)) error(errors, "$.payload.expires_at", "STALE_LEASE");
   } else if (value.schema_id === "forge.memory.capability-manifest.v1") {
     compare(errors, payload.provider_id, expected.providerId, "$.payload.provider_id", "STALE_PROVIDER");
     compare(errors, payload.config_revision, expected.configRevision, "$.payload.config_revision", "STALE_CAPABILITY_CONFIG");
-    if (Date.parse(payload.expires_at) <= Date.parse(expected.observedAt)) error(errors, "$.payload.expires_at", "STALE_CAPABILITY_MANIFEST");
+    if (isStale(payload.expires_at, expected.observedAt)) error(errors, "$.payload.expires_at", "STALE_CAPABILITY_MANIFEST");
   } else if (value.schema_id === "forge.memory.feedback-report.v1") {
     compare(errors, payload.consent_event_id, expected.consentEventId, "$.payload.consent_event_id", "STALE_CONSENT");
     compare(errors, payload.redaction_policy_revision, expected.redactionPolicyRevision, "$.payload.redaction_policy_revision", "STALE_REDACTION_POLICY");
@@ -248,7 +263,7 @@ function validateContractStructure(value, options = {}) {
   const envelope = validateEnvelope(value, options);
   if (envelope.errors.some((item) => item.code === "NON_CANONICAL_VALUE")) return envelope;
   const errors = [...envelope.errors];
-  const definition = CONTRACTS[value?.schema_id];
+  const definition = Object.hasOwn(CONTRACTS, value?.schema_id) ? CONTRACTS[value.schema_id] : undefined;
   if (definition && value?.payload && typeof value.payload === "object" && !Array.isArray(value.payload)) {
     for (const field of definition.required) {
       if (!Object.hasOwn(value.payload, field)) error(errors, `$.payload.${field}`, "MISSING_REQUIRED");

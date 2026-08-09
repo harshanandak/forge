@@ -1,6 +1,7 @@
 "use strict";
 
 const { describe, expect, test } = require("bun:test");
+const { parse } = require("@babel/parser");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -71,8 +72,13 @@ function moduleCallsIn(source) {
 
 function importsIn(source) {
   const imports = moduleCallsIn(source).flatMap((call) => call.specifier ? [call.specifier] : []);
-  const pattern = /(?:import|export)\s+(?:[^"']+\s+from\s+)?["']([^"']+)["']/g;
-  for (const match of source.matchAll(pattern)) imports.push(match[1]);
+  const ast = parse(source, { sourceType: "unambiguous" });
+  for (const statement of ast.program.body) {
+    if (["ImportDeclaration", "ExportAllDeclaration", "ExportNamedDeclaration"].includes(statement.type)
+      && typeof statement.source?.value === "string") {
+      imports.push(statement.source.value);
+    }
+  }
   return imports;
 }
 
@@ -93,6 +99,11 @@ describe("product package boundaries", () => {
 
   test("inspects a literal require separated from its call by a comment", () => {
     expect(importsIn("require /* package boundary */ ('@forge/memory/private')"))
+      .toContain("@forge/memory/private");
+  });
+
+  test("inspects a static import separated from its value by a comment", () => {
+    expect(importsIn("import/* package boundary */value from '@forge/memory/private';"))
       .toContain("@forge/memory/private");
   });
 

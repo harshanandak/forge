@@ -127,19 +127,25 @@ describe('memory-router: backend resolution', () => {
     writeConfig(projectRoot, 'memory:\n  backend: graphiti\n');
     const adapter = { add() {}, recall() {}, search() {}, capture() {}, digest() {} };
     router.registerMemoryBackend('custom', adapter);
-    expect(router.resolveMemoryBackend({
-      projectRoot,
-      env: { FORGE_MEMORY_BACKEND: 'graphiti' },
-      deps: { memoryBackend: 'custom' },
-    })).toBe('custom');
-    router.unregisterMemoryBackend('custom');
+    try {
+      expect(router.resolveMemoryBackend({
+        projectRoot,
+        env: { FORGE_MEMORY_BACKEND: 'graphiti' },
+        deps: { memoryBackend: 'custom' },
+      })).toBe('custom');
+    } finally {
+      router.unregisterMemoryBackend('custom');
+    }
   });
 
   test('custom backend registration rejects an accidental override', () => {
     const adapter = { add() {}, recall() {}, search() {}, capture() {}, digest() {} };
     router.registerMemoryBackend('unique-custom', adapter);
-    expect(() => router.registerMemoryBackend('unique-custom', adapter)).toThrow(/already registered/i);
-    router.unregisterMemoryBackend('unique-custom');
+    try {
+      expect(() => router.registerMemoryBackend('unique-custom', adapter)).toThrow(/already registered/i);
+    } finally {
+      router.unregisterMemoryBackend('unique-custom');
+    }
   });
 });
 

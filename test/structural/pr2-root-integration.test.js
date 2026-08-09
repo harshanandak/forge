@@ -45,7 +45,7 @@ describe('PR2 root package integration', () => {
 
   test.each([
     {
-      path: 'packages/memory-contracts/src/contracts.js', owner: 'memory-contracts',
+      path: 'packages/memory-contracts/src/validate.js', owner: 'memory-contracts',
       product: 'memory', lane: 'contract-baseline', route: 'flow-memory-contract',
       command: 'validation.command.contract-baseline', testPath: 'packages/memory-contracts',
     },

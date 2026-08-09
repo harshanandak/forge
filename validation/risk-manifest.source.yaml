@@ -131,7 +131,7 @@ owners:
       - { kind: path, prefix: "packages/memory/" }
       - { kind: schema, prefix: "forge.memory." }
     risk_ids: [memory-data-integrity, contract-compatibility]
-    canonical_test_ids: ["test/memory/**/*.test.js"]
+    canonical_test_ids: ["packages/memory/**/*.test.js", "test/memory/**/*.test.js"]
     dependent_routes: [memory-contract]
     platform_runtime_additions: [windows-sqlite, linux-sqlite]
     lanes: [memory-package]
@@ -169,7 +169,7 @@ owners:
       - { kind: path, prefix: "packages/flow/" }
       - { kind: schema, prefix: "forge.flow." }
     risk_ids: [monitor-cleanup, contract-compatibility]
-    canonical_test_ids: ["test/workflow/**/*.test.js"]
+    canonical_test_ids: ["packages/flow/**/*.test.js", "test/workflow/**/*.test.js"]
     dependent_routes: [flow-memory-contract]
     platform_runtime_additions: [windows-process, linux-process, macos-process]
     lanes: [flow-package]

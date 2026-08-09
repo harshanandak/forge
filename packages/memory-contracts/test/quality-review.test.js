@@ -8,6 +8,7 @@ const {
   canonicalize,
   computeContentHash,
   generateJsonSchema,
+  validateContract,
   validateContractStructure,
 } = require("../index.js");
 
@@ -88,6 +89,30 @@ describe("privacy-safe bounded contract fields", () => {
     expect(validateContractStructure(path).errors.map((item) => item.code)).toContain("PRIVACY_ABSOLUTE_PATH");
   });
 
+  test("rejects mixed-case secrets and user paths in bounded fields", () => {
+    const secret = fixture("forge.memory.feedback-report.v1");
+    secret.payload.redacted_reproduction_steps = ["Token=supersecretvalue"];
+    rehash(secret);
+    expect(validateContractStructure(secret).errors.map((item) => item.code)).toContain("PRIVACY_SECRET_PATTERN");
+
+    const path = fixture("forge.memory.structured-error.v1");
+    path.payload.safe_details = { detail: "see C:\\users\\alice\\secret.txt" };
+    rehash(path);
+    expect(validateContractStructure(path).errors.map((item) => item.code)).toContain("PRIVACY_ABSOLUTE_PATH");
+  });
+
+  test("privacy-checks context references and feedback return channels", () => {
+    const context = fixture("forge.memory.context-packet.v1");
+    context.payload.references = [{ detail: "Password: supersecretvalue" }];
+    rehash(context);
+    expect(validateContractStructure(context).errors.map((item) => item.code)).toContain("PRIVACY_SECRET_PATTERN");
+
+    const feedback = fixture("forge.memory.feedback-report.v1");
+    feedback.payload.return_channel = { path: "/Home/alice/private.txt" };
+    rehash(feedback);
+    expect(validateContractStructure(feedback).errors.map((item) => item.code)).toContain("PRIVACY_ABSOLUTE_PATH");
+  });
+
   test("rejects oversized, deep, property-heavy, and item-heavy bounded monitor payloads", () => {
     const cases = [
       ["BOUNDED_VALUE_TOO_LARGE", { text: "x".repeat(20_000) }],
@@ -158,6 +183,15 @@ describe("privacy-safe bounded contract fields", () => {
 });
 
 describe("validation descriptor preflight", () => {
+  test("rejects inherited object keys as unsupported schema IDs without throwing", () => {
+    const packet = fixture("forge.memory.work-packet.v1");
+    packet.schema_id = "constructor";
+    rehash(packet);
+    let result;
+    expect(() => { result = validateContractStructure(packet); }).not.toThrow();
+    expect(result.errors).toContainEqual({ path: "$.schema_id", code: "UNSUPPORTED_SCHEMA" });
+  });
+
   test("never invokes hostile top-level or nested getters", () => {
     let invoked = 0;
     const topLevel = {};
@@ -198,10 +232,21 @@ describe("extension schema and runtime parity", () => {
     const extensions = generateJsonSchema("forge.memory.work-packet.v1").properties.extensions;
     expect(extensions.additionalProperties.properties.impact.const).toBe("advisory");
     expect(extensions.additionalProperties.required).toEqual(["impact", "schema_version", "value"]);
+    expect(extensions.propertyNames.maxLength).toBeNumber();
 
     const packet = fixture("forge.memory.work-packet.v1");
     packet.extensions["vendor.example/advisory"] = { impact: "advisory", schema_version: 1, value: true, extra: true };
     rehash(packet);
     expect(validateContractStructure(packet).errors.map((item) => item.code)).toContain("INVALID_EXTENSION");
+  });
+});
+
+describe("live evidence timestamps", () => {
+  test.each([
+    ["forge.memory.lease-receipt.v1", { issueRevision: 7, actorId: "agent-1", leaseEpoch: 2, observedAt: "not-a-time" }, "STALE_LEASE"],
+    ["forge.memory.capability-manifest.v1", { providerId: "provider-1", configRevision: "config-1", observedAt: "not-a-time" }, "STALE_CAPABILITY_MANIFEST"],
+  ])("fails closed for malformed observed time on %s", (schemaId, expected, code) => {
+    const value = fixture(schemaId);
+    expect(validateContract(value, { expected }).errors.map((item) => item.code)).toContain(code);
   });
 });

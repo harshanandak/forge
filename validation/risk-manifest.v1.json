@@ -259,7 +259,7 @@
       "id": "validation-selector"
     }
   ],
-  "manifest_hash": "sha256:2b6215dfab4bb2071f0d2c7d5ac29dc6ef9c582292b52fe5fd81a26425b4fc2b",
+  "manifest_hash": "sha256:afc0f7b27d8bb39a465fba8f5c492085464e9b1a611a717bb90840f9fbafb52c",
   "owners": [
     {
       "canonical_test_ids": [
@@ -362,6 +362,7 @@
     },
     {
       "canonical_test_ids": [
+        "packages/memory/**/*.test.js",
         "test/memory/**/*.test.js"
       ],
       "dependent_routes": [
@@ -445,6 +446,7 @@
     },
     {
       "canonical_test_ids": [
+        "packages/flow/**/*.test.js",
         "test/workflow/**/*.test.js"
       ],
       "dependent_routes": [
@@ -549,7 +551,7 @@
     }
   ],
   "schema_id": "forge.validation.risk-manifest.v1",
-  "source_hash": "sha256:10a09065ae6d640b7369fd109cd1ee27ac2e10ca47274642d9b6b9cfd77ee177",
+  "source_hash": "sha256:4e86a985bdbc51cf7101fc1a0a9a90d03112a08b44440530f2bb7a56f17d9deb",
   "unknown_owner_fallback": {
     "lane": "repository-baseline",
     "required_gates": [

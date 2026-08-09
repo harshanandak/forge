@@ -50,9 +50,10 @@ describe("standalone product packages", () => {
     created.push(temporary);
     fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ private: true }));
     const contractsTarball = pack(path.join(ROOT, "packages", "memory-contracts"), temporary);
+    const memoryTarball = pack(path.join(ROOT, "packages", "memory"), temporary);
     const flowTarball = pack(path.join(ROOT, "packages", "flow"), temporary);
 
-    const install = npm(["install", "--ignore-scripts", contractsTarball, flowTarball], temporary);
+    const install = npm(["install", "--ignore-scripts", contractsTarball, memoryTarball, flowTarball], temporary);
     expect(install.status, install.stderr).toBe(0);
 
     const platformNode = resolvePlatformNode();
@@ -60,7 +61,7 @@ describe("standalone product packages", () => {
     expect(platformNode.version.major > 22 || platformNode.version.minor >= 16).toBe(true);
     expect(path.basename(platformNode.executable).toLowerCase()).not.toContain("bun");
 
-    const probe = spawnSync(platformNode.executable, ["-e", "require('@forge/memory-contracts'); require('@forge/flow')"], {
+    const probe = spawnSync(platformNode.executable, ["-e", "require('@forge/memory-contracts'); require('@forge/memory'); require('@forge/flow')"], {
       cwd: temporary,
       encoding: "utf8",
     });

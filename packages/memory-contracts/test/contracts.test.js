@@ -218,6 +218,24 @@ describe("extension compatibility", () => {
       code: "UNKNOWN_CONSEQUENTIAL_EXTENSION",
     });
   });
+
+  test("rejects extension IDs with an empty trailing segment", () => {
+    const packet = workPacket({
+      extensions: {
+        "vendor.example.": {
+          impact: "advisory",
+          schema_version: 1,
+          value: true,
+        },
+      },
+    });
+    packet.content_hash = computeContentHash(packet);
+
+    expect(validateContract(packet).errors).toContainEqual({
+      path: '$.extensions["vendor.example."]',
+      code: "INVALID_EXTENSION_ID",
+    });
+  });
 });
 
 describe("consequential authority, capability, and privacy evidence", () => {

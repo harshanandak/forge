@@ -1,6 +1,6 @@
 {
   "baseline_version": 1,
-  "generator_version": "memory-contracts-schema-gen/6",
+  "generator_version": "memory-contracts-schema-gen/7",
   "artifacts": [
     {
       "path": "compatibility-matrix.v1.json",
@@ -88,47 +88,47 @@
     },
     {
       "path": "schemas/v1/capability-manifest.schema.json",
-      "sha256": "87e7d4218ed8c3e78cbe265df056cf6da7ff4620a34fe34145502cfa7c772785"
+      "sha256": "8435c1ec9ebfd0f9b9b6d06f490dcfdac4696f002a83692899e1e172f17cd6dd"
     },
     {
       "path": "schemas/v1/claim-request.schema.json",
-      "sha256": "64d9ba367efa02feb719d60d073d344a4683be459da769566c0a2799fb32b086"
+      "sha256": "eb9a6aa46c51550fa5505caeeff6e7773fce128e940fdb85a851cfd13cbf1375"
     },
     {
       "path": "schemas/v1/context-packet.schema.json",
-      "sha256": "fad7e7ad54603318bdfc51b5cf3ef3c4aea5faca0aa2e688a6e9049c44becf17"
+      "sha256": "36f422011e03fafe07de5fb16a1e9c745015b4257f640e77f1ae1f4ba70971eb"
     },
     {
       "path": "schemas/v1/delivery-receipt.schema.json",
-      "sha256": "95be4697f4c12f4e835cf921ab59cb1c2fb563d186e50c4597e883861e34c4b3"
+      "sha256": "1e505c9a790d2e5a3ccf1cd227b7a708924f9d92a61c2220964f7cb05a9d8f4c"
     },
     {
       "path": "schemas/v1/feedback-report.schema.json",
-      "sha256": "646f26d7056f02123d59a570c91a4e52aac01586f24d184161b47f970009b843"
+      "sha256": "6f9f272b831d30574ecf56601307a361544f022c7690fd8077aeae8ca5913e37"
     },
     {
       "path": "schemas/v1/lease-receipt.schema.json",
-      "sha256": "c6d192bf74321303096b5b72aa54a9253f1610ac16862f433306fcaee3212655"
+      "sha256": "e7b3c1f6857e4ebad930518236011b8346054b1fa7d38607def4a42c1ba9a739"
     },
     {
       "path": "schemas/v1/monitor-event.schema.json",
-      "sha256": "008f066ea111ffbc91205cb9066ae72efacec150d253aaa946af1a3d8f165cc1"
+      "sha256": "df270f5b7e280c10293f2c964727d13baa0488c9e1cc87037ba1307bc76958dc"
     },
     {
       "path": "schemas/v1/monitor-receipt.schema.json",
-      "sha256": "807efad0117eb4642aa024bf363cd40f10f06435384a9bf351f9830055ddc860"
+      "sha256": "555dba3db355498a1813bfcf045fe2c3f10057789539918e3303c11191048b33"
     },
     {
       "path": "schemas/v1/run-receipt.schema.json",
-      "sha256": "d93766ddf554b83def5d0171623f9fcf1610defda740ab24478ebf3b4d1e74c5"
+      "sha256": "de55aca54248a208560fffade7bcfdc555e83daf330f37fe482bb8068495ece6"
     },
     {
       "path": "schemas/v1/structured-error.schema.json",
-      "sha256": "2cbc793d264c56b2effe92367bcfd202f01a3a868a3deb619ea39af5070f01e0"
+      "sha256": "ea8b6d40528634743efa91a550d27d8191adc8ce95e630356dadce98ba864d64"
     },
     {
       "path": "schemas/v1/work-packet.schema.json",
-      "sha256": "543f6d89e8400ebe9b8890c6d6faaabaad55762b066862be7882a564917664c7"
+      "sha256": "82f149e5ceedf004a5c129f264d0cb94e6704a7eadae8f02dbd40a62b75a556c"
     }
   ]
 }

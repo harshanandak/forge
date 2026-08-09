@@ -1,9 +1,14 @@
 "use strict";
 
-const { CONTRACTS, PAYLOAD_FIELDS } = require("./definitions.js");
+const {
+  CONTRACTS,
+  EXTENSION_ID_MAX_LENGTH,
+  EXTENSION_ID_PATTERN,
+  PAYLOAD_FIELDS,
+} = require("./definitions.js");
 
 function generateJsonSchema(schemaId) {
-  const definition = CONTRACTS[schemaId];
+  const definition = Object.hasOwn(CONTRACTS, schemaId) ? CONTRACTS[schemaId] : undefined;
   if (!definition) throw new TypeError(`Unsupported schema_id: ${schemaId}`);
   const payloadProperties = {};
   for (const field of [...definition.required, ...definition.optional]) payloadProperties[field] = structuredClone(PAYLOAD_FIELDS[schemaId][field]);
@@ -22,6 +27,7 @@ function generateJsonSchema(schemaId) {
         type: "object",
         required: ["product_id", "product_version", "instance_id"],
         properties: { product_id: { type: "string", minLength: 1 }, product_version: { type: "string", minLength: 1 }, instance_id: { type: "string", minLength: 1 } },
+        additionalProperties: false,
       },
       capabilities_used: {
         type: "array",
@@ -36,12 +42,13 @@ function generateJsonSchema(schemaId) {
         type: "object",
         required: ["source_kind", "actor_class", "actor_id"],
         properties: { source_kind: { type: "string", minLength: 1 }, actor_class: { type: "string", minLength: 1 }, actor_id: { type: "string", minLength: 1 } },
+        additionalProperties: false,
       },
       content_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
       payload: { type: "object", required: definition.required, properties: payloadProperties, additionalProperties: false },
       extensions: {
         type: "object",
-        propertyNames: { pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$" },
+        propertyNames: { pattern: EXTENSION_ID_PATTERN, maxLength: EXTENSION_ID_MAX_LENGTH },
         additionalProperties: {
           type: "object",
           required: ["impact", "schema_version", "value"],
@@ -59,7 +66,7 @@ function generateJsonSchema(schemaId) {
 }
 
 function supportedSchemaVersions(schemaId) {
-  return CONTRACTS[schemaId] ? [1] : [];
+  return Object.hasOwn(CONTRACTS, schemaId) ? [1] : [];
 }
 
 module.exports = { generateJsonSchema, supportedSchemaVersions };

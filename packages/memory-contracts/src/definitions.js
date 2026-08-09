@@ -88,6 +88,8 @@ const OBJECT_ARRAY = Object.freeze({ type: "array", items: { type: "object" } })
 const HASH = Object.freeze({ type: "string", pattern: "^[0-9a-f]{64}$" });
 const HEAD = Object.freeze({ type: "string", pattern: "^[0-9a-f]{40}(?:[0-9a-f]{24})?$" });
 const TIMESTAMP = Object.freeze({ type: "string", format: "date-time" });
+const EXTENSION_ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9_-]*(?:[./][A-Za-z0-9][A-Za-z0-9_-]*)+$";
+const EXTENSION_ID_MAX_LENGTH = 255;
 const SECRET_PATTERN = "(?:gh[pousr]_[A-Za-z0-9]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S{8,})";
 const ABSOLUTE_USER_PATH_PATTERN = "(?:[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+|/(?:Users|home)/[^/\\s]+/)";
 const SAFE_REDACTED_STRING = Object.freeze({ type: "string", minLength: 1, maxLength: 4096, not: { pattern: `${SECRET_PATTERN}|${ABSOLUTE_USER_PATH_PATTERN}` } });
@@ -101,6 +103,7 @@ const BOUNDED_OBJECT = Object.freeze({
   "x-forge-secret-pattern": SECRET_PATTERN,
   "x-forge-absolute-user-path-pattern": ABSOLUTE_USER_PATH_PATTERN,
 });
+const BOUNDED_OBJECT_ARRAY = Object.freeze({ type: "array", maxItems: 128, items: BOUNDED_OBJECT });
 
 const PAYLOAD_FIELDS = deepFreeze({
   "forge.memory.work-packet.v1": {
@@ -117,7 +120,7 @@ const PAYLOAD_FIELDS = deepFreeze({
     work_packet_hash: HASH, context_selection_revision: POSITIVE_INTEGER, privacy_scope_hash: HASH,
     retention_class: { type: "string", enum: ["public_metadata", "local_sensitive", "remote_redacted", "restricted"] },
     disclosure_class: { type: "string", enum: ["public_metadata", "local_sensitive", "remote_redacted", "restricted"] },
-    references: OBJECT_ARRAY, summaries: OBJECT_ARRAY, redaction_policy_revision: STRING,
+    references: BOUNDED_OBJECT_ARRAY, summaries: BOUNDED_OBJECT_ARRAY, redaction_policy_revision: STRING,
   },
   "forge.memory.claim-request.v1": {
     issue_id: STRING, expected_issue_revision: INTEGER, actor_id: STRING, request_id: STRING,
@@ -145,7 +148,7 @@ const PAYLOAD_FIELDS = deepFreeze({
     report_id: STRING, product_version: STRING, contract_version: POSITIVE_INTEGER, stable_error_code: STRING,
     affected_capability: STRING, redacted_reproduction_steps: SAFE_REDACTED_STEPS, expected_classification: STRING,
     actual_classification: STRING, occurrence_count: POSITIVE_INTEGER, content_fingerprint: HASH,
-    consent_event_id: STRING, redaction_policy_revision: STRING, proposed_fix: SAFE_REDACTED_STRING, return_channel: OBJECT,
+    consent_event_id: STRING, redaction_policy_revision: STRING, proposed_fix: SAFE_REDACTED_STRING, return_channel: BOUNDED_OBJECT,
   },
   "forge.memory.structured-error.v1": {
     parent_object_hash: HASH, error_occurrence_id: STRING, code: STRING,
@@ -170,4 +173,4 @@ const PAYLOAD_FIELDS = deepFreeze({
   },
 });
 
-module.exports = { CONTRACTS, PAYLOAD_FIELDS };
+module.exports = { CONTRACTS, EXTENSION_ID_MAX_LENGTH, EXTENSION_ID_PATTERN, PAYLOAD_FIELDS };
