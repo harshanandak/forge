@@ -10,7 +10,7 @@
     "lib/workflow/stages.js": "0b7ae32bddcbb9bd6dd52a07ca22e43364621918"
   },
   "hash_algorithm": "sha256",
-  "content_hash": "341a301263cb54fc8c5f16a56f5db31edba69c530b69394bc49ca69054786cbf",
+  "content_hash": "c6978eed757c6255f2d25ea6d49ada44e5b3da91830d348016267981d13afd18",
   "files": [
     { "path": "README.md", "sha256": "3cfcc78856e397f2cfd3fee9fa2fffb630e27ea3e76ee8d8b5d9a77cb366a709" },
     { "path": "contract/command-contract.json", "sha256": "8b4f885091fa8afe72b7b5a5a8039869c871f4fb1dc3344728b2c4322f491a84" },

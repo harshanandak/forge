@@ -78,6 +78,18 @@ describe('beta.5 compatibility evidence', () => {
     }
   });
 
+  test('keeps canonical evidence independent of the host locale', () => {
+    const baseline = verifyBeta5Corpus();
+    const localeSpy = spyOn(String.prototype, 'localeCompare').mockImplementation(function compare(other) {
+      return String(other) < String(this) ? -1 : String(other) > String(this) ? 1 : 0;
+    });
+    try {
+      expect(verifyBeta5Corpus()).toEqual(baseline);
+    } finally {
+      localeSpy.mockRestore();
+    }
+  });
+
   test('rejects unmanifested corpus files instead of silently extending immutable evidence', () => {
     const copied = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-corpus-extra-'));
     fs.cpSync(BETA5_CORPUS_ROOT, copied, { recursive: true });
