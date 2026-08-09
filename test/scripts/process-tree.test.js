@@ -114,6 +114,30 @@ describe('scripts/process-tree.js', () => {
     expect(result.killed).toEqual([9012]);
   });
 
+  test('rejects an inherited manifest that only matches the session id', () => {
+    const manifestPath = path.join(makeTempDir(), 'run.json');
+    createProcessTree({
+      manifestPath,
+      token: 'shared-session',
+      platform: 'linux',
+      processApi: { pid: 9000 },
+      getProcessIdentity: () => 'parent-start',
+    });
+
+    const stale = createProcessTree({
+      env: {
+        [MANIFEST_ENV]: manifestPath,
+        FORGE_SESSION_ID: 'shared-session',
+      },
+      platform: 'linux',
+      processApi: { pid: 9001 },
+      getProcessIdentity: () => 'other-start',
+    });
+
+    expect(stale.envFor({})[MANIFEST_ENV]).toBeUndefined();
+    expect(readProcessManifest(manifestPath).owner.pid).toBe(9000);
+  });
+
   test('escalates a signal cleanup to timeout cleanup without double-killing', () => {
     const manifestPath = path.join(makeTempDir(), 'run.json');
     const kills = [];

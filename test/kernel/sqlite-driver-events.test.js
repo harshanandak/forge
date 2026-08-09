@@ -115,6 +115,30 @@ describe('Kernel SQLite driver — event-store primitives (Wave 2)', () => {
 		]);
 	});
 
+	test('listKernelEvents preserves insertion order when timestamps tie', async () => {
+		const tiedAt = '2026-06-19T00:00:04.000Z';
+		for (const [id, key] of [['z-inserted-first', 'tie:first'], ['a-inserted-second', 'tie:second']]) {
+			await driver.insertKernelEvent({
+				id,
+				entity_type: 'issue',
+				entity_id: 'forge-1',
+				event_type: 'gate.approved',
+				idempotency_key: key,
+				expected_revision: 0,
+				actor: 'tester',
+				origin: 'cli',
+				payload: {},
+				created_at: tiedAt,
+			}, {}, config);
+		}
+
+		const rows = await driver.listKernelEvents('issue', 'forge-1', {}, config);
+		expect(rows.filter(row => row.created_at === tiedAt).map(row => row.id)).toEqual([
+			'z-inserted-first',
+			'a-inserted-second',
+		]);
+	});
+
 	test('listKernelEvents returns [] for an entity with no events', async () => {
 		const rows = await driver.listKernelEvents('issue', 'forge-unknown', {}, config);
 		expect(rows).toEqual([]);

@@ -115,14 +115,49 @@ jobs:
         run: npm pack --dry-run
       - name: Ensure OIDC-capable npm
         run: npm install --global npm@11.5.1 && npm --version
-      - name: Publish to npm
+      - name: Resolve npm dist-tag
+        id: dist-tag
         shell: bash
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
-          if echo "$VERSION" | grep -q '-'; then
-            echo "Prerelease $VERSION -> publishing under the beta dist-tag"
-            npm publish --provenance --tag beta
+          CORE_RE='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
+          NUMERIC_ID_RE='(0|[1-9][0-9]*)'
+          BUILD_RE='(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?'
+          BETA_RE="^${CORE_RE}-beta(\.${NUMERIC_ID_RE})*${BUILD_RE}$"
+          RC_RE="^${CORE_RE}-rc(\.${NUMERIC_ID_RE})*${BUILD_RE}$"
+          STABLE_RE="^${CORE_RE}${BUILD_RE}$"
+
+          if [[ "$VERSION" =~ $BETA_RE ]]; then
+            echo "tag=beta" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" =~ $RC_RE ]]; then
+            echo "tag=rc" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" =~ $STABLE_RE ]]; then
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" == *-* ]]; then
+            echo "::error::Unsupported npm prerelease: $VERSION"
+            exit 1
           else
-            npm publish --provenance
+            echo "::error::Invalid npm version: $VERSION"
+            exit 1
           fi
+      - name: Publish to npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIST_TAG="${{ steps.dist-tag.outputs.tag }}"
+          case "$DIST_TAG" in
+            beta)
+              npm publish --provenance --tag beta
+              ;;
+            rc)
+              npm publish --provenance --tag rc
+              ;;
+            latest)
+              npm publish --provenance
+              ;;
+            *)
+              echo "::error::Unsupported npm dist-tag: $DIST_TAG"
+              exit 1
+              ;;
+          esac

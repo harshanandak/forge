@@ -9,6 +9,7 @@ const { spawnSync: defaultSpawnSync } = require('node:child_process');
 const MANIFEST_ENV = 'FORGE_TEST_PROCESS_MANIFEST';
 const TOKEN_ENV = 'FORGE_TEST_PROCESS_TOKEN';
 const INSTANCE_ENV = 'FORGE_TEST_PROCESS_INSTANCE';
+const SESSION_ENV = 'FORGE_SESSION_ID';
 const MANIFEST_VERSION = 1;
 const DEFAULT_MANIFEST_DIR = path.join(os.tmpdir(), 'forge-test-processes');
 
@@ -326,7 +327,11 @@ function createProcessTree(options = {}) {
     if (!identity && !hasCustomIdentity) return `unverified:${pid}`;
     return identity;
   };
-  const token = String(options.token || env[TOKEN_ENV] || randomUUID());
+  // A Forge claim records FORGE_SESSION_ID. Use that same stable runtime token
+  // for the root manifest, while preserving an inherited manifest token for
+  // nested process trees that are already attached to their parent run.
+  const inheritedToken = nonEmptyString(options.token) || nonEmptyString(env[TOKEN_ENV]);
+  const token = String(inheritedToken || env[SESSION_ENV] || randomUUID());
   const explicitManifestPath = nonEmptyString(options.manifestPath);
   const environmentManifestPath = nonEmptyString(env[MANIFEST_ENV]);
   const manifestDir = options.manifestDir || DEFAULT_MANIFEST_DIR;
@@ -351,7 +356,10 @@ function createProcessTree(options = {}) {
   const existing = readProcessManifest(manifestPath, fsApi, processApi);
   // An environment-provided path may belong to another run. Treat that as
   // unverifiable and fail closed; never overwrite or reap another run's marker.
-  const usable = !markerExists || (existing && existing.token === token);
+  const inheritedManifestVerified = !environmentManifestPath
+    || Boolean(inheritedToken && existing?.token === inheritedToken);
+  const usable = inheritedManifestVerified
+    && (!markerExists || (existing && existing.token === token));
   let manifest = existing && existing.token === token
     ? existing
     : (usable ? createInitialManifest(token, processApi, getProcessIdentity, instanceId) : null);
@@ -749,11 +757,14 @@ function reconcileProcessManifests(options = {}) {
 }
 
 module.exports = {
+  DEFAULT_MANIFEST_DIR,
   INSTANCE_ENV,
   MANIFEST_ENV,
   MANIFEST_VERSION,
   TOKEN_ENV,
   createProcessTree,
+  defaultGetProcessIdentity,
+  isValidManifest,
   readProcessManifest,
   reapProcessManifest,
   reconcileProcessManifests,

@@ -154,6 +154,92 @@ describe('gate-events module', () => {
     // A different gate stays unapproved.
     expect(await isGateApproved(UNUSED_ROOT, issue, 'gate.merge', { deps: deps(kernel) })).toBe(false);
   });
+
+  test('a TTL approval round-trips stable issue-bound authority fields', async () => {
+    const kernel = await freshKernel();
+    const issue = await seedIssue(kernel, 'unit-ttl');
+
+    const result = await recordGateEvent(UNUSED_ROOT, {
+      issueId: issue,
+      gateId: 'gate.merge',
+      decision: 'approved',
+      expiresAt: '2026-08-09T10:05:00.000Z',
+      now: '2026-08-09T10:00:00.000Z',
+      env: { FORGE_ACTOR: 'alice' },
+      deps: deps(kernel),
+    });
+
+    expect(result.event).toMatchObject({
+      issue_id: issue,
+      gate: 'gate.merge',
+      control_id: `gate:${issue}:gate.merge`,
+      actor: 'alice',
+      decision: 'approved',
+      issued_at: '2026-08-09T10:00:00.000Z',
+      expires_at: '2026-08-09T10:05:00.000Z',
+    });
+  });
+
+  test('expired, rejected, missing, wrong-issue, and wrong-gate evidence fails closed', async () => {
+    const kernel = await freshKernel();
+    const issue = await seedIssue(kernel, 'unit-expiry');
+    const otherIssue = await seedIssue(kernel, 'unit-expiry-other');
+    const shared = { deps: deps(kernel) };
+
+    await recordGateEvent(UNUSED_ROOT, {
+      issueId: issue,
+      gateId: 'gate.merge',
+      decision: 'approved',
+      expiresAt: '2026-08-09T10:05:00.000Z',
+      now: '2026-08-09T10:00:00.000Z',
+      deps: deps(kernel),
+    });
+
+    expect(await isGateApproved(UNUSED_ROOT, issue, 'gate.merge', {
+      ...shared, now: '2026-08-09T10:04:59.999Z',
+    })).toBe(true);
+    expect(await isGateApproved(UNUSED_ROOT, issue, 'gate.merge', {
+      ...shared, now: '2026-08-09T10:05:00.000Z',
+    })).toBe(false);
+    expect(await isGateApproved(UNUSED_ROOT, otherIssue, 'gate.merge', shared)).toBe(false);
+    expect(await isGateApproved(UNUSED_ROOT, issue, 'gate.intent', shared)).toBe(false);
+    expect(await isGateApproved(UNUSED_ROOT, issue, 'gate.plan-approval', shared)).toBe(false);
+
+    await recordGateEvent(UNUSED_ROOT, {
+      issueId: issue,
+      gateId: 'gate.merge',
+      decision: 'rejected',
+      now: '2026-08-09T10:01:00.000Z',
+      deps: deps(kernel),
+    });
+    expect(await isGateApproved(UNUSED_ROOT, issue, 'gate.merge', {
+      ...shared, now: '2026-08-09T10:02:00.000Z',
+    })).toBe(false);
+  });
+
+  test('identical TTL approval replay is idempotent while later reject stays audit-visible', async () => {
+    const kernel = await freshKernel();
+    const issue = await seedIssue(kernel, 'unit-ttl-idem');
+    const approval = {
+      issueId: issue,
+      gateId: 'gate.plan-approval',
+      decision: 'approved',
+      expiresAt: '2026-08-09T10:05:00.000Z',
+      now: '2026-08-09T10:00:00.000Z',
+      env: { FORGE_ACTOR: 'alice' },
+      deps: deps(kernel),
+    };
+
+    expect((await recordGateEvent(UNUSED_ROOT, approval)).duplicate).toBe(false);
+    expect((await recordGateEvent(UNUSED_ROOT, approval)).duplicate).toBe(true);
+    await recordGateEvent(UNUSED_ROOT, {
+      ...approval, decision: 'rejected', now: '2026-08-09T10:01:00.000Z',
+    });
+
+    const events = await listGateEvents(UNUSED_ROOT, issue, { deps: deps(kernel) });
+    expect(events.filter(event => event.gate === 'gate.plan-approval')).toHaveLength(2);
+    expect(events.map(event => event.decision)).toEqual(['approved', 'rejected']);
+  });
 });
 
 // Driver-lifecycle invariant (same class as the grounding fix, kernel issue

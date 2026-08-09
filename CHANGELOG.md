@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Note**: `/check` was renamed to `/validate` and `/merge` was renamed to `/premerge` in v0.0.3. Historical entries below may use the old names.
 
+## [Unreleased]
+
+### Added
+
+- **Forge 0.1.0 control-plane foundations.** Adds executable issue-readiness contracts, dead-run claim reconciliation, issue-scoped approval receipts, Kernel-authoritative plan snapshots, fail-closed risk-to-test selection, and distinct npm beta, RC, and stable release channels. (#497; issues `4ee7f9a9-4fa0-42c1-bd96-96638cc9feff`, `9b69a551-f5a0-4057-9d9f-96fb0d744fd3`, `b977b0a2-11f6-40d7-a230-8e2ff5f79115`, `b811a974-a866-47e0-8f83-3f5d2423aded`, `7a6a3fb3-c82c-48e7-86ee-630c171b924c`, `3e46debd-11c3-4b1c-b59a-17304c37cb03`)
+
 ## [0.1.0-beta.5] - 2026-08-09
 
 ### Added

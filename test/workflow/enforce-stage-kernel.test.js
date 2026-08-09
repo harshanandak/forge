@@ -19,12 +19,23 @@ const path = require('node:path');
 const { enforceStageEntry } = require('../../lib/workflow/enforce-stage');
 const { createLocalBroker } = require('../../lib/kernel/broker');
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+const { writeWorkflowState } = require('../../lib/workflow/state');
 
 const TIMEOUT = 15000;
 
 // A runtime-health fixture that never hard-stops, so these tests isolate the
 // workflow-state logic (health prerequisites are covered elsewhere).
 const HEALTHY = { healthy: true, hardStop: false, diagnostics: [] };
+
+function createWorkflowState(currentStage, classification) {
+  return {
+    currentStage,
+    completedStages: [],
+    skippedStages: [],
+    workflowDecisions: { classification, reason: 'fixture', userOverride: false, overrides: [] },
+    parallelTracks: [],
+  };
+}
 
 describe('B1: enforceStageEntry uses the kernel as stage-state authority', () => {
   let tmpDir;
@@ -204,6 +215,83 @@ describe('B1: enforceStageEntry uses the kernel as stage-state authority', () =>
     expect(result.allowed).toBe(true);
     expect(result.stage).toBe('dev');
     expect(driver.getCurrentStage({ issue_id: issueId }, {}).stage).toBe('dev');
+  }, TIMEOUT);
+
+  test('dev without a project root preserves the legacy unmanaged path', async () => {
+    const snapshotDriver = {
+      loadPlanSnapshot: () => ({ schema: 'forge.plan.v1' }),
+      listStageRuns: () => [],
+      recordStageRun: () => {},
+    };
+
+    const result = await enforceStageEntry({
+      commandName: 'dev',
+      kernelDriver: snapshotDriver,
+      activeIssueId: issueId,
+      health: HEALTHY,
+    });
+
+    expect(result.allowed).toBe(true);
+  }, TIMEOUT);
+
+  test('empty normalized branch slugs use feature in the plan repair command', async () => {
+    const repairDriver = {
+      loadPlanSnapshot: () => null,
+      listWorktrees: () => [{
+        issue_id: issueId,
+        branch: 'feat/---',
+        state: 'active',
+        work_folder: 'docs/work/missing',
+      }],
+      listStageRuns: () => [],
+      recordStageRun: () => {},
+    };
+
+    await expect(enforceStageEntry({
+      commandName: 'dev',
+      projectRoot,
+      kernelDriver: repairDriver,
+      activeIssueId: issueId,
+      branch: 'feat/---',
+      health: HEALTHY,
+    })).rejects.toThrow(`forge plan "feature" --issue ${issueId}`);
+  }, TIMEOUT);
+
+  test('a rejected file-state gate does not persist plan authority or start dev', async () => {
+    const workFolder = path.join('docs', 'work', 'rejected-dev');
+    fs.mkdirSync(path.join(projectRoot, workFolder), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, workFolder, 'plan.md'), '# Plan\n');
+    fs.writeFileSync(path.join(projectRoot, workFolder, 'tasks.md'), '# Tasks\n');
+    fs.writeFileSync(
+      path.join(projectRoot, '.forge-state.json'),
+      writeWorkflowState(createWorkflowState('ship', 'standard')),
+    );
+    let snapshotTransitions = 0;
+    let stageWrites = 0;
+    const gatedDriver = {
+      loadPlanSnapshot: () => null,
+      listWorktrees: () => [{
+        issue_id: issueId,
+        branch: 'feat/rejected-dev',
+        state: 'active',
+        work_folder: workFolder.replaceAll('\\', '/'),
+      }],
+      recordPlanSnapshotTransition: () => { snapshotTransitions += 1; },
+      recordStageRun: () => { stageWrites += 1; },
+      listStageRuns: () => [],
+    };
+
+    await expect(enforceStageEntry({
+      commandName: 'dev',
+      projectRoot,
+      kernelDriver: gatedDriver,
+      activeIssueId: issueId,
+      branch: 'feat/rejected-dev',
+      health: HEALTHY,
+    })).rejects.toThrow(/blocked/i);
+
+    expect(snapshotTransitions).toBe(0);
+    expect(stageWrites).toBe(0);
   }, TIMEOUT);
 
   test('B1: ship with a linked issue and empty stage history is allowed, warns, and records ship start', async () => {

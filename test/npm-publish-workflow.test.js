@@ -10,6 +10,7 @@ const releaseCommand = require('../lib/commands/release');
 const {
 	NPM_PUBLISH_WORKFLOW_PATH,
 	generateNpmPublishWorkflow,
+	renderNpmDistTagResolverScript,
 	renderNpmPublishWorkflow,
 } = require('../lib/npm-publish-workflow');
 const {
@@ -22,6 +23,9 @@ const {
 } = require('../scripts/npm-release-receipt');
 
 const repoRoot = path.resolve(__dirname, '..');
+const bashExecutable = process.platform === 'win32'
+	? path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe')
+	: 'bash';
 
 function normalizeNewlines(content) {
 	return content.replace(/\r\n/g, '\n');
@@ -32,7 +36,50 @@ function jobSection(workflow, name) {
 	return match?.[1] || '';
 }
 
+function resolveNpmDistTag(version) {
+	const output = path.join(os.tmpdir(), `forge-npm-dist-tag-${process.pid}-${Date.now()}`);
+	try {
+		const result = spawnSync(bashExecutable, ['-c', renderNpmDistTagResolverScript()], {
+			encoding: 'utf8',
+			env: { ...process.env, VERSION: version, GITHUB_OUTPUT: output },
+		});
+		return {
+			...result,
+			output: fs.existsSync(output) ? fs.readFileSync(output, 'utf8') : '',
+		};
+	} finally {
+		fs.rmSync(output, { force: true });
+	}
+}
+
 describe('Forge-owned npm publish workflow', () => {
+	test('resolves beta, RC, and stable versions to distinct npm dist-tags', () => {
+		expect(resolveNpmDistTag('0.1.0-beta.5')).toMatchObject({ status: 0, output: 'tag=beta\n' });
+		expect(resolveNpmDistTag('0.1.0-beta')).toMatchObject({ status: 0, output: 'tag=beta\n' });
+		expect(resolveNpmDistTag('0.1.0-rc.1')).toMatchObject({ status: 0, output: 'tag=rc\n' });
+		expect(resolveNpmDistTag('0.1.0-rc')).toMatchObject({ status: 0, output: 'tag=rc\n' });
+		expect(resolveNpmDistTag('0.1.0')).toMatchObject({ status: 0, output: 'tag=latest\n' });
+		expect(resolveNpmDistTag('0.1.0+build.7')).toMatchObject({ status: 0, output: 'tag=latest\n' });
+		expect(resolveNpmDistTag('0.1.0-rc.2+build.7')).toMatchObject({ status: 0, output: 'tag=rc\n' });
+	}, 15_000);
+
+	test.each([
+		'0.1.0-alpha.1',
+		'1.0.0-alpha-rc.1',
+		'1.0.0-foo-beta.1',
+		'1.0.0-beta.foo',
+		'1.0.0-rc.01',
+		'1.0.0-',
+		'01.0.0',
+		'1.0',
+		'',
+	])('fails closed for unsupported or malformed version %p', version => {
+		const result = resolveNpmDistTag(version);
+			expect(result.status).toBe(1);
+		expect(`${result.stdout}${result.stderr}`).toMatch(/Unsupported npm prerelease|Invalid npm version/);
+		expect(result.output).toBe('');
+	});
+
 	test('the checked-in workflow is exactly the deterministic generator output', () => {
 		const generated = renderNpmPublishWorkflow();
 		const checkedIn = fs.readFileSync(path.join(repoRoot, NPM_PUBLISH_WORKFLOW_PATH), 'utf8');
@@ -122,7 +169,7 @@ describe('Forge-owned npm publish workflow', () => {
 		})).toMatchObject({ allowed: false, reason: 'receipt_mismatch' });
 	});
 
-	test('preserves release guards, OIDC provenance, and beta dist-tag publishing', () => {
+	test('preserves release guards, OIDC provenance, and explicit prerelease dist-tags', () => {
 		const workflow = renderNpmPublishWorkflow();
 		const publishJob = jobSection(workflow, 'publish-npm');
 
@@ -131,7 +178,9 @@ describe('Forge-owned npm publish workflow', () => {
 		expect(publishJob).toContain("version.split('-')[0]");
 		expect(publishJob).toContain('npm pack --dry-run');
 		expect(publishJob).toContain('npm publish --provenance --tag beta');
+		expect(publishJob).toContain('npm publish --provenance --tag rc');
 		expect(publishJob).toContain('npm publish --provenance');
+		expect(publishJob).toContain('tag=latest');
 		expect(publishJob).toContain('npm install --global npm@11.5.1 && npm --version');
 		expect(publishJob).not.toContain('npm@latest');
 	});

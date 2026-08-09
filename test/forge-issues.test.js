@@ -7,6 +7,109 @@ const path = require('node:path');
 const { DEFAULT_LEASE_TTL_MS } = require('../lib/kernel/lease-enforcer');
 
 describe('forge issue service contract', () => {
+	test('resolves only the explicit issue-contract readiness configuration', () => {
+		const { resolveIssueContractPolicy } = require('../lib/forge-issues');
+		const loadConfig = ({ projectRoot }) => ({
+			config: projectRoot === '/configured'
+				? { issues: { readiness: { contracts: {
+					enabled: true,
+					workClasses: ['task', 'bug'],
+				} } } }
+				: {},
+			errors: [],
+		});
+
+		expect(resolveIssueContractPolicy('/configured', { loadRuntimeGraphConfig: loadConfig })).toEqual({
+			enabled: true,
+			workClasses: ['task', 'bug'],
+		});
+		expect(resolveIssueContractPolicy('/legacy', { loadRuntimeGraphConfig: loadConfig })).toBeNull();
+	});
+
+	test('enabled contract policy rejects malformed, unknown, and trust-by-string configuration', () => {
+		const { resolveIssueContractPolicy } = require('../lib/forge-issues');
+		const invalidConfigs = [
+			[{ enabled: 'true', workClasses: ['task'] }, 'issues.readiness.contracts.enabled must be a boolean'],
+			[{ enabled: true, workClasses: 'task' }, 'issues.readiness.contracts.workClasses must be a non-empty array'],
+			[{ enabled: true, workClasses: [] }, 'issues.readiness.contracts.workClasses must be a non-empty array'],
+			[{ enabled: true, workClasses: ['unknown'] }, 'issues.readiness.contracts.workClasses contains an unknown work class'],
+			[
+				{ enabled: true, workClasses: ['task'], trustedAdopters: ['maintainer@example.test'] },
+				'unknown issues.readiness.contracts keys: trustedAdopters',
+			],
+			[
+				{ enabled: true, workClasses: ['task'], trustedAdopters: 'maintainer@example.test' },
+				'unknown issues.readiness.contracts keys: trustedAdopters',
+			],
+		];
+
+		for (const [contracts, expectedMessage] of invalidConfigs) {
+			try {
+				resolveIssueContractPolicy('/repo', {
+					loadRuntimeGraphConfig: () => ({
+						config: { issues: { readiness: { contracts } } },
+						errors: [],
+					}),
+				});
+				throw new Error('expected policy resolution to fail');
+			} catch (error) {
+				expect(error.code).toBe('FORGE_ISSUE_CONTRACT_CONFIG_INVALID');
+				expect(error.message).toBe(`FORGE_ISSUE_CONTRACT_CONFIG_INVALID: ${expectedMessage}`);
+			}
+		}
+	});
+
+	test('reports unknown contract keys in locale-aware alphabetical order', () => {
+		const { resolveIssueContractPolicy } = require('../lib/forge-issues');
+		const contracts = { enabled: true, workClasses: ['task'], zeta: true, Älpha: true };
+
+		expect(() => resolveIssueContractPolicy('/repo', {
+			loadRuntimeGraphConfig: () => ({
+				config: { issues: { readiness: { contracts } } },
+				errors: [],
+			}),
+		})).toThrow('unknown issues.readiness.contracts keys: Älpha, zeta');
+	});
+
+	test('contract policy rejects inherited activation and accessors without executing them', () => {
+		const { resolveIssueContractPolicy } = require('../lib/forge-issues');
+		const inherited = Object.create({ enabled: true, workClasses: ['task'] });
+		let getterExecuted = false;
+		const accessor = { workClasses: ['task'] };
+		Object.defineProperty(accessor, 'enabled', {
+			enumerable: true,
+			get: () => {
+				getterExecuted = true;
+				return true;
+			},
+		});
+
+		for (const contracts of [inherited, accessor]) {
+			expect(() => resolveIssueContractPolicy('/repo', {
+				loadRuntimeGraphConfig: () => ({
+					config: { issues: { readiness: { contracts } } },
+					errors: [],
+				}),
+			})).toThrow(/FORGE_ISSUE_CONTRACT_CONFIG_INVALID/);
+		}
+		expect(getterExecuted).toBe(false);
+	});
+
+	test('disabled contract policy still rejects trusted and unknown keys', () => {
+		const { resolveIssueContractPolicy } = require('../lib/forge-issues');
+		for (const contracts of [
+			{ enabled: false, trustedAdopters: ['maintainer@example.test'] },
+			{ enabled: false, unexpected: true },
+		]) {
+			expect(() => resolveIssueContractPolicy('/repo', {
+				loadRuntimeGraphConfig: () => ({
+					config: { issues: { readiness: { contracts } } },
+					errors: [],
+				}),
+			})).toThrow(/FORGE_ISSUE_CONTRACT_CONFIG_INVALID/);
+		}
+	});
+
   test('exports service factory and operation runner', () => {
     const forgeIssues = require('../lib/forge-issues');
 
@@ -306,6 +409,70 @@ describe('forge issue service contract', () => {
     expect(captured.worktreeId).toBeUndefined();
     expect(captured.leaseTtlMs).toBeUndefined();
   });
+
+	test('threads configured issue-contract policy into the Kernel read context', async () => {
+		const { runIssueOperation } = require('../lib/forge-issues');
+		let captured;
+		await runIssueOperation('ready', [], '/repo', {
+			createService: () => ({
+				async run(_operation, _args, context) {
+					captured = context;
+					return { success: true };
+				},
+			}),
+			loadRuntimeGraphConfig: () => ({
+				config: { issues: { readiness: { contracts: {
+					enabled: true,
+					workClasses: ['task'],
+				} } } },
+				errors: [],
+			}),
+		});
+
+		expect(captured.contractPolicy).toEqual({
+			enabled: true,
+			workClasses: ['task'],
+		});
+	});
+
+	test('rejects invalid issue-contract policy before creating a service', async () => {
+		const { runIssueOperation } = require('../lib/forge-issues');
+		let created = 0;
+
+		await expect(runIssueOperation('ready', [], '/repo', {
+			createService: () => {
+				created += 1;
+				return { run: async () => ({ success: true }) };
+			},
+			loadRuntimeGraphConfig: () => ({
+				config: { issues: { readiness: { contracts: { enabled: 'true' } } } },
+				errors: [],
+			}),
+		})).rejects.toThrow('issues.readiness.contracts.enabled must be a boolean');
+
+		expect(created).toBe(0);
+	});
+
+	test('threads only an injected authoritative adoption verifier, never configured strings', async () => {
+		const { runIssueOperation } = require('../lib/forge-issues');
+		const verifier = () => true;
+		let captured;
+		await runIssueOperation('ready', [], '/repo', {
+			createService: () => ({
+				async run(_operation, _args, context) {
+					captured = context;
+					return { success: true };
+				},
+			}),
+			verifyIssueContractAdoption: verifier,
+			loadRuntimeGraphConfig: () => ({
+				config: { issues: { readiness: { contracts: { enabled: true, workClasses: ['task'] } } } },
+				errors: [],
+			}),
+		});
+
+		expect(captured.isTrustedAdoption).toBe(verifier);
+	});
 
   test('FORGE_LEASE_TTL_MS=0 opts out of expiry (null lease), omitting leaseTtlMs from context', async () => {
     const { runIssueOperation } = require('../lib/forge-issues');

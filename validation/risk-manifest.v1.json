@@ -1,0 +1,522 @@
+{
+  "commands": [
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/integration"
+      ],
+      "executable": "bun",
+      "id": "validation.command.affected-platform"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/integration"
+      ],
+      "executable": "bun",
+      "id": "validation.command.contract-baseline"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/commands"
+      ],
+      "executable": "bun",
+      "id": "validation.command.facade-package"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/workflow"
+      ],
+      "executable": "bun",
+      "id": "validation.command.flow-package"
+    },
+    {
+      "argv": [
+        "x",
+        "eslint",
+        ".",
+        "--max-warnings",
+        "0"
+      ],
+      "executable": "bun",
+      "id": "validation.command.g0-static"
+    },
+    {
+      "argv": [
+        "scripts/generate-risk-manifest.js",
+        "--check"
+      ],
+      "executable": "node",
+      "id": "validation.command.g1-manifest-check"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/validation/risk-manifest.test.js",
+        "test/validation/risk-manifest-generator.test.js"
+      ],
+      "executable": "bun",
+      "id": "validation.command.g1-selector"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/integration"
+      ],
+      "executable": "bun",
+      "id": "validation.command.g3-contract"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/kernel"
+      ],
+      "executable": "bun",
+      "id": "validation.command.g4-authority"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/memory"
+      ],
+      "executable": "bun",
+      "id": "validation.command.g5-data"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/integration"
+      ],
+      "executable": "bun",
+      "id": "validation.command.g6-platform"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/e2e"
+      ],
+      "executable": "bun",
+      "id": "validation.command.g7-journey"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/kernel"
+      ],
+      "executable": "bun",
+      "id": "validation.command.kernel-package"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/memory"
+      ],
+      "executable": "bun",
+      "id": "validation.command.memory-package"
+    },
+    {
+      "argv": [
+        "run",
+        "test:full:parallel"
+      ],
+      "executable": "bun",
+      "id": "validation.command.repository-baseline"
+    },
+    {
+      "argv": [
+        "test",
+        "--timeout",
+        "15000",
+        "test/validation/risk-manifest.test.js",
+        "test/validation/risk-manifest-generator.test.js"
+      ],
+      "executable": "bun",
+      "id": "validation.command.validation-selector"
+    }
+  ],
+  "gates": [
+    {
+      "command_ids": [
+        "validation.command.g0-static"
+      ],
+      "id": "G0"
+    },
+    {
+      "command_ids": [
+        "validation.command.g1-manifest-check",
+        "validation.command.g1-selector"
+      ],
+      "id": "G1"
+    },
+    {
+      "command_ids": [
+        "validation.command.g3-contract"
+      ],
+      "id": "G3"
+    },
+    {
+      "command_ids": [
+        "validation.command.g4-authority"
+      ],
+      "id": "G4"
+    },
+    {
+      "command_ids": [
+        "validation.command.g5-data"
+      ],
+      "id": "G5"
+    },
+    {
+      "command_ids": [
+        "validation.command.g6-platform"
+      ],
+      "id": "G6"
+    },
+    {
+      "command_ids": [
+        "validation.command.g7-journey"
+      ],
+      "id": "G7"
+    }
+  ],
+  "generator_version": "forge-risk-manifest-generator.v1",
+  "lanes": [
+    {
+      "command_ids": [
+        "validation.command.affected-platform"
+      ],
+      "id": "affected-platform-baseline"
+    },
+    {
+      "command_ids": [
+        "validation.command.contract-baseline"
+      ],
+      "id": "contract-baseline"
+    },
+    {
+      "command_ids": [
+        "validation.command.facade-package"
+      ],
+      "id": "facade-package"
+    },
+    {
+      "command_ids": [
+        "validation.command.flow-package"
+      ],
+      "id": "flow-package"
+    },
+    {
+      "command_ids": [
+        "validation.command.kernel-package"
+      ],
+      "id": "kernel-package"
+    },
+    {
+      "command_ids": [
+        "validation.command.memory-package"
+      ],
+      "id": "memory-package"
+    },
+    {
+      "command_ids": [
+        "validation.command.repository-baseline"
+      ],
+      "id": "repository-baseline"
+    },
+    {
+      "command_ids": [
+        "validation.command.validation-selector"
+      ],
+      "id": "validation-selector"
+    }
+  ],
+  "manifest_hash": "sha256:d7b0d384d2e3636e37d6544f79aaf881ef63850acb20439e1d8a5cf80ab300b6",
+  "owners": [
+    {
+      "canonical_test_ids": [
+        "test/commands/**/*.test.js"
+      ],
+      "dependent_routes": [
+        "installed-cli"
+      ],
+      "id": "facade-cli",
+      "lanes": [
+        "facade-package"
+      ],
+      "package": "forge-workflow",
+      "package_roots": [
+        "bin",
+        "lib/commands"
+      ],
+      "platform_runtime_additions": [
+        "windows-shell"
+      ],
+      "product": "facade",
+      "risk_ids": [
+        "facade-routing"
+      ],
+      "selectors": [
+        {
+          "kind": "command",
+          "prefix": "forge "
+        },
+        {
+          "kind": "path",
+          "prefix": "bin/"
+        },
+        {
+          "kind": "path",
+          "prefix": "lib/commands/"
+        }
+      ]
+    },
+    {
+      "canonical_test_ids": [
+        "test/kernel/**/*.test.js"
+      ],
+      "dependent_routes": [
+        "memory-contract"
+      ],
+      "id": "kernel-authority",
+      "lanes": [
+        "kernel-package"
+      ],
+      "package": "forge-kernel",
+      "package_roots": [
+        "lib/kernel"
+      ],
+      "platform_runtime_additions": [
+        "linux-sqlite",
+        "windows-sqlite"
+      ],
+      "product": "memory",
+      "risk_ids": [
+        "authority-integrity"
+      ],
+      "selectors": [
+        {
+          "kind": "path",
+          "prefix": "lib/kernel/"
+        },
+        {
+          "kind": "schema",
+          "prefix": "forge.kernel."
+        }
+      ]
+    },
+    {
+      "canonical_test_ids": [
+        "test/memory/**/*.test.js"
+      ],
+      "dependent_routes": [
+        "memory-contract"
+      ],
+      "id": "memory-foundation",
+      "lanes": [
+        "memory-package"
+      ],
+      "package": "forge-memory",
+      "package_roots": [
+        "lib/memory"
+      ],
+      "platform_runtime_additions": [
+        "linux-sqlite",
+        "windows-sqlite"
+      ],
+      "product": "memory",
+      "risk_ids": [
+        "contract-compatibility",
+        "memory-data-integrity"
+      ],
+      "selectors": [
+        {
+          "kind": "path",
+          "prefix": "lib/memory/"
+        },
+        {
+          "kind": "schema",
+          "prefix": "forge.memory."
+        }
+      ]
+    },
+    {
+      "canonical_test_ids": [
+        "test/validation/risk-manifest-generator.test.js",
+        "test/validation/risk-manifest.test.js"
+      ],
+      "dependent_routes": [
+        "run-receipt",
+        "work-packet"
+      ],
+      "id": "validation-control",
+      "lanes": [
+        "validation-selector"
+      ],
+      "package": "forge-validation",
+      "package_roots": [
+        "lib/validation",
+        "scripts/generate-risk-manifest.js",
+        "validation"
+      ],
+      "platform_runtime_additions": [],
+      "product": "memory",
+      "risk_ids": [
+        "validation-selection"
+      ],
+      "selectors": [
+        {
+          "kind": "path",
+          "prefix": "lib/validation/"
+        },
+        {
+          "kind": "path",
+          "prefix": "scripts/generate-risk-manifest.js"
+        },
+        {
+          "kind": "path",
+          "prefix": "validation/"
+        },
+        {
+          "kind": "schema",
+          "prefix": "forge.validation."
+        }
+      ]
+    },
+    {
+      "canonical_test_ids": [
+        "test/workflow/**/*.test.js"
+      ],
+      "dependent_routes": [
+        "flow-memory-contract"
+      ],
+      "id": "workflow-runtime",
+      "lanes": [
+        "flow-package"
+      ],
+      "package": "forge-flow",
+      "package_roots": [
+        "lib/workflow"
+      ],
+      "platform_runtime_additions": [
+        "linux-process",
+        "macos-process",
+        "windows-process"
+      ],
+      "product": "flow",
+      "risk_ids": [
+        "contract-compatibility",
+        "monitor-cleanup"
+      ],
+      "selectors": [
+        {
+          "kind": "path",
+          "prefix": "lib/workflow/"
+        },
+        {
+          "kind": "schema",
+          "prefix": "forge.flow."
+        }
+      ]
+    }
+  ],
+  "revision": 1,
+  "risks": [
+    {
+      "gate_ids": [
+        "G0",
+        "G1",
+        "G4"
+      ],
+      "id": "authority-integrity",
+      "non_quarantinable": true,
+      "severity": "S0"
+    },
+    {
+      "gate_ids": [
+        "G0",
+        "G1",
+        "G3"
+      ],
+      "id": "contract-compatibility",
+      "non_quarantinable": true,
+      "severity": "S1"
+    },
+    {
+      "gate_ids": [
+        "G0",
+        "G1",
+        "G7"
+      ],
+      "id": "facade-routing",
+      "non_quarantinable": false,
+      "severity": "S1"
+    },
+    {
+      "gate_ids": [
+        "G0",
+        "G1",
+        "G5"
+      ],
+      "id": "memory-data-integrity",
+      "non_quarantinable": true,
+      "severity": "S0"
+    },
+    {
+      "gate_ids": [
+        "G0",
+        "G1",
+        "G4",
+        "G6"
+      ],
+      "id": "monitor-cleanup",
+      "non_quarantinable": true,
+      "severity": "S1"
+    },
+    {
+      "gate_ids": [
+        "G0",
+        "G1"
+      ],
+      "id": "validation-selection",
+      "non_quarantinable": true,
+      "severity": "S0"
+    }
+  ],
+  "schema_id": "forge.validation.risk-manifest.v1",
+  "source_hash": "sha256:c8bc469125e76a562d62218e25bbfa60bb4541190c9012b22421bcb3f5d87d96",
+  "unknown_owner_fallback": {
+    "lane": "repository-baseline",
+    "required_gates": [
+      "G0",
+      "G1",
+      "G3",
+      "G6"
+    ]
+  }
+}
