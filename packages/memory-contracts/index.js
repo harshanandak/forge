@@ -10,6 +10,7 @@ const {
   ENVELOPE_FIELDS,
   parseContract,
   validateContract,
+  validateContractStructure,
   validateEnvelope,
 } = require("./src/validate.js");
 
@@ -25,6 +26,7 @@ module.exports = {
   semanticIdentity,
   supportedSchemaVersions,
   validateContract,
+  validateContractStructure,
   validateEnvelope,
   verifyContractBaseline,
 };

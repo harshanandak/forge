@@ -1,0 +1,1 @@
+{"fixture_id":"not-executed-receipt","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.run-receipt.v1"},"mutation":{"operation":"replace","path":"payload.status","value":"NOT_EXECUTED","rehash":true},"operation":"validate-structure-then-authority","expected":{"structural_ok":true,"authority_ok":false,"authority_code":"NOT_EXECUTED_NO_TRANSITION"}}

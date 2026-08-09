@@ -118,6 +118,9 @@ function validateShape(value, shape, path, errors) {
 
 function validateConsequentialEvidence(value, expected, errors) {
   if (!value?.payload) return;
+  if (value.schema_id === "forge.memory.run-receipt.v1" && value.payload.status === "NOT_EXECUTED") {
+    error(errors, "$.payload.status", "NOT_EXECUTED_NO_TRANSITION");
+  }
   const requiredEvidence = LIVE_EVIDENCE_FIELDS[value.schema_id] ?? [];
   for (const field of requiredEvidence) {
     if (!expected || !Object.hasOwn(expected, field)) error(errors, `$.live_expected.${field}`, "MISSING_LIVE_EVIDENCE");
@@ -171,7 +174,7 @@ function validateConsequentialEvidence(value, expected, errors) {
   }
 }
 
-function validateContract(value, options = {}) {
+function validateContractStructure(value, options = {}) {
   const envelope = validateEnvelope(value, options);
   const errors = [...envelope.errors];
   const definition = CONTRACTS[value?.schema_id];
@@ -186,6 +189,12 @@ function validateContract(value, options = {}) {
     }
   }
   validateExtensions(value?.extensions, errors);
+  return { ok: errors.length === 0, errors };
+}
+
+function validateContract(value, options = {}) {
+  const structural = validateContractStructure(value, options);
+  const errors = [...structural.errors];
   validateConsequentialEvidence(value, options.expected, errors);
   return { ok: errors.length === 0, errors };
 }
@@ -205,4 +214,4 @@ function parseContract(json, options = {}) {
   return value;
 }
 
-module.exports = { ContractValidationError, ENVELOPE_FIELDS, parseContract, validateContract, validateEnvelope };
+module.exports = { ContractValidationError, ENVELOPE_FIELDS, parseContract, validateContract, validateContractStructure, validateEnvelope };

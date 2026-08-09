@@ -8,6 +8,7 @@ const {
   computeContentHash,
   generateJsonSchema,
   validateContract,
+  validateContractStructure,
   validateEnvelope,
 } = require("../index.js");
 
@@ -44,6 +45,48 @@ describe("fail-closed live evidence", () => {
     const result = validateContract(validWorkPacket());
     expect(result.ok).toBe(false);
     expect(result.errors.map((item) => item.code)).toContain("MISSING_LIVE_EVIDENCE");
+  });
+});
+
+describe("structural versus consequential validation", () => {
+  test("accepts a valid packet structure without making a freshness claim", () => {
+    expect(validateContractStructure(validWorkPacket())).toEqual({ ok: true, errors: [] });
+  });
+
+  test("structural validation rejects bad hashes, payload types, and consequential extensions", () => {
+    const badHash = validWorkPacket();
+    badHash.content_hash = "0".repeat(64);
+    expect(validateContractStructure(badHash).errors.map((item) => item.code)).toContain("CONTENT_HASH_MISMATCH");
+
+    const badType = validWorkPacket();
+    badType.payload.expected_issue_revision = "7";
+    badType.content_hash = computeContentHash(badType);
+    expect(validateContractStructure(badType).errors.map((item) => item.code)).toContain("INVALID_TYPE");
+
+    const consequential = validWorkPacket();
+    consequential.extensions["vendor.example/authority"] = { impact: "consequential", schema_version: 1, value: true };
+    consequential.content_hash = computeContentHash(consequential);
+    expect(validateContractStructure(consequential).errors.map((item) => item.code)).toContain("UNKNOWN_CONSEQUENTIAL_EXTENSION");
+  });
+
+  test("NOT_EXECUTED is structurally valid but cannot satisfy transition evidence", () => {
+    const corpus = JSON.parse(readFileSync(join(__dirname, "..", "fixtures", "v1", "contract-inputs.v1.json"), "utf8"));
+    const receipt = structuredClone(corpus.inputs.find((input) => input.schema_id === "forge.memory.run-receipt.v1"));
+    receipt.payload.status = "NOT_EXECUTED";
+    receipt.content_hash = computeContentHash(receipt);
+    expect(validateContractStructure(receipt).ok).toBe(true);
+    const result = validateContract(receipt, {
+      expected: {
+        packetHash: receipt.payload.packet_hash,
+        workflowConfigRevision: receipt.payload.workflow_config_revision,
+        capabilityManifestDigest: receipt.payload.manifest_digest,
+        exactHead: receipt.payload.exact_head,
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors.map((item) => item.code)).toContain("NOT_EXECUTED_NO_TRANSITION");
+    const matrix = JSON.parse(readFileSync(join(__dirname, "..", "compatibility-matrix.v1.json"), "utf8"));
+    expect(matrix.readers["0.1.0-beta.6"].run_receipt_non_authoritative_statuses).toContain("NOT_EXECUTED");
   });
 });
 
@@ -96,7 +139,7 @@ describe("portable executable fixture corpus", () => {
     const corpus = JSON.parse(readFileSync(join(fixtureRoot, "contract-inputs.v1.json"), "utf8"));
     expect(corpus.inputs).toHaveLength(11);
     expect(new Set(corpus.inputs.map((input) => input.schema_id))).toEqual(new Set(Object.keys(CONTRACTS)));
-    for (const input of corpus.inputs) expect(validateEnvelope(input).ok).toBe(true);
+    for (const input of corpus.inputs) expect(validateContractStructure(input).ok).toBe(true);
   });
 
   test("contains an executable missing-field input per envelope field", () => {

@@ -1,10 +1,10 @@
 {
   "baseline_version": 1,
-  "generator_version": "memory-contracts-schema-gen/2",
+  "generator_version": "memory-contracts-schema-gen/3",
   "artifacts": [
     {
       "path": "compatibility-matrix.v1.json",
-      "sha256": "40235512903a54acd8420c97dc803d23988d0521c690dd6eb52be52034cd9b89"
+      "sha256": "aed7099ebde7294ca8b8415c31589ac1b711a6532859a591e543d5058a02fae8"
     },
     {
       "path": "fixtures/v1/canonical-hash.json",
@@ -25,6 +25,10 @@
     {
       "path": "fixtures/v1/malformed-missing-required.json",
       "sha256": "e4031505309e8b172d274ef7c4ef617e71217742ff2b7285f37859db0eea42b9"
+    },
+    {
+      "path": "fixtures/v1/not-executed-receipt.json",
+      "sha256": "4582002c36cca422ac1ad9a5858558234d5ed162dbe72b36665fe09ab098099f"
     },
     {
       "path": "fixtures/v1/privacy-redaction.json",
@@ -48,11 +52,11 @@
     },
     {
       "path": "fixtures/v1/valid-full.json",
-      "sha256": "38edd65bce8d3589faad31c15041ee37e19a2327b13fa0f73a66600406da74b1"
+      "sha256": "2ba47dfcd5bc6dc4fae83160b05eeca480b51b065d251a0f531ca2c3effb0397"
     },
     {
       "path": "fixtures/v1/valid-minimal.json",
-      "sha256": "1479962779ee723aa0411ec01e2ad12c86363509c0caa32bbed6385d3a0f40f5"
+      "sha256": "e7d4e7d5cb11b4de809140d572c6f40a5ed4fc813f0044983930a6fbaab99444"
     },
     {
       "path": "fixtures/v1/wrong-capability-digest.json",
@@ -92,7 +96,7 @@
     },
     {
       "path": "schemas/v1/run-receipt.schema.json",
-      "sha256": "2deae8830aa239f9fd6390c11f15a1a00698e595f7308d68681fb5a25d5fa232"
+      "sha256": "b4ebd9610b1389754d7ea6175eea9bc96880d6587766440044a5cd94dad4c9dd"
     },
     {
       "path": "schemas/v1/structured-error.schema.json",
