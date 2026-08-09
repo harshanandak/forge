@@ -448,6 +448,48 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 		expect(driver.recentMemories(2).map(entry => entry.key)).toEqual(['c', 'b']);
 	});
 
+	test('hides superseded memories by default and recovers them explicitly across reads', () => {
+		const driver = makeDriver();
+		const projectId = 'c:/repo/.git';
+		driver.recordMemory({
+			key: 'policy-old',
+			value: 'auth policy legacy',
+			sourceAgent: 'forge remember',
+			scope: projectId,
+			tags: [],
+			timestamp: '2026-01-01T00:00:00.000Z',
+		});
+		driver.recordMemory({
+			key: 'policy-new',
+			value: 'auth policy current',
+			sourceAgent: 'forge remember',
+			scope: projectId,
+			tags: [],
+			supersedes: ['policy-old'],
+			timestamp: '2026-02-01T00:00:00.000Z',
+		});
+
+		expect(driver.recentMemories(10).map(entry => entry.key)).toEqual(['policy-new']);
+		expect(driver.countMemories()).toBe(1);
+		expect(driver.searchMemoriesRanked('auth policy', 10).map(entry => entry.key))
+			.toEqual(['policy-new']);
+		expect(driver.searchMemoriesRankedScored('auth policy', 10, {
+			projectId,
+			now: '2026-02-02T00:00:00.000Z',
+		}).map(entry => entry.memory_id)).toEqual(['policy-new']);
+
+		expect(driver.recentMemories(10, { includeSuperseded: true }).map(entry => entry.key))
+			.toEqual(['policy-new', 'policy-old']);
+		expect(driver.countMemories({ includeSuperseded: true })).toBe(2);
+		expect(driver.searchMemoriesRanked('auth policy', 10, { includeSuperseded: true })
+			.map(entry => entry.key).sort()).toEqual(['policy-new', 'policy-old']);
+		expect(driver.searchMemoriesRankedScored('auth policy', 10, {
+			projectId,
+			now: '2026-02-02T00:00:00.000Z',
+			includeSuperseded: true,
+		}).map(entry => entry.memory_id).sort()).toEqual(['policy-new', 'policy-old']);
+	});
+
 	// The SCORED variant exists for the per-turn auto-recall hook, which needs the raw
 	// bm25 score to apply a relevance FLOOR (inject nothing when nothing clears the bar).
 	// Ordinal rank alone can't do that — it would always surface top-N even for junk.
