@@ -1,0 +1,1 @@
+{"fixture_id":"monitor-receipt-privacy-reject","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.monitor-receipt.v1"},"mutation":{"operation":"replace","path":"payload.process_cleanup","value":{"detail":"password=supersecretvalue"},"rehash":true},"operation":"validate-structure","expected":{"ok":false,"code":"PRIVACY_SECRET_PATTERN"}}

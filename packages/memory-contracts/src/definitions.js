@@ -1,6 +1,15 @@
 "use strict";
 
-const CONTRACTS = Object.freeze({
+function deepFreeze(value, seen = new WeakSet()) {
+  if (!value || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+    if (Object.hasOwn(descriptor, "value")) deepFreeze(descriptor.value, seen);
+  }
+  return Object.freeze(value);
+}
+
+const CONTRACTS = deepFreeze({
   "forge.memory.work-packet.v1": {
     name: "WorkPacket",
     identity: ["issue_id", "expected_issue_revision", "packet_id", "packet_revision", "repository_id", "target_head"],
@@ -79,8 +88,21 @@ const OBJECT_ARRAY = Object.freeze({ type: "array", items: { type: "object" } })
 const HASH = Object.freeze({ type: "string", pattern: "^[0-9a-f]{64}$" });
 const HEAD = Object.freeze({ type: "string", pattern: "^[0-9a-f]{40}(?:[0-9a-f]{24})?$" });
 const TIMESTAMP = Object.freeze({ type: "string", format: "date-time" });
+const SECRET_PATTERN = "(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S{8,})";
+const ABSOLUTE_USER_PATH_PATTERN = "(?:[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+|/(?:Users|home)/[^/\\s]+/)";
+const SAFE_REDACTED_STRING = Object.freeze({ type: "string", minLength: 1, maxLength: 4096, not: { pattern: `${SECRET_PATTERN}|${ABSOLUTE_USER_PATH_PATTERN}` } });
+const SAFE_REDACTED_STEPS = Object.freeze({ type: "array", maxItems: 64, items: SAFE_REDACTED_STRING });
+const BOUNDED_OBJECT = Object.freeze({
+  type: "object",
+  maxProperties: 64,
+  "x-forge-max-depth": 8,
+  "x-forge-max-items": 128,
+  "x-forge-max-serialized-bytes": 16384,
+  "x-forge-secret-pattern": SECRET_PATTERN,
+  "x-forge-absolute-user-path-pattern": ABSOLUTE_USER_PATH_PATTERN,
+});
 
-const PAYLOAD_FIELDS = Object.freeze({
+const PAYLOAD_FIELDS = deepFreeze({
   "forge.memory.work-packet.v1": {
     issue_id: STRING, expected_issue_revision: INTEGER, packet_id: STRING, packet_revision: POSITIVE_INTEGER,
     repository_id: STRING, target_head: HEAD, objective: STRING,
@@ -121,9 +143,9 @@ const PAYLOAD_FIELDS = Object.freeze({
   },
   "forge.memory.feedback-report.v1": {
     report_id: STRING, product_version: STRING, contract_version: POSITIVE_INTEGER, stable_error_code: STRING,
-    affected_capability: STRING, redacted_reproduction_steps: STRING_ARRAY, expected_classification: STRING,
+    affected_capability: STRING, redacted_reproduction_steps: SAFE_REDACTED_STEPS, expected_classification: STRING,
     actual_classification: STRING, occurrence_count: POSITIVE_INTEGER, content_fingerprint: HASH,
-    consent_event_id: STRING, redaction_policy_revision: STRING, proposed_fix: STRING, return_channel: OBJECT,
+    consent_event_id: STRING, redaction_policy_revision: STRING, proposed_fix: SAFE_REDACTED_STRING, return_channel: OBJECT,
   },
   "forge.memory.structured-error.v1": {
     parent_object_hash: HASH, error_occurrence_id: STRING, code: STRING,
@@ -133,7 +155,7 @@ const PAYLOAD_FIELDS = Object.freeze({
   "forge.memory.monitor-event.v1": {
     monitor_id: STRING, event_id: STRING, sequence: INTEGER, subject_revision: STRING, type: STRING,
     actionability: { type: "string", enum: ["advisory", "action_required", "terminal"] }, observed_at: TIMESTAMP,
-    bounded_payload: OBJECT, artifact_digest: HASH,
+    bounded_payload: BOUNDED_OBJECT, artifact_digest: HASH,
   },
   "forge.memory.delivery-receipt.v1": {
     event_id: STRING, target: STRING, transport_tier: { type: "string", enum: ["T0", "T1", "T2", "T3", "T4"] },
@@ -144,7 +166,7 @@ const PAYLOAD_FIELDS = Object.freeze({
     monitor_id: STRING, owner_run_id: STRING,
     terminal_state: { type: "string", enum: ["PASS", "FAIL", "INCOMPLETE", "CANCELLED"] }, terminal_reason: STRING,
     last_sequence: INTEGER, evidence_digest: HASH, cancellation_acknowledged: BOOLEAN,
-    process_cleanup: OBJECT, lease_cleanup: OBJECT, undelivered_cursor: INTEGER,
+    process_cleanup: BOUNDED_OBJECT, lease_cleanup: BOUNDED_OBJECT, undelivered_cursor: INTEGER,
   },
 });
 

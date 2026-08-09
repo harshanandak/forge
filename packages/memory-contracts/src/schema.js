@@ -6,7 +6,7 @@ function generateJsonSchema(schemaId) {
   const definition = CONTRACTS[schemaId];
   if (!definition) throw new TypeError(`Unsupported schema_id: ${schemaId}`);
   const payloadProperties = {};
-  for (const field of [...definition.required, ...definition.optional]) payloadProperties[field] = PAYLOAD_FIELDS[schemaId][field];
+  for (const field of [...definition.required, ...definition.optional]) payloadProperties[field] = structuredClone(PAYLOAD_FIELDS[schemaId][field]);
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     $id: schemaId,
@@ -39,7 +39,20 @@ function generateJsonSchema(schemaId) {
       },
       content_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
       payload: { type: "object", required: definition.required, properties: payloadProperties, additionalProperties: false },
-      extensions: { type: "object" },
+      extensions: {
+        type: "object",
+        propertyNames: { pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$" },
+        additionalProperties: {
+          type: "object",
+          required: ["impact", "schema_version", "value"],
+          properties: {
+            impact: { const: "advisory" },
+            schema_version: { type: "integer", minimum: 1 },
+            value: {},
+          },
+          additionalProperties: false,
+        },
+      },
     },
     additionalProperties: false,
   };

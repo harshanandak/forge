@@ -1,6 +1,6 @@
 "use strict";
 
-const { computeContentHash } = require("./canonical.js");
+const { canonicalize, computeContentHash } = require("./canonical.js");
 const { CONTRACTS, PAYLOAD_FIELDS } = require("./definitions.js");
 
 const ENVELOPE_FIELDS = Object.freeze([
@@ -23,6 +23,10 @@ const LIVE_EVIDENCE_FIELDS = Object.freeze({
   "forge.memory.delivery-receipt.v1": ["eventId", "target"],
   "forge.memory.monitor-receipt.v1": ["monitorId", "ownerRunId"],
 });
+const EXTENSION_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$/;
+const SECRET_PATTERN = /(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,})/;
+const ABSOLUTE_USER_PATH = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+\/)/;
+const BOUNDED_LIMITS = Object.freeze({ maxDepth: 8, maxItems: 128, maxProperties: 64, maxBytes: 16_384 });
 
 function error(errors, path, code) {
   errors.push({ path, code });
@@ -71,12 +75,15 @@ function validateExtensions(extensions, errors) {
   if (!extensions || typeof extensions !== "object" || Array.isArray(extensions)) return;
   for (const [extensionId, extension] of Object.entries(extensions)) {
     const path = `$.extensions[${JSON.stringify(extensionId)}]`;
+    if (!EXTENSION_ID.test(extensionId)) error(errors, path, "INVALID_EXTENSION_ID");
     if (!extension || typeof extension !== "object" || Array.isArray(extension)) {
       error(errors, path, "INVALID_EXTENSION");
       continue;
     }
     if (extension.impact === "consequential") error(errors, path, "UNKNOWN_CONSEQUENTIAL_EXTENSION");
-    else if (extension.impact !== "advisory" || !Number.isInteger(extension.schema_version) || extension.schema_version < 1 || !Object.hasOwn(extension, "value")) error(errors, path, "INVALID_EXTENSION");
+    const allowed = new Set(["impact", "schema_version", "value"]);
+    const hasExtra = Object.keys(extension).some((field) => !allowed.has(field));
+    if (extension.impact !== "advisory" || !Number.isInteger(extension.schema_version) || extension.schema_version < 1 || !Object.hasOwn(extension, "value") || hasExtra) error(errors, path, "INVALID_EXTENSION");
   }
 }
 
@@ -98,11 +105,15 @@ function validateShape(value, shape, path, errors) {
   }
   if (shape.enum && !shape.enum.includes(value)) error(errors, path, "INVALID_ENUM");
   if (shape.minLength !== undefined && value.length < shape.minLength) error(errors, path, "INVALID_LENGTH");
+  if (shape.maxLength !== undefined && value.length > shape.maxLength) error(errors, path, "BOUNDED_VALUE_TOO_LARGE");
   if (shape.minimum !== undefined && value < shape.minimum) error(errors, path, "OUT_OF_RANGE");
   if (shape.pattern && !new RegExp(shape.pattern).test(value)) error(errors, path, "INVALID_FORMAT");
+  if (shape.not?.pattern && new RegExp(shape.not.pattern).test(value)) error(errors, path, "PRIVACY_PATTERN_REJECTED");
   if (shape.format === "date-time" && (!RFC3339_UTC.test(value) || Number.isNaN(Date.parse(value)))) error(errors, path, "INVALID_TIMESTAMP");
+  if (shape.type === "array" && shape.maxItems !== undefined && value.length > shape.maxItems) error(errors, path, "BOUNDED_VALUE_TOO_MANY_ITEMS");
   if (shape.type === "array" && shape.items) value.forEach((item, index) => validateShape(item, shape.items, `${path}[${index}]`, errors));
   if (shape.type === "object") {
+    if (shape.maxProperties !== undefined && Object.keys(value).length > shape.maxProperties) error(errors, path, "BOUNDED_VALUE_TOO_MANY_PROPERTIES");
     for (const field of shape.required ?? []) {
       if (!Object.hasOwn(value, field)) error(errors, `${path}.${field}`, "MISSING_REQUIRED");
     }
@@ -112,6 +123,52 @@ function validateShape(value, shape, path, errors) {
     if (shape.additionalProperties === false) {
       const allowed = new Set(Object.keys(shape.properties ?? {}));
       for (const field of Object.keys(value)) if (!allowed.has(field)) error(errors, `${path}.${field}`, "UNKNOWN_FIELD");
+    }
+  }
+}
+
+function inspectPrivacyString(value, path, errors) {
+  if (SECRET_PATTERN.test(value)) error(errors, path, "PRIVACY_SECRET_PATTERN");
+  if (ABSOLUTE_USER_PATH.test(value)) error(errors, path, "PRIVACY_ABSOLUTE_PATH");
+}
+
+function inspectBoundedValue(value, path, errors, depth = 0) {
+  if (depth > BOUNDED_LIMITS.maxDepth) {
+    error(errors, path, "BOUNDED_VALUE_TOO_DEEP");
+    return;
+  }
+  if (typeof value === "string") {
+    inspectPrivacyString(value, path, errors);
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > BOUNDED_LIMITS.maxItems) error(errors, path, "BOUNDED_VALUE_TOO_MANY_ITEMS");
+    value.forEach((item, index) => inspectBoundedValue(item, `${path}[${index}]`, errors, depth + 1));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  const entries = Object.entries(value);
+  if (entries.length > BOUNDED_LIMITS.maxProperties) error(errors, path, "BOUNDED_VALUE_TOO_MANY_PROPERTIES");
+  entries.forEach(([field, item]) => inspectBoundedValue(item, `${path}.${field}`, errors, depth + 1));
+}
+
+function validateBoundedPrivacy(value, errors) {
+  const targets = [];
+  if (value?.schema_id === "forge.memory.feedback-report.v1") {
+    targets.push([value.payload?.redacted_reproduction_steps, "$.payload.redacted_reproduction_steps"]);
+    if (value.payload?.proposed_fix !== undefined) targets.push([value.payload.proposed_fix, "$.payload.proposed_fix"]);
+  } else if (value?.schema_id === "forge.memory.monitor-event.v1" && value.payload?.bounded_payload !== undefined) {
+    targets.push([value.payload.bounded_payload, "$.payload.bounded_payload"]);
+  } else if (value?.schema_id === "forge.memory.monitor-receipt.v1") {
+    targets.push([value.payload?.process_cleanup, "$.payload.process_cleanup"], [value.payload?.lease_cleanup, "$.payload.lease_cleanup"]);
+  }
+  for (const [target, path] of targets) {
+    if (target === undefined) continue;
+    inspectBoundedValue(target, path, errors);
+    try {
+      canonicalize(target, { maxDepth: 64, maxNodes: 100_000, maxBytes: BOUNDED_LIMITS.maxBytes });
+    } catch (failure) {
+      if (failure.code === "CANONICAL_BYTE_LIMIT") error(errors, path, "BOUNDED_VALUE_TOO_LARGE");
     }
   }
 }
@@ -189,6 +246,7 @@ function validateContractStructure(value, options = {}) {
     }
   }
   validateExtensions(value?.extensions, errors);
+  if (!errors.some((item) => item.code === "NON_CANONICAL_VALUE")) validateBoundedPrivacy(value, errors);
   return { ok: errors.length === 0, errors };
 }
 
