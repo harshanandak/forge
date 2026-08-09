@@ -129,6 +129,17 @@ describe('forge doctor: memory backend check', () => {
     expect(check.ok).toBe(false);
     expect(check.serverPathIsDirectory).toBe(true);
     expect(check.entrypointExists).toBe(false);
+
+    const directoryEntrypoint = path.join(projectRoot, 'directory-entrypoint-server');
+    fs.mkdirSync(path.join(directoryEntrypoint, 'main.py'), { recursive: true });
+    writeConfig(
+      projectRoot,
+      `memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: ${directoryEntrypoint.replace(/\\/g, '/')}\n`,
+    );
+    check = memoryCheck(doctor.buildDoctorReport(projectRoot, depsFor(projectRoot)));
+    expect(check.ok).toBe(false);
+    expect(check.serverPathIsDirectory).toBe(true);
+    expect(check.entrypointExists).toBe(false);
   });
 
   test('graphiti configured but the server path is missing warns (ok:false) yet keeps the report ok', () => {
