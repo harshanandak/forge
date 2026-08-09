@@ -59,6 +59,18 @@ describe('forge issue service contract', () => {
 		}
 	});
 
+	test('reports unknown contract keys in locale-aware alphabetical order', () => {
+		const { resolveIssueContractPolicy } = require('../lib/forge-issues');
+		const contracts = { enabled: true, workClasses: ['task'], zeta: true, Älpha: true };
+
+		expect(() => resolveIssueContractPolicy('/repo', {
+			loadRuntimeGraphConfig: () => ({
+				config: { issues: { readiness: { contracts } } },
+				errors: [],
+			}),
+		})).toThrow('unknown issues.readiness.contracts keys: Älpha, zeta');
+	});
+
 	test('contract policy rejects inherited activation and accessors without executing them', () => {
 		const { resolveIssueContractPolicy } = require('../lib/forge-issues');
 		const inherited = Object.create({ enabled: true, workClasses: ['task'] });
