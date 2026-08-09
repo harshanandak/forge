@@ -1,0 +1,1 @@
+{"fixture_id":"structured-error-stripe-live-reject","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.structured-error.v1"},"mutation":{"operation":"replace","path":"payload.safe_details","value":{"detail":"sk_live_1234567890ABCDEF"},"rehash":true},"operation":"validate-structure","expected":{"ok":false,"code":"PRIVACY_SECRET_PATTERN"}}

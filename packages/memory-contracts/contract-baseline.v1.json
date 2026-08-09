@@ -1,6 +1,6 @@
 {
   "baseline_version": 1,
-  "generator_version": "memory-contracts-schema-gen/5",
+  "generator_version": "memory-contracts-schema-gen/6",
   "artifacts": [
     {
       "path": "compatibility-matrix.v1.json",
@@ -59,6 +59,14 @@
       "sha256": "008186d22ed5048e4926c7b56c08a71802392886425944d0e1a22b10c7433d58"
     },
     {
+      "path": "fixtures/v1/structured-error-stripe-live-reject.json",
+      "sha256": "6e7e0d865ccab874fed66cefd15943bbaf51e4be37bfc99cd38f2e8cd6cafce6"
+    },
+    {
+      "path": "fixtures/v1/structured-error-stripe-test-reject.json",
+      "sha256": "ab9d748875e4688299a8678a551a2d3f13eb85c6f852ccbaaf102b870b3da82c"
+    },
+    {
       "path": "fixtures/v1/unknown-advisory-roundtrip.json",
       "sha256": "674e1dd9585d86ed7c8851a3d7e2b0ce81427a3dbc59c149409ee87375f9e879"
     },
@@ -96,7 +104,7 @@
     },
     {
       "path": "schemas/v1/feedback-report.schema.json",
-      "sha256": "41f0ad0c4b6650d6ce20294e76cb9fc359f50b21bff782616119eefd76d488f4"
+      "sha256": "646f26d7056f02123d59a570c91a4e52aac01586f24d184161b47f970009b843"
     },
     {
       "path": "schemas/v1/lease-receipt.schema.json",
@@ -104,19 +112,19 @@
     },
     {
       "path": "schemas/v1/monitor-event.schema.json",
-      "sha256": "a2f5bcb502ff0c8e6acfb83817407beb5502ee7abc7b83d757877074dc93b7bb"
+      "sha256": "008f066ea111ffbc91205cb9066ae72efacec150d253aaa946af1a3d8f165cc1"
     },
     {
       "path": "schemas/v1/monitor-receipt.schema.json",
-      "sha256": "a3fb441867e43ab153af9666be9f52f29444561d1476832c42a66b6d66a0da5b"
+      "sha256": "807efad0117eb4642aa024bf363cd40f10f06435384a9bf351f9830055ddc860"
     },
     {
       "path": "schemas/v1/run-receipt.schema.json",
-      "sha256": "31d35cfbb28c00ee437a324e82b8d6a9a412ab6a4b287eca6596c20faffe7b8b"
+      "sha256": "d93766ddf554b83def5d0171623f9fcf1610defda740ab24478ebf3b4d1e74c5"
     },
     {
       "path": "schemas/v1/structured-error.schema.json",
-      "sha256": "deef772c84c50e136783d5df7d3d64da3d7e7dc6c97b4565a68e5c614d54549b"
+      "sha256": "2cbc793d264c56b2effe92367bcfd202f01a3a868a3deb619ea39af5070f01e0"
     },
     {
       "path": "schemas/v1/work-packet.schema.json",

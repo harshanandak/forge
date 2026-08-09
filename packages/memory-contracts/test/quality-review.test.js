@@ -128,6 +128,21 @@ describe("privacy-safe bounded contract fields", () => {
     expect(() => JSON.parse(readFileSync(join(__dirname, "..", "fixtures", "v1", "structured-error-privacy-reject.json"), "utf8"))).not.toThrow();
   });
 
+  test("rejects Stripe live and test secret keys in StructuredError details", () => {
+    for (const [secret, fixtureName] of [
+      ["sk_live_1234567890ABCDEF", "structured-error-stripe-live-reject.json"],
+      ["sk_test_ABCDEF1234567890", "structured-error-stripe-test-reject.json"],
+    ]) {
+      const structured = fixture("forge.memory.structured-error.v1");
+      structured.payload.safe_details = { detail: secret };
+      rehash(structured);
+      expect(validateContractStructure(structured).errors.map((item) => item.code)).toContain("PRIVACY_SECRET_PATTERN");
+      const negativeFixture = JSON.parse(readFileSync(join(__dirname, "..", "fixtures", "v1", fixtureName), "utf8"));
+      expect(negativeFixture.mutation.value).toEqual({ detail: secret });
+      expect(negativeFixture.expected).toEqual({ ok: false, code: "PRIVACY_SECRET_PATTERN" });
+    }
+  });
+
   test("mirrors privacy and bounds in generated schemas and negative fixtures", () => {
     const feedback = generateJsonSchema("forge.memory.feedback-report.v1").properties.payload.properties.redacted_reproduction_steps;
     expect(feedback.maxItems).toBeNumber();

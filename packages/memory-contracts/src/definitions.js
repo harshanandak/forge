@@ -88,7 +88,7 @@ const OBJECT_ARRAY = Object.freeze({ type: "array", items: { type: "object" } })
 const HASH = Object.freeze({ type: "string", pattern: "^[0-9a-f]{64}$" });
 const HEAD = Object.freeze({ type: "string", pattern: "^[0-9a-f]{40}(?:[0-9a-f]{24})?$" });
 const TIMESTAMP = Object.freeze({ type: "string", format: "date-time" });
-const SECRET_PATTERN = "(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S{8,})";
+const SECRET_PATTERN = "(?:gh[pousr]_[A-Za-z0-9]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S{8,})";
 const ABSOLUTE_USER_PATH_PATTERN = "(?:[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+|/(?:Users|home)/[^/\\s]+/)";
 const SAFE_REDACTED_STRING = Object.freeze({ type: "string", minLength: 1, maxLength: 4096, not: { pattern: `${SECRET_PATTERN}|${ABSOLUTE_USER_PATH_PATTERN}` } });
 const SAFE_REDACTED_STEPS = Object.freeze({ type: "array", maxItems: 64, items: SAFE_REDACTED_STRING });
