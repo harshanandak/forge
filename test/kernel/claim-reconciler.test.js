@@ -7,6 +7,8 @@ const { afterEach, describe, expect, test } = require('bun:test');
 
 const { reconcileClaims, reconcileKernelClaims } = require('../../lib/kernel/claim-reconciler');
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+const { runIssueOperation } = require('../../lib/forge-issues');
+const { createProcessTree, readProcessManifest } = require('../../scripts/process-tree');
 
 const tempDirs = [];
 
@@ -41,6 +43,41 @@ function manifestFor(candidate, overrides = {}) {
 }
 
 describe('kernel claim reconciler', () => {
+	test('uses one propagated runtime token for the process manifest and claim session', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claim-runtime-'));
+		tempDirs.push(root);
+		const manifestPath = path.join(root, 'run.json');
+		const sessionId = 'session-runtime-propagation';
+		const tree = createProcessTree({
+			manifestPath,
+			env: { FORGE_SESSION_ID: sessionId },
+			processApi: { pid: 4400, kill() {} },
+			getProcessIdentity: () => 'process-start-4400',
+			reconcile: false,
+		});
+		const childEnv = tree.envFor({
+			FORGE_SESSION_ID: sessionId,
+			FORGE_WORKTREE_ID: 'worktree-runtime-propagation',
+		});
+		let claimContext;
+
+		await runIssueOperation('claim', ['issue-runtime-propagation'], root, {
+			env: childEnv,
+			createService: () => ({
+				async run(_operation, _args, context) {
+					claimContext = context;
+					return { success: true, ok: true };
+				},
+			}),
+		});
+
+		const manifest = readProcessManifest(manifestPath);
+		expect(manifest.token).toBe(sessionId);
+		expect(claimContext.sessionId).toBe(manifest.token);
+		expect(claimContext.worktreeId).toBe('worktree-runtime-propagation');
+		tree.cleanup('SIGTERM');
+	});
+
 	test('releases only a manifest-verified dead run whose linked worktree is missing', async () => {
 		const eligible = claim('eligible');
 		const live = claim('live');
@@ -129,7 +166,10 @@ describe('kernel claim reconciler', () => {
 					{ id: unrelated.worktree_id, issue_id: unrelated.issue_id, path: liveWorktreePath, state: 'active' },
 				];
 			},
-			async releaseExactClaim(candidate, receipt) {
+			async releaseExactClaimIfWorktreeMissing(candidate, worktree, isMissing, receipt) {
+				const currentWorktree = this.listWorktrees().find(row => row.id === worktree?.id
+					&& row.path === worktree.path && row.registered_at === worktree.registered_at);
+				if (!currentWorktree || isMissing(currentWorktree.path) !== true) return false;
 				const stored = state.find(row => row.id === candidate.id
 					&& row.issue_id === candidate.issue_id
 					&& row.session_id === candidate.session_id
@@ -181,6 +221,69 @@ describe('kernel claim reconciler', () => {
 		expect(await driver.releaseExactClaim(exact)).toBe(false);
 		expect(await driver.listActiveClaims()).toEqual([]);
 		driver.close();
+	});
+
+	test('does not release when a missing worktree is re-registered before the guarded claim CAS', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claim-worktree-race-'));
+		tempDirs.push(root);
+		const databasePath = path.join(root, 'kernel.sqlite');
+		const first = createBuiltinSQLiteDriver({ databasePath });
+		const second = createBuiltinSQLiteDriver({ databasePath });
+		await first.exec(`
+			CREATE TABLE kernel_claims (
+				id TEXT PRIMARY KEY, issue_id TEXT, actor TEXT, state TEXT,
+				session_id TEXT, worktree_id TEXT, claimed_at TEXT, expires_at TEXT
+			);
+			CREATE TABLE kernel_worktrees (
+				id TEXT PRIMARY KEY, git_common_dir TEXT, path TEXT, branch TEXT,
+				actor TEXT, issue_id TEXT, work_folder TEXT, registered_at TEXT, state TEXT
+			);
+			INSERT INTO kernel_claims VALUES (
+				'claim-race', 'issue-race', 'actor-race', 'active',
+				'session-race', 'worktree-race', '2026-08-09T00:00:00.000Z', NULL
+			);
+			INSERT INTO kernel_worktrees VALUES (
+				'worktree-race', '.git', 'missing-path', 'codex/race',
+				'actor-race', 'issue-race', NULL, '2026-08-09T00:00:00.000Z', 'active'
+			);
+		`);
+		let interleaved = false;
+		const missing = Object.assign(new Error('missing'), { code: 'ENOENT' });
+		const fsApi = {
+			lstatSync() {
+				if (!interleaved) {
+					interleaved = true;
+					void second.exec("UPDATE kernel_worktrees SET path = 'recreated-path', registered_at = '2026-08-09T00:01:00.000Z' WHERE id = 'worktree-race'");
+				}
+				throw missing;
+			},
+		};
+		const candidate = claim('race', {
+			id: 'claim-race', issue_id: 'issue-race', actor: 'actor-race',
+			session_id: 'session-race', worktree_id: 'worktree-race',
+		});
+
+		const result = await reconcileKernelClaims({
+			driver: first,
+			fsApi,
+			readManifest: () => manifestFor(candidate),
+			isProcessAlive: () => false,
+		});
+
+		expect(interleaved).toBe(true);
+		expect(result).toEqual({ examined: 1, released: [] });
+		expect((await first.listActiveClaims()).map(row => row.id)).toEqual(['claim-race']);
+
+		const settled = await reconcileKernelClaims({
+			driver: first,
+			fsApi,
+			readManifest: () => manifestFor(candidate),
+			isProcessAlive: () => false,
+		});
+		expect(settled).toEqual({ examined: 1, released: ['claim-race'] });
+		expect(await first.listActiveClaims()).toEqual([]);
+		first.close();
+		second.close();
 	});
 
 	test('fails closed for incomplete claims and dependency errors', async () => {

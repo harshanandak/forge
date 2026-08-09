@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { describe, test, expect } = require('bun:test');
 
 // ---------------------------------------------------------------------------
@@ -991,7 +992,10 @@ describe('forge clean — close linked issues on merge', () => {
         path: path.join(root, 'missing-worktree'),
         state: 'active',
       }],
-      releaseExactClaim: (candidate) => {
+      releaseExactClaimIfWorktreeMissing: (candidate, worktree, isMissing) => {
+        const current = driver.listWorktrees().find(row => row.id === worktree?.id
+          && row.path === worktree.path && row.issue_id === worktree.issue_id);
+        if (!current || isMissing(current.path) !== true) return false;
         if (candidate.id !== claim.id || claim.state !== 'active') return false;
         claim.state = 'released';
         mutations += 1;
@@ -1029,6 +1033,26 @@ describe('forge clean — close linked issues on merge', () => {
     });
 
     expect(reconciliations).toBe(0);
+  });
+
+  test('a no-op non-dry clean does not create or migrate a missing Kernel store', async () => {
+    const { _internals } = require('../../lib/commands/clean');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-clean-no-kernel-'));
+    execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' });
+    const databasePath = path.join(root, '.git', 'forge', 'kernel.sqlite');
+
+    try {
+      const result = await _internals.reconcileDeadClaims(
+        root,
+        () => Buffer.from('.git'),
+        { _fs: fs },
+      );
+
+      expect(result).toEqual({ examined: 0, released: [] });
+      expect(fs.existsSync(databasePath)).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test('an unlinked branch is reported as nothing closed', async () => {

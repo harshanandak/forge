@@ -9,6 +9,7 @@ const { spawnSync: defaultSpawnSync } = require('node:child_process');
 const MANIFEST_ENV = 'FORGE_TEST_PROCESS_MANIFEST';
 const TOKEN_ENV = 'FORGE_TEST_PROCESS_TOKEN';
 const INSTANCE_ENV = 'FORGE_TEST_PROCESS_INSTANCE';
+const SESSION_ENV = 'FORGE_SESSION_ID';
 const MANIFEST_VERSION = 1;
 const DEFAULT_MANIFEST_DIR = path.join(os.tmpdir(), 'forge-test-processes');
 
@@ -326,7 +327,10 @@ function createProcessTree(options = {}) {
     if (!identity && !hasCustomIdentity) return `unverified:${pid}`;
     return identity;
   };
-  const token = String(options.token || env[TOKEN_ENV] || randomUUID());
+  // A Forge claim records FORGE_SESSION_ID. Use that same stable runtime token
+  // for the root manifest, while preserving an inherited manifest token for
+  // nested process trees that are already attached to their parent run.
+  const token = String(options.token || env[TOKEN_ENV] || env[SESSION_ENV] || randomUUID());
   const explicitManifestPath = nonEmptyString(options.manifestPath);
   const environmentManifestPath = nonEmptyString(env[MANIFEST_ENV]);
   const manifestDir = options.manifestDir || DEFAULT_MANIFEST_DIR;
