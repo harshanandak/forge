@@ -37,15 +37,16 @@ const {
 const FORGE_MARK = 'forge-native-hook.js';
 
 describe('Forge hook contract', () => {
-  test('declares enforcement (protected-path, tdd-gate) + context (memory-inject, inbox-pickup, memory-recall, memory-capture) intents', () => {
+  test('declares enforcement and supported context intents', () => {
     expect(FORGE_HOOK_CONTRACT.kind).toBe('forge.hookContract');
     const ids = FORGE_HOOK_CONTRACT.intents.map(i => i.id);
-    expect(ids).toEqual(['protected-path', 'tdd-gate', 'memory-inject', 'inbox-pickup', 'memory-recall', 'shepherd-events', 'memory-capture']);
+    expect(ids).toEqual(['protected-path', 'tdd-gate', 'memory-inject', 'inbox-pickup', 'memory-recall', 'read-attention', 'shepherd-events', 'memory-capture']);
     // Each context intent routes to the `forge` CLI via a `hooks <cliAction>` marker.
     const CONTEXT_MARKERS = {
       'memory-inject': FORGE_CONTEXT_MARKER,
       'inbox-pickup': 'hooks inbox-pickup',
       'memory-recall': 'hooks memory-recall',
+      'read-attention': 'hooks read-attention',
       'shepherd-events': 'hooks shepherd-events',
       'memory-capture': 'hooks capture',
     };
@@ -94,7 +95,7 @@ describe('renderClaudeHooks (.claude/settings.json hooks block)', () => {
     // documented, cwd-independent way to reach a project-local script. A bare relative
     // path would break. See https://code.claude.com/docs/en/hooks.
     const block = renderClaudeHooks(FORGE_HOOK_CONTRACT);
-    for (const group of block.PreToolUse) {
+    for (const group of block.PreToolUse.filter(group => group.matcher !== 'Read')) {
       const cmd = group.hooks[0].command;
       expect(cmd).toContain('$CLAUDE_PROJECT_DIR');
       expect(cmd).toContain(FORGE_MARK); // still marked Forge-owned for idempotent re-merge

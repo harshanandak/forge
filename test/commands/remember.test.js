@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const { afterEach, describe, test, expect } = require('bun:test');
 
 const remember = require('../../lib/commands/remember');
@@ -132,5 +133,56 @@ describe('forge remember command', () => {
 
   test('--session-summary is advertised in the command flags', () => {
     expect(remember.flags['--session-summary']).toBeDefined();
+  });
+
+  test('repeated identical session summaries are idempotent and carry deterministic metadata', async () => {
+    const projectRoot = makeProjectRoot();
+    const args = ['--session-summary', '--what', 'implemented hook', '--why', 'preserve learnings',
+      '--where', 'lib/hook-renderer.js', '--learned', 'supported hooks only', '--json'];
+    const first = JSON.parse((await remember.handler(args, {}, projectRoot)).output);
+    const second = JSON.parse((await remember.handler(args, {}, projectRoot)).output);
+    const notes = await recalledNotes(projectRoot);
+    expect(notes).toHaveLength(1);
+    expect(first.id).toBeString();
+    expect(second.id).toBe(first.id);
+    expect(second.type).toBe('session-summary');
+    expect(second.metadata).toEqual(first.metadata);
+    expect(second.metadata).toEqual({
+      kind: 'session-summary',
+      content_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+  });
+
+  test('session-summary metadata canonicalizes tags with locale-aware ordering', async () => {
+    const projectRoot = makeProjectRoot();
+    const payload = JSON.parse((await remember.handler(
+      ['--session-summary', '--what', 'implemented hook', '--tag', 'z', '--tag', 'ä', '--json'],
+      {},
+      projectRoot
+    )).output);
+    const expected = crypto.createHash('sha256').update(JSON.stringify({
+      body: 'What: implemented hook',
+      tags: ['ä', 'z'],
+      type: 'session-summary',
+    }), 'utf8').digest('hex');
+    expect(payload.metadata.content_hash).toBe(expected);
+  });
+
+  test('session-summary idempotency is not limited to the newest 100 memories', async () => {
+    const projectRoot = makeProjectRoot();
+    const args = ['--session-summary', '--what', 'implemented hook', '--json'];
+    const first = JSON.parse((await remember.handler(args, {}, projectRoot)).output);
+    for (let index = 0; index < 101; index += 1) {
+      projectMemory.write(projectRoot, {
+        key: `newer-${index}`,
+        value: `newer note ${index}`,
+        sourceAgent: 'forge remember',
+        tags: [],
+        timestamp: `2099-08-09T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+      });
+    }
+
+    const repeated = JSON.parse((await remember.handler(args, {}, projectRoot)).output);
+    expect(repeated.id).toBe(first.id);
   });
 });

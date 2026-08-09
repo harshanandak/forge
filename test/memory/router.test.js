@@ -212,6 +212,37 @@ describe('memory-router: kernel-backed dispatch (local default)', () => {
     expect(result.capped).toBe(true);
   });
 
+  test('applies a kind filter in storage before recall limits', () => {
+    const projectRoot = makeProjectRoot();
+    const store = makeStore(projectRoot);
+    projectMemory.write(projectRoot, {
+      key: 'old-decision',
+      value: 'Use the kernel as authority.',
+      sourceAgent: 'forge remember',
+      tags: ['type:decision'],
+      timestamp: '2026-01-01T00:00:00.000Z',
+    }, { store });
+    projectMemory.write(projectRoot, {
+      key: 'new-gotcha',
+      value: 'Use the kernel as authority.',
+      sourceAgent: 'forge remember',
+      tags: ['type:gotcha'],
+      timestamp: '2026-07-30T00:00:00.000Z',
+    }, { store });
+
+    expect(router.recall(projectRoot, { kind: 'decision', limit: 1 }, { store }))
+      .toMatchObject({
+        notes: [{ id: 'old-decision' }],
+        total: 1,
+        capped: false,
+      });
+    expect(router.recall(projectRoot, {
+      query: 'kernel authority',
+      kind: 'decision',
+      limit: 1,
+    }, { store }).notes.map(note => note.id)).toEqual(['old-decision']);
+  });
+
   test('recall returns no notes when a query matches nothing', () => {
     const projectRoot = makeProjectRoot();
     const store = makeStore(projectRoot);

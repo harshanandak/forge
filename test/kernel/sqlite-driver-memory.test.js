@@ -185,32 +185,39 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 		expect(p95).toBeLessThanOrEqual(250);
 	}, 20_000);
 
-	test('filters foreign and already-seen rows before the scored candidate limit', () => {
+	test('filters foreign and already-seen rows before the scored candidate limit', async () => {
 		const driver = makeDriver();
 		const projectId = 'c:/repo/.git';
-		for (let index = 0; index < 26; index += 1) {
+		await driver.exec('BEGIN;');
+		try {
+			for (let index = 0; index < 26; index += 1) {
+				driver.recordMemory({
+					key: `foreign-${index}`,
+					value: `auth token ${'auth '.repeat(20)}`,
+					sourceAgent: 'forge remember',
+					scope: 'c:/other/.git',
+					tags: [],
+				});
+				driver.recordMemory({
+					key: `seen-${index}`,
+					value: `auth token ${'token '.repeat(20)}`,
+					sourceAgent: 'forge remember',
+					scope: projectId,
+					tags: [],
+				});
+			}
 			driver.recordMemory({
-				key: `foreign-${index}`,
-				value: `auth token ${'auth '.repeat(20)}`,
-				sourceAgent: 'forge remember',
-				scope: 'c:/other/.git',
-				tags: [],
-			});
-			driver.recordMemory({
-				key: `seen-${index}`,
-				value: `auth token ${'token '.repeat(20)}`,
+				key: 'eligible-local',
+				value: 'auth token local',
 				sourceAgent: 'forge remember',
 				scope: projectId,
 				tags: [],
 			});
+		} catch (error) {
+			await driver.exec('ROLLBACK;');
+			throw error;
 		}
-		driver.recordMemory({
-			key: 'eligible-local',
-			value: 'auth token local',
-			sourceAgent: 'forge remember',
-			scope: projectId,
-			tags: [],
-		});
+		await driver.exec('COMMIT;');
 
 		const hits = driver.searchMemoriesRankedScored('auth token', 25, {
 			projectId,
@@ -219,6 +226,42 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 		});
 
 		expect(hits.map(hit => hit.memory_id)).toEqual(['eligible-local']);
+	});
+
+	test('filters typed memories in SQLite before applying the recent-note limit', async () => {
+		const driver = makeDriver();
+		await driver.exec('BEGIN;');
+		try {
+			driver.recordMemory({
+				key: 'old-decision',
+				value: 'Use the kernel as the authority.',
+				sourceAgent: 'forge remember',
+				tags: ['type:decision'],
+				timestamp: '2026-01-01T00:00:00.000Z',
+			});
+			for (let index = 0; index < 1_001; index += 1) {
+				driver.recordMemory({
+					key: `new-note-${index}`,
+					value: `Unrelated note ${index}`,
+					sourceAgent: 'forge remember',
+					tags: [],
+					timestamp: `2026-07-30T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+				});
+			}
+		} catch (error) {
+			await driver.exec('ROLLBACK;');
+			throw error;
+		}
+		await driver.exec('COMMIT;');
+
+		expect(driver.recentMemories(20, {
+			agents: ['forge remember'],
+			kind: 'decision',
+		}).map(entry => entry.key)).toEqual(['old-decision']);
+		expect(driver.countMemories({
+			agents: ['forge remember'],
+			kind: 'decision',
+		})).toBe(1);
 	});
 
 	test('only an eligible superseder suppresses and suggested cannot erase confirmed memory', () => {
@@ -403,6 +446,48 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 		driver.recordMemory({ key: 'c', value: '3', sourceAgent: 'Codex', tags: [], timestamp: '2026-03-01T00:00:00.000Z' });
 
 		expect(driver.recentMemories(2).map(entry => entry.key)).toEqual(['c', 'b']);
+	});
+
+	test('hides superseded memories by default and recovers them explicitly across reads', () => {
+		const driver = makeDriver();
+		const projectId = 'c:/repo/.git';
+		driver.recordMemory({
+			key: 'policy-old',
+			value: 'auth policy legacy',
+			sourceAgent: 'forge remember',
+			scope: projectId,
+			tags: [],
+			timestamp: '2026-01-01T00:00:00.000Z',
+		});
+		driver.recordMemory({
+			key: 'policy-new',
+			value: 'auth policy current',
+			sourceAgent: 'forge remember',
+			scope: projectId,
+			tags: [],
+			supersedes: ['policy-old'],
+			timestamp: '2026-02-01T00:00:00.000Z',
+		});
+
+		expect(driver.recentMemories(10).map(entry => entry.key)).toEqual(['policy-new']);
+		expect(driver.countMemories()).toBe(1);
+		expect(driver.searchMemoriesRanked('auth policy', 10).map(entry => entry.key))
+			.toEqual(['policy-new']);
+		expect(driver.searchMemoriesRankedScored('auth policy', 10, {
+			projectId,
+			now: '2026-02-02T00:00:00.000Z',
+		}).map(entry => entry.memory_id)).toEqual(['policy-new']);
+
+		expect(driver.recentMemories(10, { includeSuperseded: true }).map(entry => entry.key))
+			.toEqual(['policy-new', 'policy-old']);
+		expect(driver.countMemories({ includeSuperseded: true })).toBe(2);
+		expect(driver.searchMemoriesRanked('auth policy', 10, { includeSuperseded: true })
+			.map(entry => entry.key).sort()).toEqual(['policy-new', 'policy-old']);
+		expect(driver.searchMemoriesRankedScored('auth policy', 10, {
+			projectId,
+			now: '2026-02-02T00:00:00.000Z',
+			includeSuperseded: true,
+		}).map(entry => entry.memory_id).sort()).toEqual(['policy-new', 'policy-old']);
 	});
 
 	// The SCORED variant exists for the per-turn auto-recall hook, which needs the raw
