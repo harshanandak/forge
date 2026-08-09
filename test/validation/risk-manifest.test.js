@@ -150,7 +150,7 @@ describe('risk-owned validation manifest', () => {
       package: 'forge-flow',
       risk_ids: ['contract-compatibility', 'monitor-cleanup'],
       lanes: ['flow-package'],
-      canonical_test_ids: ['test/workflow/**/*.test.js'],
+      canonical_test_ids: ['packages/flow/**/*.test.js', 'test/workflow/**/*.test.js'],
       dependent_routes: ['flow-memory-contract'],
       platform_runtime_additions: ['linux-process', 'macos-process', 'windows-process'],
     }]);
