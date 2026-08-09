@@ -80,6 +80,88 @@ function bunProjectRoot(args, options) {
 }
 
 describe('deterministic Bun lockfile transition proof', () => {
+	test('isolates every proof Git command from inherited repository-local Git environment', () => {
+		const primaryRoot = tempRepo();
+		commitBase(primaryRoot);
+		const linkedRoot = `${primaryRoot}-linked`;
+		tempDirs.push(linkedRoot);
+		run('git', ['worktree', 'add', '--quiet', '--detach', linkedRoot, 'HEAD'], primaryRoot);
+		const proposed = 'generated:2.0.0\n';
+		stageProof(linkedRoot, { name: 'fixture', version: '2.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, proposed);
+
+		const gitDir = run('git', ['rev-parse', '--absolute-git-dir'], linkedRoot).stdout.trim();
+		const commonDir = run('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], linkedRoot).stdout.trim();
+		const sharedConfig = path.join(commonDir, 'config');
+		const configBefore = fs.readFileSync(sharedConfig);
+		const bareBefore = run('git', ['config', '--bool', '--get', 'core.bare'], linkedRoot).stdout.trim();
+		const helperPath = path.resolve(__dirname, '../lib/bun-lockfile-proof.js');
+		const verifierScript = `
+			const fs = require('node:fs');
+			const path = require('node:path');
+			const childProcess = require('node:child_process');
+			const mode = process.argv[1] || 'success';
+			childProcess.spawnSync = (_command, args, options) => {
+				if (args[0] === '--version') return { status: 0, stdout: ${JSON.stringify(`${RUNTIME_BUN_VERSION}\n`)}, stderr: '' };
+				if (mode === 'failed') return { status: 1, stdout: '', stderr: 'failed' };
+				if (mode === 'timed-out') return { status: null, signal: 'SIGTERM', error: { code: 'ETIMEDOUT' } };
+				fs.writeFileSync(path.join(options.cwd, 'bun.lock'), ${JSON.stringify(proposed)});
+				return { status: 0, stdout: '', stderr: '' };
+			};
+			const { verifyBunLockfileRegeneration } = require(${JSON.stringify(helperPath)});
+			process.stdout.write(JSON.stringify(verifyBunLockfileRegeneration(${JSON.stringify(linkedRoot)})));
+		`;
+		const runVerifier = (inheritedGitEnvironment, mode = 'success') => {
+			const verification = spawnSync('node', ['-e', verifierScript, mode], {
+				cwd: linkedRoot,
+				encoding: 'utf8',
+				timeout: 30_000,
+				env: { ...process.env, ...inheritedGitEnvironment },
+			});
+			expect(verification.status).toBe(0);
+			return JSON.parse(verification.stdout);
+		};
+
+		const result = runVerifier({ GIT_DIR: gitDir, GIT_WORK_TREE: linkedRoot });
+
+		expect(fs.readFileSync(sharedConfig)).toEqual(configBefore);
+		expect(run('git', ['config', '--bool', '--get', 'core.bare'], linkedRoot).stdout.trim()).toBe(bareBefore);
+		expect(result).toMatchObject({ allowed: true });
+
+		const localVariables = run('git', ['rev-parse', '--local-env-vars'], linkedRoot).stdout.trim().split(/\r?\n/);
+		const allLocalGitEnvironment = {
+			GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(commonDir, 'objects'),
+			GIT_CONFIG: sharedConfig,
+			GIT_CONFIG_PARAMETERS: "'core.bare=false'",
+			GIT_CONFIG_COUNT: '1',
+			GIT_CONFIG_KEY_0: 'core.bare',
+			GIT_CONFIG_VALUE_0: 'false',
+			GIT_OBJECT_DIRECTORY: path.join(commonDir, 'objects'),
+			GIT_DIR: gitDir,
+			GIT_WORK_TREE: linkedRoot,
+			GIT_IMPLICIT_WORK_TREE: '1',
+			GIT_GRAFT_FILE: path.join(commonDir, 'info', 'grafts'),
+			GIT_INDEX_FILE: path.join(gitDir, 'redirected-index'),
+			GIT_NO_REPLACE_OBJECTS: '1',
+			GIT_REPLACE_REF_BASE: 'refs/replace/',
+			GIT_PREFIX: 'nested/',
+			GIT_SHALLOW_FILE: path.join(gitDir, 'shallow'),
+			GIT_COMMON_DIR: commonDir,
+		};
+		expect(Object.keys(allLocalGitEnvironment)).toEqual(expect.arrayContaining(localVariables));
+		expect(runVerifier(allLocalGitEnvironment)).toMatchObject({ allowed: true });
+		expect(fs.readFileSync(sharedConfig)).toEqual(configBefore);
+		expect(run('git', ['config', '--bool', '--get', 'core.bare'], linkedRoot).stdout.trim()).toBe(bareBefore);
+
+		for (const mode of ['failed', 'timed-out']) {
+			expect(runVerifier(allLocalGitEnvironment, mode)).toMatchObject({
+				allowed: false,
+				reason: 'Bun lockfile regeneration failed',
+			});
+			expect(fs.readFileSync(sharedConfig)).toEqual(configBefore);
+			expect(run('git', ['config', '--bool', '--get', 'core.bare'], linkedRoot).stdout.trim()).toBe(bareBefore);
+		}
+	}, 120_000);
+
 	test('accepts a byte-identical transition from the committed lock and indexed manifests', () => {
 		const root = tempRepo();
 		commitBase(root);
