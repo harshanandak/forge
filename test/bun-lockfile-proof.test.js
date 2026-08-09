@@ -178,9 +178,18 @@ describe('deterministic Bun lockfile transition proof', () => {
 		expect(verifyBunLockfileRegeneration(root, { spawnSync: spawn }).allowed).toBe(false);
 		run('git', ['rm', '--cached', '--quiet', '.npmrc'], root);
 		fs.rmSync(path.join(root, '.npmrc'));
+		fs.mkdirSync(path.join(root, 'packages', 'child'), { recursive: true });
+		fs.writeFileSync(path.join(root, 'packages', 'child', '.npmrc'), 'registry=https://example.invalid\n');
+		run('git', ['add', 'packages/child/.npmrc'], root);
+		expect(verifyBunLockfileRegeneration(root, { spawnSync: spawn })).toMatchObject({
+			allowed: false,
+			reason: 'Tracked .npmrc is outside the deterministic proof contract',
+		});
+		run('git', ['rm', '--cached', '--quiet', 'packages/child/.npmrc'], root);
+		fs.rmSync(path.join(root, 'packages'), { recursive: true, force: true });
 
 		let installCalls = 0;
-		const racingSpawn = (command, args, options) => {
+		const racingSpawn = (_command, args, options) => {
 			if (args[0] === '--version') return { status: 0, stdout: `${RUNTIME_BUN_VERSION}\n`, stderr: '' };
 			installCalls += 1;
 			const projectRoot = bunProjectRoot(args, options);
@@ -191,6 +200,20 @@ describe('deterministic Bun lockfile transition proof', () => {
 		};
 		expect(verifyBunLockfileRegeneration(root, { spawnSync: racingSpawn }).allowed).toBe(false);
 		expect(installCalls).toBe(1);
+	});
+
+	test('allows a clean staged rename while parsing porcelain v1 -z source records', () => {
+		const root = tempRepo();
+		commitBase(root);
+		fs.writeFileSync(path.join(root, 'before.txt'), 'tracked\n');
+		run('git', ['add', 'before.txt'], root);
+		run('git', ['commit', '--quiet', '-m', 'tracked rename source'], root);
+		run('git', ['mv', 'before.txt', 'after.txt'], root);
+		const proposed = 'generated:2.0.0\n';
+		stageProof(root, { name: 'fixture', version: '2.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, proposed);
+		expect(verifyBunLockfileRegeneration(root, {
+			spawnSync: fakeBun(() => proposed),
+		})).toMatchObject({ allowed: true });
 	});
 
 	test('rejects path escapes and unsupported Bun versions', () => {
@@ -228,7 +251,7 @@ describe('deterministic Bun lockfile transition proof', () => {
 		commitBase(root);
 		const generated = 'generated:2.0.0\n';
 		stageProof(root, { name: 'fixture', version: '2.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, generated);
-		const racingSpawn = (command, args, options) => {
+		const racingSpawn = (_command, args, options) => {
 			if (args[0] === '--version') return { status: 0, stdout: `${RUNTIME_BUN_VERSION}\n`, stderr: '' };
 			const projectRoot = bunProjectRoot(args, options);
 			fs.writeFileSync(path.join(projectRoot, 'bun.lock'), generated);

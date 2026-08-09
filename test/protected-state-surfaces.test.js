@@ -13,6 +13,7 @@ const {
 	assertProtectedWriteAllowed,
 	writeProtectedFile,
 	createProtectedStateAuditRecord,
+	hashProtectedContent,
 	buildProtectedStateAuditEvent,
 	recordProtectedStateAuditEvent,
 } = require('../lib/protected-state-surfaces');
@@ -29,6 +30,11 @@ function readAuditLog(root) {
 
 function createTempDir() {
 	return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-protected-state-'));
+}
+
+function runGit(root, args) {
+	const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+	if (result.status !== 0) throw new Error(result.stderr || result.stdout);
 }
 
 describe('protected state surfaces', () => {
@@ -403,6 +409,33 @@ describe('scripts/protected-state-check.js', () => {
 		expect(result.status).toBe(1);
 		expect(`${result.stdout}${result.stderr}`).toContain('bun.lock');
 	}, 15_000);
+
+	test('cannot hide an actually staged protected path behind environment file seams', () => {
+		const root = createTempDir();
+		try {
+			runGit(root, ['init', '--quiet']);
+			fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
+			fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), 'version: 1\n');
+			runGit(root, ['add', '.forge/config.yaml']);
+
+			const result = spawnSync('node', [scriptPath], {
+				cwd: root,
+				stdio: 'pipe',
+				env: {
+					...process.env,
+					FORGE_PROTECTED_STATE_STAGED_FILES: 'lib/safe.js',
+					FORGE_PROTECTED_STATE_STAGED_CONTENTS_JSON: '{"lib/safe.js":"benign",".forge/config.yaml":"forged: benign"}',
+				},
+			});
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain('.forge/config.yaml');
+			const decision = readAuditLog(root).find(record => record.path === '.forge/config.yaml');
+			expect(decision.contentHash).toBe(hashProtectedContent('version: 1\n'));
+			expect(decision.contentHash).not.toBe(hashProtectedContent('forged: benign'));
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
 
 	test('includes deletions in the staged protected-state query', () => {
 		const content = fs.readFileSync(scriptPath, 'utf8');

@@ -7,6 +7,7 @@ const {
 } = require('../lib/protected-state-surfaces');
 const { authorizeAndConsumeProtectedStateWrites } = require('../lib/protected-state-authority');
 const { verifyBunLockfileRegeneration } = require('../lib/bun-lockfile-proof');
+const realStagedFiles = new Set();
 
 function parseNameStatus(output) {
 	const files = [];
@@ -39,6 +40,7 @@ function getStagedFiles() {
 			stdio: ['ignore', 'pipe', 'pipe'],
 		});
 		stagedFiles = parseNameStatus(output);
+		for (const file of stagedFiles) realStagedFiles.add(file);
 	}
 
 	if (process.env.FORGE_PROTECTED_STATE_STAGED_NAME_STATUS !== undefined || process.env.FORGE_PROTECTED_STATE_STAGED_FILES !== undefined) {
@@ -54,13 +56,15 @@ function getStagedFiles() {
 			encoding: 'utf8',
 			stdio: ['ignore', 'pipe', 'pipe'],
 		});
-		if (parseNameStatus(realOutput).includes('bun.lock')) stagedFiles.push('bun.lock');
+		const indexedFiles = parseNameStatus(realOutput);
+		for (const file of indexedFiles) realStagedFiles.add(file);
+		stagedFiles.push(...indexedFiles);
 	}
 	return [...new Set(stagedFiles)];
 }
 
 function getStagedContent(file) {
-	if (process.env.FORGE_PROTECTED_STATE_STAGED_CONTENTS_JSON) {
+	if (!realStagedFiles.has(file) && process.env.FORGE_PROTECTED_STATE_STAGED_CONTENTS_JSON) {
 		const contents = JSON.parse(process.env.FORGE_PROTECTED_STATE_STAGED_CONTENTS_JSON);
 		return Object.prototype.hasOwnProperty.call(contents, file) ? contents[file] : null;
 	}
