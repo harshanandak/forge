@@ -1,0 +1,97 @@
+schema_id: forge.validation.risk-manifest.v1
+revision: 1
+
+risks:
+  - id: authority-integrity
+    severity: S0
+    non_quarantinable: true
+    gate_ids: [G0, G1, G4]
+  - id: contract-compatibility
+    severity: S1
+    non_quarantinable: true
+    gate_ids: [G0, G1, G3]
+  - id: facade-routing
+    severity: S1
+    non_quarantinable: false
+    gate_ids: [G0, G1, G7]
+  - id: memory-data-integrity
+    severity: S0
+    non_quarantinable: true
+    gate_ids: [G0, G1, G5]
+  - id: monitor-cleanup
+    severity: S1
+    non_quarantinable: true
+    gate_ids: [G0, G1, G4, G6]
+  - id: validation-selection
+    severity: S0
+    non_quarantinable: true
+    gate_ids: [G0, G1]
+
+owners:
+  - id: facade-cli
+    product: facade
+    package: forge-workflow
+    package_roots: [bin, lib/commands]
+    selectors:
+      - { kind: path, prefix: "bin/" }
+      - { kind: path, prefix: "lib/commands/" }
+      - { kind: command, prefix: "forge " }
+    risk_ids: [facade-routing]
+    canonical_test_ids: ["test/commands/**/*.test.js"]
+    dependent_routes: [installed-cli]
+    platform_runtime_additions: [windows-shell]
+    lanes: [facade-package]
+  - id: kernel-authority
+    product: memory
+    package: forge-kernel
+    package_roots: [lib/kernel]
+    selectors:
+      - { kind: path, prefix: "lib/kernel/" }
+      - { kind: schema, prefix: "forge.kernel." }
+    risk_ids: [authority-integrity]
+    canonical_test_ids: ["test/kernel/**/*.test.js"]
+    dependent_routes: [memory-contract]
+    platform_runtime_additions: [windows-sqlite, linux-sqlite]
+    lanes: [kernel-package]
+  - id: memory-foundation
+    product: memory
+    package: forge-memory
+    package_roots: [lib/memory]
+    selectors:
+      - { kind: path, prefix: "lib/memory/" }
+      - { kind: schema, prefix: "forge.memory." }
+    risk_ids: [memory-data-integrity, contract-compatibility]
+    canonical_test_ids: ["test/memory/**/*.test.js"]
+    dependent_routes: [memory-contract]
+    platform_runtime_additions: [windows-sqlite, linux-sqlite]
+    lanes: [memory-package]
+  - id: validation-control
+    product: memory
+    package: forge-validation
+    package_roots: [lib/validation, validation, scripts/generate-risk-manifest.js]
+    selectors:
+      - { kind: path, prefix: "lib/validation/" }
+      - { kind: path, prefix: "scripts/generate-risk-manifest.js" }
+      - { kind: path, prefix: "validation/" }
+      - { kind: schema, prefix: "forge.validation." }
+    risk_ids: [validation-selection]
+    canonical_test_ids: ["test/validation/risk-manifest.test.js"]
+    dependent_routes: [work-packet, run-receipt]
+    platform_runtime_additions: []
+    lanes: [validation-selector]
+  - id: workflow-runtime
+    product: flow
+    package: forge-flow
+    package_roots: [lib/workflow]
+    selectors:
+      - { kind: path, prefix: "lib/workflow/" }
+      - { kind: schema, prefix: "forge.flow." }
+    risk_ids: [monitor-cleanup, contract-compatibility]
+    canonical_test_ids: ["test/workflow/**/*.test.js"]
+    dependent_routes: [flow-memory-contract]
+    platform_runtime_additions: [windows-process, linux-process, macos-process]
+    lanes: [flow-package]
+
+unknown_owner_fallback:
+  lane: repository-baseline
+  required_gates: [G0, G1]

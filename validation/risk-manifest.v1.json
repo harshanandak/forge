@@ -1,0 +1,263 @@
+{
+  "generator_version": "forge-risk-manifest-generator.v1",
+  "manifest_hash": "sha256:3c38e59d6ab084f6871b330e863c747e769118f2a5999d7d1787bbeae65b4d74",
+  "owners": [
+    {
+      "canonical_test_ids": [
+        "test/commands/**/*.test.js"
+      ],
+      "dependent_routes": [
+        "installed-cli"
+      ],
+      "id": "facade-cli",
+      "lanes": [
+        "facade-package"
+      ],
+      "package": "forge-workflow",
+      "package_roots": [
+        "bin",
+        "lib/commands"
+      ],
+      "platform_runtime_additions": [
+        "windows-shell"
+      ],
+      "product": "facade",
+      "risk_ids": [
+        "facade-routing"
+      ],
+      "selectors": [
+        {
+          "kind": "command",
+          "prefix": "forge "
+        },
+        {
+          "kind": "path",
+          "prefix": "bin/"
+        },
+        {
+          "kind": "path",
+          "prefix": "lib/commands/"
+        }
+      ]
+    },
+    {
+      "canonical_test_ids": [
+        "test/kernel/**/*.test.js"
+      ],
+      "dependent_routes": [
+        "memory-contract"
+      ],
+      "id": "kernel-authority",
+      "lanes": [
+        "kernel-package"
+      ],
+      "package": "forge-kernel",
+      "package_roots": [
+        "lib/kernel"
+      ],
+      "platform_runtime_additions": [
+        "linux-sqlite",
+        "windows-sqlite"
+      ],
+      "product": "memory",
+      "risk_ids": [
+        "authority-integrity"
+      ],
+      "selectors": [
+        {
+          "kind": "path",
+          "prefix": "lib/kernel/"
+        },
+        {
+          "kind": "schema",
+          "prefix": "forge.kernel."
+        }
+      ]
+    },
+    {
+      "canonical_test_ids": [
+        "test/memory/**/*.test.js"
+      ],
+      "dependent_routes": [
+        "memory-contract"
+      ],
+      "id": "memory-foundation",
+      "lanes": [
+        "memory-package"
+      ],
+      "package": "forge-memory",
+      "package_roots": [
+        "lib/memory"
+      ],
+      "platform_runtime_additions": [
+        "linux-sqlite",
+        "windows-sqlite"
+      ],
+      "product": "memory",
+      "risk_ids": [
+        "contract-compatibility",
+        "memory-data-integrity"
+      ],
+      "selectors": [
+        {
+          "kind": "path",
+          "prefix": "lib/memory/"
+        },
+        {
+          "kind": "schema",
+          "prefix": "forge.memory."
+        }
+      ]
+    },
+    {
+      "canonical_test_ids": [
+        "test/validation/risk-manifest.test.js"
+      ],
+      "dependent_routes": [
+        "run-receipt",
+        "work-packet"
+      ],
+      "id": "validation-control",
+      "lanes": [
+        "validation-selector"
+      ],
+      "package": "forge-validation",
+      "package_roots": [
+        "lib/validation",
+        "scripts/generate-risk-manifest.js",
+        "validation"
+      ],
+      "platform_runtime_additions": [],
+      "product": "memory",
+      "risk_ids": [
+        "validation-selection"
+      ],
+      "selectors": [
+        {
+          "kind": "path",
+          "prefix": "lib/validation/"
+        },
+        {
+          "kind": "path",
+          "prefix": "scripts/generate-risk-manifest.js"
+        },
+        {
+          "kind": "path",
+          "prefix": "validation/"
+        },
+        {
+          "kind": "schema",
+          "prefix": "forge.validation."
+        }
+      ]
+    },
+    {
+      "canonical_test_ids": [
+        "test/workflow/**/*.test.js"
+      ],
+      "dependent_routes": [
+        "flow-memory-contract"
+      ],
+      "id": "workflow-runtime",
+      "lanes": [
+        "flow-package"
+      ],
+      "package": "forge-flow",
+      "package_roots": [
+        "lib/workflow"
+      ],
+      "platform_runtime_additions": [
+        "linux-process",
+        "macos-process",
+        "windows-process"
+      ],
+      "product": "flow",
+      "risk_ids": [
+        "contract-compatibility",
+        "monitor-cleanup"
+      ],
+      "selectors": [
+        {
+          "kind": "path",
+          "prefix": "lib/workflow/"
+        },
+        {
+          "kind": "schema",
+          "prefix": "forge.flow."
+        }
+      ]
+    }
+  ],
+  "revision": 1,
+  "risks": [
+    {
+      "gate_ids": [
+        "G0",
+        "G1",
+        "G4"
+      ],
+      "id": "authority-integrity",
+      "non_quarantinable": true,
+      "severity": "S0"
+    },
+    {
+      "gate_ids": [
+        "G0",
+        "G1",
+        "G3"
+      ],
+      "id": "contract-compatibility",
+      "non_quarantinable": true,
+      "severity": "S1"
+    },
+    {
+      "gate_ids": [
+        "G0",
+        "G1",
+        "G7"
+      ],
+      "id": "facade-routing",
+      "non_quarantinable": false,
+      "severity": "S1"
+    },
+    {
+      "gate_ids": [
+        "G0",
+        "G1",
+        "G5"
+      ],
+      "id": "memory-data-integrity",
+      "non_quarantinable": true,
+      "severity": "S0"
+    },
+    {
+      "gate_ids": [
+        "G0",
+        "G1",
+        "G4",
+        "G6"
+      ],
+      "id": "monitor-cleanup",
+      "non_quarantinable": true,
+      "severity": "S1"
+    },
+    {
+      "gate_ids": [
+        "G0",
+        "G1"
+      ],
+      "id": "validation-selection",
+      "non_quarantinable": true,
+      "severity": "S0"
+    }
+  ],
+  "schema_id": "forge.validation.risk-manifest.v1",
+  "source_hash": "sha256:a804175455227f87a4f0ef6b08c790a252a8a2849539baa00379d804ce221537",
+  "unknown_owner_fallback": {
+    "lane": "repository-baseline",
+    "required_gates": [
+      "G0",
+      "G1"
+    ]
+  }
+}
