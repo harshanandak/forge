@@ -1,4 +1,4 @@
-const { describe, expect, test } = require('bun:test');
+const { describe, expect, spyOn, test } = require('bun:test');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -56,6 +56,26 @@ describe('beta.5 compatibility evidence', () => {
     expect(result.fileCount).toBeGreaterThanOrEqual(5);
     expect(result.contentHash).toMatch(/^[a-f0-9]{64}$/);
     expect(result.sourceBlobCount).toBe(4);
+  });
+
+  test('keeps JSONL projections identical to the Kernel fixture', () => {
+    const { Database } = require('bun:sqlite');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-parity-'));
+    fs.mkdirSync(path.join(root, '.forge'));
+    const databasePath = materializeKernelState(root);
+    const database = new Database(databasePath, { readonly: true });
+    try {
+      const issues = fs.readFileSync(path.join(BETA5_CORPUS_ROOT, 'state', 'issues.jsonl'), 'utf8')
+        .trim().split('\n').map(JSON.parse);
+      const dependencies = fs.readFileSync(path.join(BETA5_CORPUS_ROOT, 'state', 'dependencies.jsonl'), 'utf8')
+        .trim().split('\n').map(JSON.parse);
+      expect(issues).toEqual(database.query('SELECT id, title, status, entity_revision FROM kernel_issues ORDER BY id').all());
+      expect(dependencies).toEqual(database.query(
+        'SELECT issue_id, blocks_issue_id FROM kernel_dependencies ORDER BY id',
+      ).all());
+    } finally {
+      database.close();
+    }
   });
 
   test('rejects unmanifested corpus files instead of silently extending immutable evidence', () => {
@@ -140,7 +160,7 @@ describe('beta.5 compatibility evidence', () => {
       schemaVersion: '001_initial_kernel_schema',
       migrationCount: 1,
       counts: {
-        issues: 1,
+        issues: 2,
         comments: 1,
         dependencies: 1,
         claims: 1,
@@ -152,6 +172,47 @@ describe('beta.5 compatibility evidence', () => {
     });
     expect(sha256File(path.join(root, '.forge', 'kernel.sqlite'))).toBe(before);
     expect(JSON.stringify(inventory)).not.toContain('Synthetic issue');
+  });
+
+  test('preserves typed inspector reasons and counts only genuinely additional tables', () => {
+    const root = makeBeta5State();
+    const { Database } = require('bun:sqlite');
+    const database = new Database(path.join(root, '.forge', 'kernel.sqlite'), { create: true });
+    try {
+      database.exec('CREATE TABLE kernel_migrations (id TEXT); CREATE TABLE extra_state (id TEXT);');
+    } finally {
+      database.close();
+    }
+
+    const inventory = buildPrivacySafeInventory(root, { limits: { maxFileBytes: 1 } });
+    expect(inventory.surfaces.package.reason).toBe('package_file_size_limit');
+
+    const kernelInventory = buildPrivacySafeInventory(root);
+    expect(kernelInventory.surfaces.kernel.additionalTableCount).toBe(1);
+  });
+
+  test('detects a same-size file replacement before hashing', () => {
+    const root = makeBeta5State();
+    const target = path.join(root, 'package.json');
+    const originalOpen = fs.openSync;
+    let swapped = false;
+    const openSpy = spyOn(fs, 'openSync').mockImplementation((filePath, ...args) => {
+      if (!swapped && filePath === target) {
+        swapped = true;
+        const bytes = fs.readFileSync(target);
+        fs.renameSync(target, `${target}.old`);
+        fs.writeFileSync(target, Buffer.alloc(bytes.length, 32));
+      }
+      return originalOpen.call(fs, filePath, ...args);
+    });
+    try {
+      expect(buildStateTreeManifest(root)).toMatchObject({
+        status: 'INCOMPLETE',
+        reasons: ['source_changed_during_read'],
+      });
+    } finally {
+      openSpy.mockRestore();
+    }
   });
 
   test('proves backup and restore in an isolated destination without changing source bytes', async () => {
@@ -335,6 +396,39 @@ describe('beta.5 compatibility evidence', () => {
 
     expect(kernelProof).toMatchObject({ status: 'FAIL', reason: 'proof_root_changed' });
     expect(fs.readdirSync(alternateKernelRoot)).toEqual([]);
+  });
+
+  test('refuses an existing Node SQLite backup target before the driver can write', async () => {
+    const root = makeBeta5State({ kernel: true });
+    const proofRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-node-target-'));
+    const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-node-external-'));
+    const external = path.join(externalRoot, 'kernel.sqlite');
+    fs.writeFileSync(external, 'untouched');
+    let backupCalled = false;
+    class FakeDatabase { close() {} }
+    const runtime = {
+      id: 'node:sqlite',
+      module: {
+        DatabaseSync: FakeDatabase,
+        async backup(_database, backupPath) {
+          backupCalled = true;
+          fs.writeFileSync(backupPath, 'escaped');
+        },
+      },
+    };
+
+    const proof = await proveBackupRestore(root, proofRoot, {
+      backupRuntime: runtime,
+      testHooks: {
+        beforeNodeBackupTargetCheck({ backupPath }) {
+          fs.linkSync(external, backupPath);
+        },
+      },
+    });
+
+    expect(proof).toMatchObject({ status: 'FAIL', reason: 'destination_link_refused' });
+    expect(backupCalled).toBe(false);
+    expect(fs.readFileSync(external, 'utf8')).toBe('untouched');
   });
 
   test('returns deterministic PASS and proves the dry-run never mutates its full source tree', async () => {
