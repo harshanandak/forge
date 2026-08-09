@@ -1,10 +1,10 @@
 {
   "baseline_version": 1,
-  "generator_version": "memory-contracts-schema-gen/4",
+  "generator_version": "memory-contracts-schema-gen/5",
   "artifacts": [
     {
       "path": "compatibility-matrix.v1.json",
-      "sha256": "aed7099ebde7294ca8b8415c31589ac1b711a6532859a591e543d5058a02fae8"
+      "sha256": "4ca93d10ae9bff80dd3785bb5ebfc77610cf19e928b9b9ae3f6a1ad9c2fea18e"
     },
     {
       "path": "fixtures/v1/canonical-hash.json",
@@ -53,6 +53,10 @@
     {
       "path": "fixtures/v1/stale-authority-reject.json",
       "sha256": "700173546cff08486df201316472921d8304ea892c29770b5f199e63c92601b3"
+    },
+    {
+      "path": "fixtures/v1/structured-error-privacy-reject.json",
+      "sha256": "008186d22ed5048e4926c7b56c08a71802392886425944d0e1a22b10c7433d58"
     },
     {
       "path": "fixtures/v1/unknown-advisory-roundtrip.json",
@@ -108,11 +112,11 @@
     },
     {
       "path": "schemas/v1/run-receipt.schema.json",
-      "sha256": "3c53acac7bbf0d1f247448f3ea283154ed5620811d0a3423b0003efc0367203e"
+      "sha256": "31d35cfbb28c00ee437a324e82b8d6a9a412ab6a4b287eca6596c20faffe7b8b"
     },
     {
       "path": "schemas/v1/structured-error.schema.json",
-      "sha256": "a99b58bededc620a4091770b942c4cd829fbd6e6dbbecd0de905119c056e9715"
+      "sha256": "deef772c84c50e136783d5df7d3d64da3d7e7dc6c97b4565a68e5c614d54549b"
     },
     {
       "path": "schemas/v1/work-packet.schema.json",

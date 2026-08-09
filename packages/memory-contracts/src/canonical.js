@@ -128,6 +128,10 @@ function canonicalize(value, options = {}) {
   return serialize(value, state, 0);
 }
 
+function preflightCanonicalValue(value, options = {}) {
+  canonicalize(value, options);
+}
+
 function withoutContentHash(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("CANONICAL_CONTRACT_OBJECT", "Contract object must be a plain JSON object");
   const descriptors = descriptorsForPlainObject(value);
@@ -144,4 +148,4 @@ function computeContentHash(value, options = {}) {
     .digest("hex");
 }
 
-module.exports = { CanonicalizationError, canonicalize, computeContentHash };
+module.exports = { CanonicalizationError, canonicalize, computeContentHash, preflightCanonicalValue };

@@ -1,6 +1,6 @@
 "use strict";
 
-const { canonicalize, computeContentHash } = require("./canonical.js");
+const { canonicalize, computeContentHash, preflightCanonicalValue } = require("./canonical.js");
 const { CONTRACTS, PAYLOAD_FIELDS } = require("./definitions.js");
 
 const ENVELOPE_FIELDS = Object.freeze([
@@ -34,6 +34,11 @@ function error(errors, path, code) {
 
 function validateEnvelope(value, options = {}) {
   const errors = [];
+  try {
+    preflightCanonicalValue(value);
+  } catch {
+    return { ok: false, errors: [{ path: "$", code: "NON_CANONICAL_VALUE" }] };
+  }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { ok: false, errors: [{ path: "$", code: "INVALID_ENVELOPE" }] };
   }
@@ -161,6 +166,14 @@ function validateBoundedPrivacy(value, errors) {
     targets.push([value.payload.bounded_payload, "$.payload.bounded_payload"]);
   } else if (value?.schema_id === "forge.memory.monitor-receipt.v1") {
     targets.push([value.payload?.process_cleanup, "$.payload.process_cleanup"], [value.payload?.lease_cleanup, "$.payload.lease_cleanup"]);
+  } else if (value?.schema_id === "forge.memory.structured-error.v1") {
+    targets.push([value.payload?.safe_details, "$.payload.safe_details"]);
+  } else if (value?.schema_id === "forge.memory.run-receipt.v1") {
+    targets.push(
+      [value.payload?.validation, "$.payload.validation"],
+      [value.payload?.cleanup, "$.payload.cleanup"],
+    );
+    if (value.payload?.structured_error !== undefined) targets.push([value.payload.structured_error, "$.payload.structured_error"]);
   }
   for (const [target, path] of targets) {
     if (target === undefined) continue;
@@ -233,6 +246,7 @@ function validateConsequentialEvidence(value, expected, errors) {
 
 function validateContractStructure(value, options = {}) {
   const envelope = validateEnvelope(value, options);
+  if (envelope.errors.some((item) => item.code === "NON_CANONICAL_VALUE")) return envelope;
   const errors = [...envelope.errors];
   const definition = CONTRACTS[value?.schema_id];
   if (definition && value?.payload && typeof value.payload === "object" && !Array.isArray(value.payload)) {
@@ -252,6 +266,7 @@ function validateContractStructure(value, options = {}) {
 
 function validateContract(value, options = {}) {
   const structural = validateContractStructure(value, options);
+  if (structural.errors.some((item) => item.code === "NON_CANONICAL_VALUE")) return structural;
   const errors = [...structural.errors];
   validateConsequentialEvidence(value, options.expected, errors);
   return { ok: errors.length === 0, errors };

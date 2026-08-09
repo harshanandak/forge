@@ -1,0 +1,1 @@
+{"fixture_id":"structured-error-privacy-reject","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.structured-error.v1"},"mutation":{"operation":"replace","path":"payload.safe_details","value":{"detail":"token=ghp_123456789012345678901234567890"},"rehash":true},"operation":"validate-structure","expected":{"ok":false,"code":"PRIVACY_SECRET_PATTERN"}}

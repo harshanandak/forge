@@ -136,9 +136,9 @@ const PAYLOAD_FIELDS = deepFreeze({
   "forge.memory.run-receipt.v1": {
     packet_hash: HASH, run_id: STRING, attempt_id: STRING, exact_head: HEAD, packet_revision: POSITIVE_INTEGER,
     manifest_digest: HASH, workflow_config_revision: STRING, status: { type: "string", enum: ["PASS", "FAIL", "INCOMPLETE", "NOT_EXECUTED"] },
-    executor: OBJECT, started_at: TIMESTAMP, ended_at: TIMESTAMP, evidence_refs: OBJECT_ARRAY, validation: OBJECT, cleanup: OBJECT,
+    executor: OBJECT, started_at: TIMESTAMP, ended_at: TIMESTAMP, evidence_refs: OBJECT_ARRAY, validation: BOUNDED_OBJECT, cleanup: BOUNDED_OBJECT,
     lease_epoch: POSITIVE_INTEGER, tokens: OBJECT, retries: INTEGER, corrections: INTEGER,
-    mutations_attempted: STRING_ARRAY, mutations_authorized: STRING_ARRAY, structured_error: OBJECT,
+    mutations_attempted: STRING_ARRAY, mutations_authorized: STRING_ARRAY, structured_error: BOUNDED_OBJECT,
     active_time_ms: INTEGER, passive_time_ms: INTEGER,
   },
   "forge.memory.feedback-report.v1": {
@@ -149,7 +149,7 @@ const PAYLOAD_FIELDS = deepFreeze({
   },
   "forge.memory.structured-error.v1": {
     parent_object_hash: HASH, error_occurrence_id: STRING, code: STRING,
-    terminal_classification: { type: "string", enum: ["FAIL", "INCOMPLETE"] }, safe_details: OBJECT,
+    terminal_classification: { type: "string", enum: ["FAIL", "INCOMPLETE"] }, safe_details: BOUNDED_OBJECT,
     retryable: BOOLEAN, evidence_refs: OBJECT_ARRAY,
   },
   "forge.memory.monitor-event.v1": {

@@ -110,6 +110,24 @@ describe("privacy-safe bounded contract fields", () => {
     expect(validateContractStructure(receipt).errors.map((item) => item.code)).toContain("PRIVACY_SECRET_PATTERN");
   });
 
+  test("bounds and privacy-checks StructuredError safe details and inline run evidence", () => {
+    const structured = fixture("forge.memory.structured-error.v1");
+    structured.payload.safe_details = { detail: "token=ghp_123456789012345678901234567890" };
+    rehash(structured);
+    expect(validateContractStructure(structured).errors.map((item) => item.code)).toContain("PRIVACY_SECRET_PATTERN");
+
+    const receipt = fixture("forge.memory.run-receipt.v1");
+    receipt.payload.validation = { output: "C:\\Users\\alice\\private.log" };
+    rehash(receipt);
+    expect(validateContractStructure(receipt).errors.map((item) => item.code)).toContain("PRIVACY_ABSOLUTE_PATH");
+
+    const structuredShape = generateJsonSchema("forge.memory.structured-error.v1").properties.payload.properties.safe_details;
+    const runShape = generateJsonSchema("forge.memory.run-receipt.v1").properties.payload.properties.validation;
+    expect(structuredShape["x-forge-max-serialized-bytes"]).toBeNumber();
+    expect(runShape["x-forge-secret-pattern"]).toBeString();
+    expect(() => JSON.parse(readFileSync(join(__dirname, "..", "fixtures", "v1", "structured-error-privacy-reject.json"), "utf8"))).not.toThrow();
+  });
+
   test("mirrors privacy and bounds in generated schemas and negative fixtures", () => {
     const feedback = generateJsonSchema("forge.memory.feedback-report.v1").properties.payload.properties.redacted_reproduction_steps;
     expect(feedback.maxItems).toBeNumber();
@@ -121,6 +139,42 @@ describe("privacy-safe bounded contract fields", () => {
     for (const name of ["feedback-secret-reject.json", "monitor-bounds-reject.json", "monitor-receipt-privacy-reject.json"]) {
       expect(() => JSON.parse(readFileSync(join(__dirname, "..", "fixtures", "v1", name), "utf8"))).not.toThrow();
     }
+  });
+});
+
+describe("validation descriptor preflight", () => {
+  test("never invokes hostile top-level or nested getters", () => {
+    let invoked = 0;
+    const topLevel = {};
+    Object.defineProperty(topLevel, "schema_id", { enumerable: true, get() { invoked += 1; throw new Error("executed"); } });
+    let topResult;
+    expect(() => { topResult = validateContractStructure(topLevel); }).not.toThrow();
+    expect(invoked).toBe(0);
+    expect(topResult).toEqual({ ok: false, errors: [{ path: "$", code: "NON_CANONICAL_VALUE" }] });
+
+    const nested = fixture("forge.memory.work-packet.v1");
+    Object.defineProperty(nested.payload, "issue_id", { enumerable: true, get() { invoked += 1; throw new Error("executed"); } });
+    let nestedResult;
+    expect(() => { nestedResult = validateContractStructure(nested); }).not.toThrow();
+    expect(invoked).toBe(0);
+    expect(nestedResult).toEqual({ ok: false, errors: [{ path: "$", code: "NON_CANONICAL_VALUE" }] });
+  });
+
+  test("returns the same stable failure for nested proxies", () => {
+    const packet = fixture("forge.memory.work-packet.v1");
+    packet.payload = new Proxy(packet.payload, { get() { throw new Error("proxy trap executed"); } });
+    expect(() => validateContractStructure(packet)).not.toThrow();
+    expect(validateContractStructure(packet)).toEqual({ ok: false, errors: [{ path: "$", code: "NON_CANONICAL_VALUE" }] });
+  });
+});
+
+describe("schema annotation truthfulness", () => {
+  test("declares Forge runtime conformance rather than generic JSON Schema enforcement", () => {
+    const matrix = JSON.parse(readFileSync(join(__dirname, "..", "compatibility-matrix.v1.json"), "utf8"));
+    const annotations = matrix.readers["0.1.0-beta.6"].schema_annotations;
+    expect(annotations.generic_json_schema_enforces_x_forge).toBe(false);
+    expect(annotations.conformance_helper).toBe("validateContractStructure");
+    expect(typeof validateContractStructure).toBe("function");
   });
 });
 
