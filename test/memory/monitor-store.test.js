@@ -10,7 +10,13 @@ mock.module('@forge/memory-contracts', () => contracts);
 const { computeContentHash } = contracts;
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
 const { buildMonitorDurabilityMigration } = require('../../lib/kernel/migrations');
-const { createMonitorStore } = require('../../packages/memory');
+const {
+	MonitorConflictError,
+	MonitorStaleError,
+	MonitorTerminalError,
+	MonitorUnavailableError,
+	createMonitorStore,
+} = require('../../packages/memory');
 
 const HASH = 'a'.repeat(64);
 const createdPaths = [];
@@ -439,5 +445,50 @@ await (async () => {
 			await expect(driver.appendMonitorEvent(event, ['terminal'])).rejects.toThrow('private');
 		}
 		expect(await driver.queryAll('SELECT COUNT(*) AS n FROM memory_monitor_events')).toEqual([{ n: 0 }]);
+	});
+
+	test('reads one event, a bounded latest tail, and stable delivery state with explicit overflow', async () => {
+		const { store } = await makeStore();
+		for (let sequence = 0; sequence < 3; sequence += 1) {
+			await store.appendEvent(monitorEvent(sequence, {
+				event_id: `event-${sequence}`,
+				observed_at: `2026-08-10T00:00:0${sequence}.000Z`,
+			}), ['archive', 'terminal']);
+		}
+		await store.recordDeliveryReceipt(deliveryReceipt({ event_id: 'event-2', target: 'terminal', attempt: 2 }));
+
+		const event = await store.getEvent('event-1');
+		expect(event).toMatchObject({ event_id: 'event-1', monitor_id: 'monitor-1', sequence: 1 });
+		expect(JSON.parse(event.envelope_json).payload.event_id).toBe('event-1');
+
+		expect(await store.readEventTail('monitor-1', { limit: 2 })).toMatchObject({
+			events: [{ sequence: 1 }, { sequence: 2 }],
+			overflow: true,
+			truncated_before_sequence: 1,
+		});
+		const delivery = await store.readDeliveryState('monitor-1', { limit: 2 });
+		expect(delivery.cursors).toEqual([{ monitor_id: 'monitor-1', target: 'terminal', sequence: 2, updated_at: '2026-08-10T00:01:00.000Z' }]);
+		expect(delivery.outbox.map(row => [row.sequence, row.target])).toEqual([[0, 'archive'], [0, 'terminal']]);
+		expect(delivery.terminal_receipt).toBeNull();
+		expect(delivery.overflow).toEqual({ cursors: false, outbox: true });
+	});
+
+	test('exposes typed and coded public stale, conflict, terminal, and unavailable failures', async () => {
+		const { driver, store } = await makeStore();
+		await store.appendEvent(monitorEvent(0), ['terminal']);
+		await expect(store.appendEvent(monitorEvent(0, { type: 'changed' }), ['terminal']))
+			.rejects.toMatchObject({ name: 'MonitorConflictError', code: 'MONITOR_EVENT_CONFLICT' });
+		await store.appendEvent(monitorEvent(1, { event_id: 'event-2' }), ['terminal']);
+		await store.recordDeliveryReceipt(deliveryReceipt({ event_id: 'event-2', attempt: 2 }));
+		await expect(store.recordDeliveryReceipt(deliveryReceipt()))
+			.rejects.toBeInstanceOf(MonitorStaleError);
+		await store.recordTerminalReceipt(monitorReceipt({ last_sequence: 1 }));
+		await expect(store.appendEvent(monitorEvent(2, { event_id: 'event-3' }), ['terminal']))
+			.rejects.toBeInstanceOf(MonitorTerminalError);
+
+		await driver.exec('UPDATE memory_monitor_writer_state SET enabled = 0 WHERE singleton = 1;');
+		await expect(store.recordTerminalReceipt(monitorReceipt({ last_sequence: 1 })))
+			.rejects.toBeInstanceOf(MonitorUnavailableError);
+		expect(MonitorConflictError).toBeInstanceOf(Function);
 	});
 });

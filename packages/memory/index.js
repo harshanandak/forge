@@ -16,6 +16,70 @@ const MAX_TARGET_LENGTH = 128;
 const PRIVATE_PATH_ROOTS = ['users', 'home', 'root'];
 const MAX_PRIVATE_SCAN_LENGTH = 16_384;
 
+class MonitorStoreError extends Error {
+  constructor(code, message, options = {}) {
+    super(message, options.cause ? { cause: options.cause } : undefined);
+    this.name = 'MonitorStoreError';
+    this.code = code;
+  }
+}
+
+class MonitorStaleError extends MonitorStoreError {
+  constructor(code, message, options) {
+    super(code, message, options);
+    this.name = 'MonitorStaleError';
+  }
+}
+
+class MonitorConflictError extends MonitorStoreError {
+  constructor(code, message, options) {
+    super(code, message, options);
+    this.name = 'MonitorConflictError';
+  }
+}
+
+class MonitorTerminalError extends MonitorStoreError {
+  constructor(code, message, options) {
+    super(code, message, options);
+    this.name = 'MonitorTerminalError';
+  }
+}
+
+class MonitorUnavailableError extends MonitorStoreError {
+  constructor(code, message, options) {
+    super(code, message, options);
+    this.name = 'MonitorUnavailableError';
+  }
+}
+
+const MONITOR_CONFLICT_CODES = new Set([
+  'MONITOR_EVENT_CONFLICT',
+  'MONITOR_TARGET_SET_CONFLICT',
+  'MONITOR_DELIVERY_CONFLICT',
+  'MONITOR_RECEIPT_CONFLICT',
+]);
+
+function publicMonitorError(error) {
+  if (error instanceof MonitorStoreError) return error;
+  const code = typeof error?.code === 'string' ? error.code : 'MONITOR_UNAVAILABLE';
+  const message = typeof error?.message === 'string' && error.message
+    ? error.message
+    : 'Monitor durability provider unavailable';
+  const options = { cause: error };
+  if (code.startsWith('MONITOR_STALE_')) return new MonitorStaleError(code, message, options);
+  if (MONITOR_CONFLICT_CODES.has(code)) return new MonitorConflictError(code, message, options);
+  if (code === 'MONITOR_TERMINAL') return new MonitorTerminalError(code, message, options);
+  return new MonitorUnavailableError(code, message, options);
+}
+
+async function callMonitorDriver(operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    throw publicMonitorError(error);
+  }
+}
+
 function hasNonWhitespacePathSegment(segment) {
   return Boolean(segment && segment.trim());
 }
@@ -88,6 +152,13 @@ function normalizeTargets(targets) {
   return [...new Set(targets.map(assertTarget))];
 }
 
+function assertMonitorId(monitorId) {
+  if (typeof monitorId !== 'string' || monitorId.length === 0 || monitorId.length > 128) {
+    throw new TypeError('monitorId must be a bounded non-empty string');
+  }
+  return monitorId;
+}
+
 function createMonitorStore(driver) {
   if (!driver || typeof driver.appendMonitorEvent !== 'function') {
     throw new Error('Monitor store requires a monitor-capable SQLite driver');
@@ -95,20 +166,31 @@ function createMonitorStore(driver) {
   return {
     async appendEvent(envelope, targets, config = {}) {
       assertEnvelope(envelope, 'forge.memory.monitor-event.v1');
-      return driver.appendMonitorEvent(envelope, normalizeTargets(targets), config);
+      return callMonitorDriver(() => driver.appendMonitorEvent(envelope, normalizeTargets(targets), config));
     },
     async recordDeliveryReceipt(envelope, config = {}) {
       assertEnvelope(envelope, 'forge.memory.delivery-receipt.v1');
       assertTarget(envelope.payload.target);
-      return driver.recordMonitorDeliveryReceipt(envelope, config);
+      return callMonitorDriver(() => driver.recordMonitorDeliveryReceipt(envelope, config));
     },
     async recordTerminalReceipt(envelope, config = {}) {
       assertEnvelope(envelope, 'forge.memory.monitor-receipt.v1');
-      return driver.recordMonitorTerminalReceipt(envelope, config);
+      return callMonitorDriver(() => driver.recordMonitorTerminalReceipt(envelope, config));
+    },
+    getEvent(eventId, config = {}) {
+      if (typeof eventId !== 'string' || !eventId || eventId.length > 255) {
+        throw new TypeError('eventId must be a bounded non-empty string');
+      }
+      return callMonitorDriver(() => driver.getMonitorEvent(eventId, config));
+    },
+    readEventTail(monitorId, options = {}, config = {}) {
+      return callMonitorDriver(() => driver.readMonitorEventTail(assertMonitorId(monitorId), options, config));
+    },
+    readDeliveryState(monitorId, options = {}, config = {}) {
+      return callMonitorDriver(() => driver.readMonitorDeliveryState(assertMonitorId(monitorId), options, config));
     },
     listEvents(monitorId, config = {}) {
-      if (typeof monitorId !== 'string' || !monitorId) throw new Error('monitorId is required');
-      return driver.listMonitorEvents(monitorId, config);
+      return callMonitorDriver(() => driver.listMonitorEvents(assertMonitorId(monitorId), config));
     },
   };
 }
@@ -118,5 +200,10 @@ module.exports = {
   ...require('./src/backend-registry'),
   ...require('./src/feedback-intake'),
   ...require('./src/usage-evidence'),
+  MonitorConflictError,
+  MonitorStaleError,
+  MonitorStoreError,
+  MonitorTerminalError,
+  MonitorUnavailableError,
   createMonitorStore,
 };
