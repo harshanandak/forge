@@ -1,6 +1,15 @@
 "use strict";
 
 const { computeContentHash, validateContractStructure } = require("@forge/memory-contracts");
+const { FlowExecutionError, createWorkPacketExecutor } = require("./src/executor");
+const {
+  MonitorRuntimeError,
+  createMonitorReceipt,
+  createMonitorState,
+  reduceMonitor,
+} = require("./src/monitor-runtime");
+const { EfficiencySupervisor } = require("./src/efficiency-supervisor");
+const { SkillRuntime } = require("./src/skill-runtime");
 
 function requiredString(options, name) {
   const value = options[name];
@@ -64,4 +73,14 @@ function createRunReceiptSkeleton(workPacket, options = {}) {
   return receipt;
 }
 
-module.exports = { createRunReceiptSkeleton };
+module.exports = {
+  EfficiencySupervisor,
+  FlowExecutionError,
+  MonitorRuntimeError,
+  SkillRuntime,
+  createMonitorReceipt,
+  createMonitorState,
+  createRunReceiptSkeleton,
+  createWorkPacketExecutor,
+  reduceMonitor,
+};
