@@ -1,34 +1,38 @@
 'use strict';
 
-const { spawnSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
+const zlib = require('node:zlib');
 
-const GIT_TIMEOUT_MS = 5000;
-
-function formatResult(result) {
-  return [
-    `status=${result.status === null ? 'null' : result.status}`,
-    `signal=${result.signal || 'none'}`,
-    result.error ? `error=${result.error.message}` : null,
-  ].filter(Boolean).join(' ');
+function writeLooseObject(gitDir, type, body) {
+  const content = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  const object = Buffer.concat([Buffer.from(`${type} ${content.length}\0`), content]);
+  const objectId = createHash('sha1').update(object).digest('hex');
+  const objectDir = path.join(gitDir, 'objects', objectId.slice(0, 2));
+  fs.mkdirSync(objectDir, { recursive: true });
+  fs.writeFileSync(path.join(objectDir, objectId.slice(2)), zlib.deflateSync(object));
+  return objectId;
 }
 
-function runGit(root, args, phase) {
-  const started = performance.now();
-  const result = spawnSync('git', args, {
-    cwd: root,
-    encoding: 'utf8',
-    timeout: GIT_TIMEOUT_MS,
-    windowsHide: true,
-  });
-  const elapsedMs = Math.round(performance.now() - started);
-  if (result.status !== 0) {
-    throw new Error(`skill-eval fixture phase=${phase} elapsedMs=${elapsedMs} ${formatResult(result)}`);
-  }
-  return { elapsedMs, phase };
+function createConventionalGitDir(root) {
+  const gitDir = path.join(root, '.git');
+  fs.mkdirSync(path.join(gitDir, 'refs', 'heads'), { recursive: true });
+  const tree = writeLooseObject(gitDir, 'tree', Buffer.alloc(0));
+  const identity = 'Eval Test <eval@example.test> 946684800 +0000';
+  const commit = writeLooseObject(gitDir, 'commit', [
+    `tree ${tree}`,
+    `author ${identity}`,
+    `committer ${identity}`,
+    '',
+    'fixture',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(gitDir, 'HEAD'), 'ref: refs/heads/skill-eval-fixture\n');
+  fs.writeFileSync(path.join(gitDir, 'refs', 'heads', 'skill-eval-fixture'), `${commit}\n`);
+  return gitDir;
 }
 
 function formatPhaseDiagnostics(phases) {
@@ -44,29 +48,29 @@ function formatPhaseDiagnostics(phases) {
 }
 
 function createSkillEvalFixture() {
+  const started = performance.now();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skill-eval-cli-'));
   try {
-    fs.mkdirSync(path.join(root, 'skills', 'demo'), { recursive: true });
+    const gitCommonDir = createConventionalGitDir(root);
+    const skillName = 'demo';
+    fs.mkdirSync(path.join(root, 'skills', skillName), { recursive: true });
     fs.writeFileSync(path.join(root, 'AGENTS.md'), '# test\n');
-    fs.writeFileSync(
-      path.join(root, 'skills', 'demo', 'SKILL.md'),
-      '---\nname: demo\ndescription: behavioral demo\n---\nbody\n',
-    );
-
-    const phases = {
-      gitInit: runGit(root, ['-c', 'init.defaultBranch=skill-eval-fixture', 'init', '-q'], 'git-init'),
-      gitCommit: runGit(root, [
-        '-c', 'user.email=eval@example.test',
-        '-c', 'user.name=Eval Test',
-        '-c', 'commit.gpgsign=false',
-        '-c', 'core.hooksPath=',
-        'commit', '--allow-empty', '-qm', 'fixture',
-      ], 'git-commit'),
-    };
+    fs.writeFileSync(path.join(root, 'skills', skillName, 'SKILL.md'), [
+      '---',
+      `name: ${skillName}`,
+      'description: behavioral demo',
+      '---',
+      'body',
+      '',
+    ].join('\n'));
+    const setupMs = Math.round(performance.now() - started);
     return {
       root,
-      phases,
-      setupMs: phases.gitInit.elapsedMs + phases.gitCommit.elapsedMs,
+      skillName,
+      gitCommonDir,
+      kernelDatabasePath: path.join(gitCommonDir, 'forge', 'kernel.sqlite'),
+      phases: { fixtureSetup: { phase: 'fixture-setup', elapsedMs: setupMs } },
+      setupMs,
       cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
     };
   } catch (error) {

@@ -2,6 +2,7 @@
 
 const { describe, expect, test } = require('bun:test');
 const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
 const {
@@ -21,7 +22,7 @@ describe('forge skill eval behavioral CLI', () => {
       const root = fixture.root;
       const started = performance.now();
       const result = spawnSync(process.execPath, [
-        FORGE_BIN, 'skill', 'eval', 'demo', '--full', '--tier', '30', '--json',
+        FORGE_BIN, 'skill', 'eval', fixture.skillName, '--full', '--tier', '30', '--json',
       ], {
         cwd: root,
         encoding: 'utf8',
@@ -54,6 +55,7 @@ describe('forge skill eval behavioral CLI', () => {
       expect(output.issueId).toBeUndefined();
       expect(output.pr).toBeUndefined();
       expect(result.stderr).not.toContain('arms.invalid');
+      expect(fs.existsSync(fixture.kernelDatabasePath)).toBe(false);
     } catch (error) {
       const diagnostics = formatPhaseDiagnostics(phases);
       throw new Error(`${error.message}${diagnostics ? ` [${diagnostics}]` : ''}`);

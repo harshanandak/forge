@@ -1,8 +1,43 @@
 const { describe, expect, test } = require('bun:test');
+const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
 describe('local Kernel broker contract', () => {
+	test('resolves an ordinary .git directory without spawning git', () => {
+		const { resolveGitCommonDir } = require('../../lib/kernel/broker');
+		const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-common-dir-fast-path-'));
+		const gitDir = path.join(projectRoot, '.git');
+		fs.mkdirSync(gitDir);
+
+		try {
+			const commonDir = resolveGitCommonDir(projectRoot, {
+				execFileSync: () => { throw new Error('git must not spawn for an ordinary .git directory'); },
+			});
+			expect(commonDir).toBe(gitDir);
+		} finally {
+			fs.rmSync(projectRoot, { recursive: true, force: true });
+		}
+	});
+
+	test('preserves the git probe for a linked-worktree .git file', () => {
+		const { resolveGitCommonDir } = require('../../lib/kernel/broker');
+		const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-common-dir-worktree-'));
+		const commonDir = path.join(os.tmpdir(), 'forge-linked-common-dir');
+		fs.writeFileSync(path.join(projectRoot, '.git'), 'gitdir: ../main/.git/worktrees/fixture\n');
+		let calls = 0;
+
+		try {
+			const resolved = resolveGitCommonDir(projectRoot, {
+				execFileSync: () => { calls += 1; return commonDir; },
+			});
+			expect(resolved).toBe(path.resolve(commonDir));
+			expect(calls).toBe(1);
+		} finally {
+			fs.rmSync(projectRoot, { recursive: true, force: true });
+		}
+	});
+
 	test('keys the local broker by git common-dir instead of worktree path', () => {
 		const {
 			buildLocalBrokerConfig,
