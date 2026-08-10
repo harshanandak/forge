@@ -148,6 +148,51 @@ describe('Kernel live claim authority projection', () => {
 		});
 	}
 
+	test('claim rechecks terminal status after acquiring the guarded write lock', async () => {
+		await createIssue('terminal-race');
+		const eventCount = (await driver.queryAll('SELECT * FROM kernel_events', config)).length;
+		const outboxCount = (await driver.queryAll('SELECT * FROM kernel_outbox', config)).length;
+		const exec = driver.exec.bind(driver);
+		const loadKernelEntity = driver.loadKernelEntity.bind(driver);
+		let transitioned = false;
+		let transactionOpen = false;
+		let issueReadCount = 0;
+		let terminalReadInsideTransaction = false;
+		driver.exec = async (statement, driverConfig) => {
+			if (statement === 'BEGIN IMMEDIATE;') transactionOpen = true;
+			const result = await exec(statement, driverConfig);
+			if (statement === 'COMMIT;' || statement === 'ROLLBACK;') transactionOpen = false;
+			return result;
+		};
+		driver.loadKernelEntity = async (entityType, entityId, context, driverConfig) => {
+			if (entityType === 'issue' && entityId === 'terminal-race') {
+				issueReadCount += 1;
+				if (issueReadCount === 2) terminalReadInsideTransaction = transactionOpen;
+			}
+			if (!transitioned && entityType === 'claim') {
+				transitioned = true;
+				await exec(
+					"UPDATE kernel_issues SET status = 'done' WHERE id = 'terminal-race';",
+					config,
+				);
+			}
+			return loadKernelEntity(entityType, entityId, context, driverConfig);
+		};
+
+		const rejected = await claimIssue('terminal-race', 'late-worker');
+
+		expect(transitioned).toBe(true);
+		expect(terminalReadInsideTransaction).toBe(true);
+		expect(rejected).toMatchObject({
+			ok: false,
+			command: 'claim',
+			error: { code: 'FORGE_ISSUE_VALIDATION', exit_code: 6 },
+		});
+		expect(await driver.queryAll('SELECT * FROM kernel_claims', config)).toHaveLength(0);
+		expect(await driver.queryAll('SELECT * FROM kernel_events', config)).toHaveLength(eventCount);
+		expect(await driver.queryAll('SELECT * FROM kernel_outbox', config)).toHaveLength(outboxCount);
+	});
+
 	test('release remains allowed for a stale claim on a terminal issue', async () => {
 		await createIssue('terminal-release');
 		await claimIssue('terminal-release', 'worker-a');
