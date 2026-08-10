@@ -11,6 +11,7 @@ const {
 } = require('../lib/protected-state-authority');
 
 const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
+const PROTECTED_STATE_WRITE_COMPLETED = 'protected_state.write.completed';
 const TEST_HEAD = 'a'.repeat(40);
 
 const target = {
@@ -45,12 +46,15 @@ function eventRow(eventType, capabilityId, overrides = {}) {
 			surface,
 			contentHash: hashProtectedContent(content),
 			worktreeScope: overrides.worktreeScope || target.worktreeScope,
-			operation: eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED ? 'generate_npm_workflow' : 'staged_edit',
+			operation: eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
+				? 'generate_npm_workflow'
+				: (eventType === PROTECTED_STATE_WRITE_COMPLETED ? 'generate_npm_workflow_completed' : 'staged_edit'),
+			viaForgeApi: overrides.viaForgeApi !== false,
 			sourceHead: Object.prototype.hasOwnProperty.call(overrides, 'sourceHead')
 				? overrides.sourceHead
 				: target.sourceHead,
 			sourceCommand: overrides.sourceCommand || (
-				eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
+				eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED || eventType === PROTECTED_STATE_WRITE_COMPLETED
 					? NPM_WORKFLOW_SOURCE_COMMAND
 					: 'scripts/protected-state-check.js'
 			),
@@ -73,6 +77,7 @@ describe('protected-state Kernel authority', () => {
 	test('accepts one exact unconsumed command-issued capability', () => {
 		const decision = evaluateAuthorization(target, [
 			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-1'),
+			eventRow(PROTECTED_STATE_WRITE_COMPLETED, 'capability-1'),
 		]);
 
 		expect(decision).toMatchObject({
@@ -82,6 +87,15 @@ describe('protected-state Kernel authority', () => {
 			requiredSurface: target.surface,
 			capabilityId: 'capability-1',
 		});
+	});
+
+	test('denies a pre-write authorization until the owning writer records completion', () => {
+		const decision = evaluateAuthorization(target, [
+			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-pre-write'),
+		]);
+
+		expect(decision).toMatchObject({ allowed: false, decision: 'blocked' });
+		expect(decision.reason).toContain('not completed');
 	});
 
 	test('fails closed when the staged HEAD differs from or is absent on the capability', () => {
@@ -112,10 +126,14 @@ describe('protected-state Kernel authority', () => {
 				sourceCommand: 'raw sqlite write',
 			}),
 		]);
+		const nonApiIssuer = evaluateAuthorization(target, [
+			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-non-api', { viaForgeApi: false }),
+		]);
 
 		expect(crossActor.allowed).toBe(false);
 		expect(crossSurface.allowed).toBe(false);
 		expect(malformedIssuer.allowed).toBe(false);
+		expect(nonApiIssuer.allowed).toBe(false);
 	});
 
 	test('denies a capability issued from a different worktree scope', () => {

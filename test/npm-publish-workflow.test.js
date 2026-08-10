@@ -259,16 +259,28 @@ describe('Forge-owned npm publish workflow', () => {
 		}
 	});
 
-	test('does not publish authorization when the protected write fails', async () => {
+	test('acquires trusted authority before attempting a protected workflow write', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-write-failure-'));
+		const calls = [];
 		let auditCalls = 0;
 		try {
 			const result = await generateNpmPublishWorkflow(root, generationOptions({
-				writeProtectedFile: () => ({
-					allowed: false,
-					decision: 'blocked',
-					reason: 'injected write failure',
-				}),
+				prepareNpmPublishWorkflowAuthorization: async () => {
+					calls.push('authority');
+					return { success: true, capabilityId: 'prepared-1' };
+				},
+				writeProtectedFile: () => {
+					calls.push('write');
+					return {
+						allowed: false,
+						decision: 'blocked',
+						reason: 'injected write failure',
+					};
+				},
+				activateNpmPublishWorkflowAuthorization: async () => {
+					calls.push('activate');
+					return { success: true };
+				},
 				recordProtectedStateAuditEvent: () => {
 					auditCalls += 1;
 					return { success: true };
@@ -276,6 +288,7 @@ describe('Forge-owned npm publish workflow', () => {
 			}));
 
 			expect(result).toMatchObject({ success: false, error: 'injected write failure' });
+			expect(calls).toEqual(['authority', 'write']);
 			expect(auditCalls).toBe(0);
 			expect(fs.existsSync(path.join(root, PROTECTED_STATE_AUDIT_LOG))).toBe(false);
 		} finally {
@@ -283,25 +296,29 @@ describe('Forge-owned npm publish workflow', () => {
 		}
 	});
 
-	test('restores previous workflow bytes when authorization audit persistence fails', async () => {
+	test('never overwrites a concurrent workflow update during audit-failure recovery', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-audit-failure-'));
 		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
 		const previous = Buffer.from('previous workflow bytes\r\n', 'utf8');
+		const concurrent = Buffer.from('concurrent workflow bytes\n', 'utf8');
 		try {
 			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
 			fs.writeFileSync(workflowPath, previous);
 			const result = await generateNpmPublishWorkflow(root, generationOptions({
-				recordProtectedStateAuditEvent: () => ({
-					success: false,
-					error: 'audit sink unavailable',
-				}),
+				prepareNpmPublishWorkflowAuthorization: async () => ({ success: true, capabilityId: 'prepared-2' }),
+				recordProtectedStateAuditEvent: () => {
+					fs.writeFileSync(workflowPath, concurrent);
+					return { success: false, error: 'audit sink unavailable' };
+				},
 			}));
 
 			expect(result).toMatchObject({
 				success: false,
 				error: 'Could not record protected-state authorization: audit sink unavailable',
 			});
-			expect(fs.readFileSync(workflowPath)).toEqual(previous);
+			expect(fs.readFileSync(workflowPath)).toEqual(concurrent);
+			expect(result.recovery).toMatchObject({ allowed: false, decision: 'blocked' });
+			expect(result.recovery.reason).toContain('concurrent');
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -367,24 +384,33 @@ describe('Forge-owned npm publish workflow', () => {
 		}
 	});
 
-	test('restores previous workflow bytes when trusted authorization persistence fails', async () => {
+	test('does not mutate protected workflow bytes when pre-write authority fails', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-authority-failure-'));
 		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
 		const previous = Buffer.from('previous trusted workflow bytes\n', 'utf8');
+		let writeCalls = 0;
+		const authorityFailure = async () => ({
+			success: false,
+			error: 'kernel authority unavailable',
+		});
 		try {
 			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
 			fs.writeFileSync(workflowPath, previous);
 			const result = await generateNpmPublishWorkflow(root, generationOptions({
-				issueNpmPublishWorkflowAuthorization: async () => ({
-					success: false,
-					error: 'kernel authority unavailable',
-				}),
+				prepareNpmPublishWorkflowAuthorization: authorityFailure,
+				issueNpmPublishWorkflowAuthorization: authorityFailure,
+				writeProtectedFile: () => {
+					writeCalls += 1;
+					return { allowed: true, contentHash: 'sha256:injected' };
+				},
+				recordProtectedStateAuditEvent: () => ({ success: true }),
 			}));
 
 			expect(result).toMatchObject({
 				success: false,
 				error: 'Could not record trusted protected-state authorization: kernel authority unavailable',
 			});
+			expect(writeCalls).toBe(0);
 			expect(fs.readFileSync(workflowPath)).toEqual(previous);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
