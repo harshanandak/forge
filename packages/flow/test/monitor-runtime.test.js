@@ -88,6 +88,28 @@ describe("MonitorSpec deterministic reducer", () => {
     })).toThrow("synchronous boolean");
   });
 
+  test.each(["filter", "terminalPredicate"])("consumes a rejected asynchronous %s decision", async (callbackName) => {
+    let rejectionConsumed = false;
+    const rejection = {
+      then(_resolve, reject) {
+        rejectionConsumed = true;
+        reject(new Error(`${callbackName} unavailable`));
+      },
+    };
+    const monitorSpec = spec({
+      terminalPredicate: callbackName === "terminalPredicate" ? () => rejection : () => false,
+      ...(callbackName === "filter" ? { filter: () => rejection } : {}),
+    });
+
+    expect(() => reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
+      kind: "observation",
+      event: observation(0, "PENDING"),
+    })).toThrow("synchronous boolean");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(rejectionConsumed).toBe(true);
+  });
+
   test.each([
     ["source adapter item", { sourceAdapters: [42] }],
     ["delivery target item", { deliveryTargets: [""] }],

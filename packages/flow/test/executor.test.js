@@ -130,6 +130,26 @@ describe("WorkPacket executor", () => {
     expect(emissions).toBe(1);
   });
 
+  test("consumes a rejected asynchronous receipt observer", async () => {
+    let rejectionConsumed = false;
+    const rejection = Promise.reject(new Error("observer unavailable"));
+    const consume = rejection.catch.bind(rejection);
+    rejection.catch = (handler) => {
+      rejectionConsumed = true;
+      return consume(handler);
+    };
+    const executor = createWorkPacketExecutor({
+      run: () => successfulResult(),
+      onReceipt: () => rejection,
+    });
+
+    const receipt = executor.execute(packet(), context());
+    await Promise.resolve();
+
+    expect(receipt.payload.status).toBe("PASS");
+    expect(rejectionConsumed).toBe(true);
+  });
+
   test("fails closed when the same packet identity carries different content", () => {
     let runs = 0;
     const executor = createWorkPacketExecutor({ run: () => { runs += 1; return successfulResult(); } });

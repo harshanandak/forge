@@ -149,6 +149,15 @@ function callbackBoolean(name, callback, ...args) {
   } catch {
     throw new MonitorRuntimeError("CALLBACK_FAILURE", `${name} failed`);
   }
+  try {
+    if (decision !== null
+      && (typeof decision === "object" || typeof decision === "function")
+      && typeof decision.then === "function") {
+      Promise.resolve(decision).catch(() => {});
+    }
+  } catch {
+    throw new MonitorRuntimeError("CALLBACK_FAILURE", `${name} failed`);
+  }
   if (typeof decision !== "boolean") {
     throw new MonitorRuntimeError("INVALID_CALLBACK_DECISION", `${name} must return a synchronous boolean`);
   }

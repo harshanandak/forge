@@ -251,7 +251,12 @@ function createWorkPacketExecutor({ run, onReceipt = () => {} } = {}) {
       }
       acceptedPackets.set(identity, { packetHash: workPacket.content_hash, receipt: structuredClone(receipt) });
       try {
-        onReceipt(structuredClone(receipt));
+        const observation = onReceipt(structuredClone(receipt));
+        if (observation !== null
+          && (typeof observation === "object" || typeof observation === "function")
+          && typeof observation.then === "function") {
+          Promise.resolve(observation).catch(() => {});
+        }
       } catch {
         // Receipt observation is secondary and cannot change the accepted execution result.
       }
