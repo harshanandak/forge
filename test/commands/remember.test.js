@@ -1,12 +1,15 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { performance } = require('node:perf_hooks');
 const { afterEach, describe, test, expect } = require('bun:test');
 
 const remember = require('../../lib/commands/remember');
 const recall = require('../../lib/commands/recall');
 const projectMemory = require('../../lib/project-memory');
 const { createKernelProjectRoots } = require('../helpers/kernel-project-root');
+const { createPhaseWatchdog } = require('../helpers/phase-watchdog');
+const { seedMemoryEntries } = require('../helpers/seed-memory');
 
 // remember/recall now persist to the kernel store, whose default path resolves from the git
 // common dir — so each temp project is a throwaway git repo. Notes land in .git/forge.
@@ -16,6 +19,29 @@ const { makeProjectRoot, cleanup } = createKernelProjectRoots('forge-remember-cm
 async function recalledNotes(projectRoot) {
   const result = await recall.handler(['--json'], {}, projectRoot);
   return JSON.parse(result.output).notes;
+}
+
+async function withPhaseDiagnostics(phases, operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    const detail = Object.entries(phases)
+      .map(([name, elapsedMs]) => `${name}=${elapsedMs.toFixed(1)}ms`)
+      .join(', ');
+    error.message = `${error.message} (phase timings: ${detail || 'unavailable'})`;
+    throw error;
+  }
+}
+
+async function timedPhase(phases, watchdog, name, operation) {
+  const started = performance.now();
+  watchdog.enter(name);
+  try {
+    return await operation();
+  } finally {
+    phases[name] = performance.now() - started;
+    watchdog.complete(name);
+  }
 }
 
 afterEach(() => {
@@ -169,20 +195,52 @@ describe('forge remember command', () => {
   });
 
   test('session-summary idempotency is not limited to the newest 100 memories', async () => {
-    const projectRoot = makeProjectRoot();
-    const args = ['--session-summary', '--what', 'implemented hook', '--json'];
-    const first = JSON.parse((await remember.handler(args, {}, projectRoot)).output);
-    for (let index = 0; index < 101; index += 1) {
-      projectMemory.write(projectRoot, {
-        key: `newer-${index}`,
-        value: `newer note ${index}`,
-        sourceAgent: 'forge remember',
-        tags: [],
-        timestamp: `2099-08-09T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
-      });
-    }
+    const phases = {};
+    const watchdog = createPhaseWatchdog();
+    try {
+      await withPhaseDiagnostics(phases, async () => {
+        watchdog.start();
+        const setupStarted = performance.now();
+        watchdog.enter('project setup');
+        let projectRoot;
+        try {
+          projectRoot = makeProjectRoot();
+        } finally {
+          phases['project setup'] = performance.now() - setupStarted;
+          watchdog.complete('project setup');
+        }
+        const args = ['--session-summary', '--what', 'implemented hook', '--json'];
+        const first = JSON.parse((await timedPhase(
+          phases,
+          watchdog,
+          'initial remember',
+          () => remember.handler(args, {}, projectRoot),
+        )).output);
+        const seeded = await timedPhase(
+          phases,
+          watchdog,
+          'fixture seeding',
+          () => seedMemoryEntries(projectRoot, Array.from({ length: 101 }, (_, index) => ({
+            key: `newer-${index}`,
+            value: `newer note ${index}`,
+            sourceAgent: 'forge remember',
+            tags: [],
+            timestamp: `2099-08-09T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+          }))),
+        );
+        expect(seeded.count).toBe(102);
+        expect(seeded.newestKey).toBe('newer-59');
 
-    const repeated = JSON.parse((await remember.handler(args, {}, projectRoot)).output);
-    expect(repeated.id).toBe(first.id);
+        const repeated = JSON.parse((await timedPhase(
+          phases,
+          watchdog,
+          'final remember/recall',
+          () => remember.handler(args, {}, projectRoot),
+        )).output);
+        expect(repeated.id).toBe(first.id);
+      });
+    } finally {
+      watchdog.stop();
+    }
   });
 });
