@@ -40,6 +40,80 @@ function fakeStore(seed = {}) {
 }
 
 describe('project memory kernel adapter', () => {
+  test('records one opaque evidence event per selected key with deterministic retry identities', () => {
+    const calls = [];
+    const store = {
+      appendUsageEvidence(event) { calls.push(event); return { appended: true }; },
+      rebuildUsageProjection() {}, loadUsageProjection() { return null; }, loadUsageProjections() { return []; },
+    };
+    const options = {
+      store, gitCommonDir: 'C:\\Repo\\.git', realpath: value => value, platform: 'win32',
+      invocationId: 'recall-1', now: '2026-08-10T00:00:00.000Z',
+    };
+    expect(projectMemory.recordRecallUsage('C:\\Repo\\worktree', [{ id: 'memory-a' }, { id: 'memory-b' }], options))
+      .toEqual({ attempted: 2, appended: 2, failed: 0 });
+    expect(projectMemory.recordRecallUsage('C:\\Repo\\worktree', [{ id: 'memory-a' }, { id: 'memory-b' }], options))
+      .toEqual({ attempted: 2, appended: 2, failed: 0 });
+    expect(calls).toHaveLength(4);
+    expect(calls[0].event_id).toMatch(/^[a-f0-9]{64}$/);
+    expect(calls[0].scope).toMatch(/^[a-f0-9]{64}$/);
+    expect(calls[0].memory_id).toMatch(/^[a-f0-9]{64}$/);
+    expect(calls[0].idempotency_key).toBe(calls[2].idempotency_key);
+    expect(JSON.stringify(calls)).not.toContain('C:\\Repo');
+    expect(JSON.stringify(calls)).not.toContain('memory-a');
+  });
+
+  test('does not invoke accessor options while producing recall evidence', () => {
+    const calls = [];
+    let getterCalls = 0;
+    const options = { store: {
+      appendUsageEvidence(event) { calls.push(event); return { appended: true }; },
+      rebuildUsageProjection() {}, loadUsageProjection() { return null; }, loadUsageProjections() { return []; },
+    } };
+    Object.defineProperty(options, 'invocationId', {
+      enumerable: true,
+      get() { getterCalls += 1; return 'must-not-run'; },
+    });
+
+    expect(projectMemory.recordRecallUsage(process.cwd(), [{ id: 'safe-memory' }], options))
+      .toEqual({ attempted: 1, appended: 1, failed: 0 });
+    expect(getterCalls).toBe(0);
+    expect(calls).toHaveLength(1);
+  });
+
+  test('treats project-id resolution failures as advisory evidence failures', () => {
+    const calls = [];
+    const store = {
+      appendUsageEvidence(event) { calls.push(event); return { appended: true }; },
+      rebuildUsageProjection() {}, loadUsageProjection() { return null; }, loadUsageProjections() { return []; },
+    };
+
+    expect(projectMemory.recordRecallUsage(null, [{ id: 'safe-memory' }], {
+      gitCommonDir: 'repo/.git',
+      platform: 'linux',
+      store,
+      realpath() { throw new Error('simulated path resolution failure'); },
+    })).toEqual({ attempted: 1, appended: 0, failed: 1 });
+    expect(calls).toHaveLength(0);
+  });
+
+  test('reports unavailable usage projections separately from a successful empty projection', () => {
+    const unavailableStore = {
+      appendUsageEvidence() {}, rebuildUsageProjection() {}, loadUsageProjection() { return null; },
+      loadUsageProjections() { throw Object.assign(new Error('busy'), { code: 'SQLITE_BUSY' }); },
+    };
+    const unavailable = projectMemory.usageProjectionStatus(process.cwd(), ['old-memory'], { usageStore: unavailableStore });
+    expect(unavailable).toEqual({ available: false, projections: new Map() });
+    expect(projectMemory.usageProjections(process.cwd(), ['old-memory'], { usageStore: unavailableStore })).toEqual(new Map());
+
+    const emptyStore = {
+      appendUsageEvidence() {}, rebuildUsageProjection() {}, loadUsageProjection() { return null; },
+      loadUsageProjections() { return []; },
+    };
+    expect(projectMemory.usageProjectionStatus(process.cwd(), ['never-used'], { usageStore: emptyStore }))
+      .toEqual({ available: true, projections: new Map() });
+  });
+
   test('resolves project ids with the requested platform path semantics', () => {
     const realpath = value => value;
 

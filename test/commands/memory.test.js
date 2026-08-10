@@ -129,6 +129,79 @@ describe('forge memory command surface (25362344)', () => {
     expect(parsed.findings.every(finding => /^memory-(duplicate|contradiction)-[a-f0-9]{16}$/.test(finding.review_id))).toBe(true);
   });
 
+  test('memory review surfaces durable usage demotion only after 90 days', async () => {
+    const projectRoot = makeProjectRoot();
+    const entries = [
+      { key: 'exact-90', timestamp: '2026-05-12T00:00:00.000Z', value: 'fresh at the boundary' },
+      { key: 'over-90', timestamp: '2026-05-12T00:00:00.000Z', value: 'demote after the boundary' },
+    ];
+    const result = await memory.handler(['review', '--json'], {}, projectRoot, {
+      now: '2026-08-10T00:00:00.001Z',
+      recentMemories: () => entries,
+      countMemories: () => entries.length,
+      usageProjections: () => new Map([
+        ['exact-90', { last_used_at: '2026-05-12T00:00:00.001Z', use_count: 1 }],
+        ['over-90', { last_used_at: '2026-05-12T00:00:00.000Z', use_count: 2 }],
+      ]),
+    });
+
+    const parsed = JSON.parse(result.output);
+    expect(parsed.findings).toEqual([]);
+    expect(parsed.usage).toEqual({
+      available: true,
+      demoted: 1,
+      findings: [{ memory_id: expect.stringMatching(/^[a-f0-9]{64}$/), baseline_at: '2026-05-12T00:00:00.000Z', use_count: 2, stale: true, demote: true }],
+    });
+  });
+
+  test('memory review never surfaces a raw Windows-path memory key in usage findings', async () => {
+    const projectRoot = makeProjectRoot();
+    const pathKey = 'C:\\Users\\private\\secret-memory';
+    const options = {
+      now: '2026-08-10T00:00:00.001Z',
+      recentMemories: () => [{ key: pathKey, timestamp: '2026-05-12T00:00:00.000Z', value: 'private' }],
+      countMemories: () => 1,
+      usageProjections: () => new Map([[pathKey, { last_used_at: '2026-05-12T00:00:00.000Z', use_count: 1 }]]),
+    };
+    const first = JSON.parse((await memory.handler(['review', '--json'], {}, projectRoot, options)).output);
+    const second = JSON.parse((await memory.handler(['review', '--json'], {}, projectRoot, options)).output);
+    expect(first.usage.findings[0].memory_id).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.usage.findings[0].memory_id).toBe(second.usage.findings[0].memory_id);
+    expect(JSON.stringify(first)).not.toContain(pathKey);
+    expect(JSON.stringify(first)).not.toContain('C:\\Users');
+  });
+
+  test('memory review fails closed when the bounded usage projection read is unavailable', async () => {
+    const projectRoot = makeProjectRoot();
+    const entries = [
+      { key: 'actively-used', timestamp: '2026-05-01T00:00:00.000Z', value: 'still relevant' },
+      { note: 'duplicate', timestamp: '2026-08-01T00:00:00.000Z' },
+      { note: 'duplicate', timestamp: '2026-08-02T00:00:00.000Z' },
+    ];
+    const options = {
+      now: '2026-08-10T00:00:00.000Z',
+      recentMemories: () => entries,
+      countMemories: () => entries.length,
+      usageProjections() { throw Object.assign(new Error('database busy'), { code: 'SQLITE_BUSY' }); },
+    };
+    const json = JSON.parse((await memory.handler(['review', '--json'], {}, projectRoot, options)).output);
+    const text = (await memory.handler(['review'], {}, projectRoot, options)).output;
+    expect(json.findings).toHaveLength(1);
+    expect(json.usage).toEqual({ available: false, demoted: 0, findings: [] });
+    expect(text).toContain('Usage staleness: unavailable; no demotion applied.');
+  });
+
+  test('memory review treats a successful empty usage projection as never used', async () => {
+    const projectRoot = makeProjectRoot();
+    const result = await memory.handler(['review', '--json'], {}, projectRoot, {
+      now: '2026-08-10T00:00:00.000Z',
+      recentMemories: () => [{ key: 'never-used', timestamp: '2026-05-01T00:00:00.000Z', value: 'aged' }],
+      countMemories: () => 1,
+      usageProjections: () => new Map(),
+    });
+    expect(JSON.parse(result.output).usage).toMatchObject({ available: true, demoted: 1 });
+  });
+
   test('back-compat: forge remember still works as a standalone alias', async () => {
     const projectRoot = makeProjectRoot();
     const result = await remember.handler(['legacy path still works'], {}, projectRoot);

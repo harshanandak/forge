@@ -6,7 +6,8 @@
   "type": "commonjs",
   "files": [
     "index.js",
-    "src"
+    "src",
+    "!src/**/*.test.js"
   ],
   "scripts": {
     "test": "bun test"

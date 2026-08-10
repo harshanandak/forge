@@ -45,6 +45,46 @@ afterEach(() => {
 });
 
 describe('Kernel SQLite driver — project-memory read model', () => {
+  test('enables foreign-key enforcement on direct driver connections', async () => {
+    const driver = makeDriver();
+    await expect(driver.queryAll('PRAGMA foreign_keys;')).resolves.toEqual([{ foreign_keys: 1 }]);
+  });
+
+  test('appends usage evidence atomically, rebuilds its projection, and refuses writes after demotion', () => {
+		const driver = makeDriver();
+		const event = {
+			event_id: 'a'.repeat(64), memory_id: 'b'.repeat(64), scope: 'c'.repeat(64),
+			use_kind: 'cli-recall', consumer_id: 'cli-recall', selection_digest: 'd'.repeat(64),
+			observed_at: '2026-08-10T00:00:00.000Z', idempotency_key: 'e'.repeat(64),
+		};
+		expect(driver.appendUsageEvidence(event)).toMatchObject({ appended: true, use_count: 1 });
+		expect(driver.loadUsageProjection(event.memory_id)).toEqual({
+			scope: event.scope, memory_id: event.memory_id, last_used_at: event.observed_at, use_count: 1,
+		});
+		expect(driver.rebuildUsageProjection()).toEqual({ projections: 1 });
+		driver.exec('UPDATE memory_usage_writer_state SET enabled = 0 WHERE singleton = 1;');
+    expect(() => driver.appendUsageEvidence({ ...event, event_id: 'f'.repeat(64), idempotency_key: 'g'.repeat(64) }))
+      .toThrow(/disabled/i);
+  });
+
+  test('does not roll back an outer transaction when usage evidence cannot begin a nested one', async () => {
+    const driver = makeDriver();
+    const event = {
+      event_id: 'a'.repeat(64), memory_id: 'b'.repeat(64), scope: 'c'.repeat(64),
+      use_kind: 'cli-recall', consumer_id: 'cli-recall', selection_digest: 'd'.repeat(64),
+      observed_at: '2026-08-10T00:00:00.000Z', idempotency_key: 'e'.repeat(64),
+    };
+
+    driver.exec('BEGIN IMMEDIATE;');
+    expect(() => driver.appendUsageEvidence(event)).toThrow(/transaction|within/i);
+    driver.exec('CREATE TABLE transaction_probe (value TEXT);');
+    driver.exec("INSERT INTO transaction_probe (value) VALUES ('outer transaction survived');");
+    driver.exec('COMMIT;');
+    await expect(driver.queryAll('SELECT value FROM transaction_probe')).resolves.toEqual([
+      { value: 'outer transaction survived' },
+    ]);
+  });
+
 	test('records and loads an entry round-trip without a prior broker.initialize()', () => {
 		const driver = makeDriver();
 		driver.recordMemory({

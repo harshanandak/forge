@@ -46,7 +46,8 @@ describe('forge recall command', () => {
       timestamp: '2026-07-31T00:00:00.000Z',
     });
 
-    const result = await recall.handler([], {}, projectRoot);
+    const observations = [];
+    const result = await recall.handler([], {}, projectRoot, { onUsageEvidence: observation => observations.push(observation) });
 
     expect(result.output).toContain('Confirmed memory');
     expect(result.output).toContain('Suggested memory — verify before relying');
@@ -57,6 +58,7 @@ describe('forge recall command', () => {
     expect(result.output).toContain('small suggested memory');
     expect(result.output).not.toContain('oversized ');
     expect(Math.ceil(result.output.length / 4)).toBeLessThanOrEqual(1200);
+    expect(observations).toEqual([{ attempted: 2, appended: 2, failed: 0 }]);
   });
 
   test('exports the registry command contract', () => {
@@ -119,6 +121,83 @@ describe('forge recall command', () => {
     expect(parsed.notes[0].note).toBe('alpha note');
     expect(parsed.total).toBe(1);
     expect(parsed.capped).toBe(false);
+  });
+
+  test('durably records JSON-surfaced notes and keeps output unchanged when evidence fails', async () => {
+    const projectRoot = makeProjectRoot();
+    await seed(projectRoot, 'small surfaced note');
+    const observations = [];
+
+    const result = await recall.handler(['--json'], {}, projectRoot, {
+      invocationId: 'test-recall-invocation',
+      onUsageEvidence: observation => observations.push(observation),
+    });
+
+    expect(JSON.parse(result.output).notes).toHaveLength(1);
+    expect(observations).toEqual([{ attempted: 1, appended: 1, failed: 0 }]);
+    const outputBeforeFailure = await recall.handler([], {}, projectRoot);
+    const outputAfterFailure = await recall.handler([], {}, projectRoot, {
+      invocationId: 'failure-is-advisory',
+      usageStore: { appendUsageEvidence() { throw new Error('private write failure'); } },
+    });
+    expect(outputAfterFailure).toEqual(outputBeforeFailure);
+  });
+
+  test('hostile private command options never invoke accessors or alter recall output', async () => {
+    const projectRoot = makeProjectRoot();
+    await seed(projectRoot, 'safe recall output');
+    let getterCalls = 0;
+    const commandOpts = {};
+    for (const field of ['invocationId', 'usageStore', 'onUsageEvidence', 'invocationStartedAt', 'now']) {
+      Object.defineProperty(commandOpts, field, { get() { getterCalls += 1; return null; } });
+    }
+    const normal = await recall.handler(['--json'], {}, projectRoot);
+    const hostile = await recall.handler(['--json'], {}, projectRoot, commandOpts);
+    expect(hostile.output).toEqual(normal.output);
+    expect(getterCalls).toBe(0);
+
+    let trapCalls = 0;
+    const proxyOpts = new Proxy({}, { getOwnPropertyDescriptor() { trapCalls += 1; } });
+    const proxied = await recall.handler(['--json'], {}, projectRoot, proxyOpts);
+    expect(proxied.output).toEqual(normal.output);
+    expect(trapCalls).toBe(0);
+
+    let callbackTraps = 0;
+    const hostileCallback = new Proxy(() => {}, { apply() { callbackTraps += 1; } });
+    const withHostileCallback = await recall.handler(['--json'], {}, projectRoot, { onUsageEvidence: hostileCallback });
+    expect(withHostileCallback.output).toEqual(normal.output);
+    expect(callbackTraps).toBe(0);
+  });
+
+  test('a stable injected invocation retries idempotently with the same real start timestamp', async () => {
+    const projectRoot = makeProjectRoot();
+    await seed(projectRoot, 'retry-safe evidence');
+    const first = [];
+    const second = [];
+    await recall.handler(['--json'], {}, projectRoot, {
+      invocationId: 'stable-retry', now: '2026-08-10T00:00:00.000Z', onUsageEvidence: value => first.push(value),
+    });
+    await recall.handler(['--json'], {}, projectRoot, {
+      invocationId: 'stable-retry', now: '2026-08-10T00:00:00.000Z', onUsageEvidence: value => second.push(value),
+    });
+    expect(first).toEqual([{ attempted: 1, appended: 1, failed: 0 }]);
+    expect(second).toEqual([{ attempted: 1, appended: 0, failed: 0 }]);
+  });
+
+  test('divergent invocation start timestamps conflict only advisory evidence and retain useful recall output', async () => {
+    const projectRoot = makeProjectRoot();
+    await seed(projectRoot, 'real timestamp evidence');
+    const first = await recall.handler(['--json'], {}, projectRoot, {
+      invocationId: 'stable-conflict', now: '2026-08-10T00:00:00.000Z',
+    });
+    const observed = [];
+    const second = await recall.handler(['--json'], {}, projectRoot, {
+      invocationId: 'stable-conflict', now: '2026-08-11T00:00:00.000Z', onUsageEvidence: value => observed.push(value),
+    });
+    const [{ id }] = JSON.parse(first.output).notes;
+    expect(projectMemory.usageProjection(projectRoot, id)).toMatchObject({ last_used_at: '2026-08-10T00:00:00.000Z' });
+    expect(second.output).toEqual(first.output);
+    expect(observed).toEqual([{ attempted: 1, appended: 0, failed: 1 }]);
   });
 
   test('honors --limit and signals truncation in --json', async () => {

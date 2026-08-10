@@ -107,6 +107,93 @@ describe('Kernel SQLite driver — dependencies + claims via guarded path (Wave 
 		expect(ready.data.issues.map(issue => issue.id)).not.toContain('pos-a');
 	});
 
+	test('boolean --json does not consume positional claim or dependency operands', async () => {
+		await createIssue('json-claim', 'Claim operand');
+		await createIssue('json-a', 'Dependent operand');
+		await createIssue('json-b', 'Blocker operand');
+
+		const claimed = await broker.runIssueOperation(
+			'claim', ['--json', 'json-claim'], { now, actor: 'tester' },
+		);
+		expect(claimed.ok).toBe(true);
+
+		const released = await broker.runIssueOperation(
+			'release', ['--json', 'json-claim'], { now, actor: 'tester' },
+		);
+		expect(released.ok).toBe(true);
+
+		const added = await broker.runIssueOperation(
+			'dep.add', ['--json', 'json-a', 'json-b'], { now, actor: 'tester' },
+		);
+		expect(added.ok).toBe(true);
+		const removed = await broker.runIssueOperation(
+			'dep.remove', ['--json', 'json-a', 'json-b'], { now, actor: 'tester' },
+		);
+		expect(removed.ok).toBe(true);
+	});
+
+	test('dep.add returns FORGE_ISSUE_NOT_FOUND without writing when the dependent endpoint is missing', async () => {
+		await createIssue('dep-existing-blocker', 'Blocker');
+
+		const missing = await broker.runIssueOperation(
+			'dep.add',
+			['--issue', 'dep-missing-dependent', '--blocks', 'dep-existing-blocker'],
+			{ now, actor: 'tester' },
+		);
+
+		expect(missing).toMatchObject({
+			ok: false,
+			command: 'issue.dep.add',
+			error: { code: 'FORGE_ISSUE_NOT_FOUND', exit_code: 3 },
+		});
+		expect(await driver.queryAll('SELECT * FROM kernel_events', config)).toHaveLength(1);
+		expect(await driver.queryAll('SELECT * FROM kernel_outbox', config)).toHaveLength(1);
+		expect(await driver.queryAll('SELECT * FROM kernel_dependencies', config)).toHaveLength(0);
+		expect(await driver.queryAll('SELECT * FROM kernel_claims', config)).toHaveLength(0);
+	});
+
+	test('dep.add returns FORGE_ISSUE_NOT_FOUND without writing when the blocker endpoint is missing', async () => {
+		await createIssue('dep-existing-dependent', 'Dependent');
+
+		const missing = await broker.runIssueOperation(
+			'dep.add',
+			['--issue', 'dep-existing-dependent', '--blocks', 'dep-missing-blocker'],
+			{ now, actor: 'tester' },
+		);
+
+		expect(missing).toMatchObject({
+			ok: false,
+			command: 'issue.dep.add',
+			error: { code: 'FORGE_ISSUE_NOT_FOUND', exit_code: 3 },
+		});
+		expect(await driver.queryAll('SELECT * FROM kernel_events', config)).toHaveLength(1);
+		expect(await driver.queryAll('SELECT * FROM kernel_outbox', config)).toHaveLength(1);
+		expect(await driver.queryAll('SELECT * FROM kernel_dependencies', config)).toHaveLength(0);
+		expect(await driver.queryAll('SELECT * FROM kernel_claims', config)).toHaveLength(0);
+	});
+
+	for (const operation of ['dep.add', 'dep.remove']) {
+		test(`${operation} with only --blocks does not treat the flag value as the issue id`, async () => {
+			await createIssue('blocks-only-target', 'Existing blocker');
+
+			const missing = await broker.runIssueOperation(
+				operation,
+				['--blocks', 'blocks-only-target'],
+				{ now, actor: 'tester' },
+			);
+
+			expect(missing).toMatchObject({
+				ok: false,
+				command: operation === 'dep.add' ? 'issue.dep.add' : 'issue.dep.remove',
+				error: { code: 'FORGE_ISSUE_NOT_FOUND', exit_code: 3 },
+			});
+			expect(await driver.queryAll('SELECT * FROM kernel_events', config)).toHaveLength(1);
+			expect(await driver.queryAll('SELECT * FROM kernel_outbox', config)).toHaveLength(1);
+			expect(await driver.queryAll('SELECT * FROM kernel_dependencies', config)).toHaveLength(0);
+			expect(await driver.queryAll('SELECT * FROM kernel_claims', config)).toHaveLength(0);
+		});
+	}
+
 	test('dep.remove deletes the dependency row and restores the dependent to ready', async () => {
 		await createIssue('rem-a', 'Dependent');
 		await createIssue('rem-b', 'Blocker');
@@ -209,6 +296,65 @@ describe('Kernel SQLite driver — dependencies + claims via guarded path (Wave 
 	});
 
 	// --- Claims -----------------------------------------------------------------
+
+	test('claim returns FORGE_ISSUE_NOT_FOUND without writing when the issue endpoint is missing', async () => {
+		const missing = await broker.runIssueOperation(
+			'claim',
+			['--issue', 'claim-missing'],
+			{ now, actor: 'alice' },
+		);
+
+		expect(missing).toMatchObject({
+			ok: false,
+			command: 'claim',
+			error: { code: 'FORGE_ISSUE_NOT_FOUND', exit_code: 3 },
+		});
+		expect(await driver.queryAll('SELECT * FROM kernel_events', config)).toHaveLength(0);
+		expect(await driver.queryAll('SELECT * FROM kernel_outbox', config)).toHaveLength(0);
+		expect(await driver.queryAll('SELECT * FROM kernel_claims', config)).toHaveLength(0);
+		expect(await driver.queryAll('SELECT * FROM kernel_dependencies', config)).toHaveLength(0);
+	});
+
+	for (const [operation, command] of [
+		['claim', 'claim'],
+		['release', 'release'],
+		['dep.add', 'issue.dep.add'],
+		['dep.remove', 'issue.dep.remove'],
+	]) {
+		test(`${operation} with no issue ids returns a stable not-found envelope`, async () => {
+			const missing = await broker.runIssueOperation(operation, [], { now, actor: 'tester' });
+
+			expect(missing).toMatchObject({
+				ok: false,
+				command,
+				error: { code: 'FORGE_ISSUE_NOT_FOUND', exit_code: 3 },
+			});
+			expect(await driver.queryAll('SELECT * FROM kernel_events', config)).toHaveLength(0);
+			expect(await driver.queryAll('SELECT * FROM kernel_outbox', config)).toHaveLength(0);
+			expect(await driver.queryAll('SELECT * FROM kernel_claims', config)).toHaveLength(0);
+			expect(await driver.queryAll('SELECT * FROM kernel_dependencies', config)).toHaveLength(0);
+		});
+	}
+
+	test('claim with only --expires does not treat the expiry value as the issue id', async () => {
+		await createIssue('expires-only-target', 'Existing issue');
+
+		const missing = await broker.runIssueOperation(
+			'claim',
+			['--expires', 'expires-only-target'],
+			{ now, actor: 'tester' },
+		);
+
+		expect(missing).toMatchObject({
+			ok: false,
+			command: 'claim',
+			error: { code: 'FORGE_ISSUE_NOT_FOUND', exit_code: 3 },
+		});
+		expect(await driver.queryAll('SELECT * FROM kernel_events', config)).toHaveLength(1);
+		expect(await driver.queryAll('SELECT * FROM kernel_outbox', config)).toHaveLength(1);
+		expect(await driver.queryAll('SELECT * FROM kernel_claims', config)).toHaveLength(0);
+		expect(await driver.queryAll('SELECT * FROM kernel_dependencies', config)).toHaveLength(0);
+	});
 
 	test('claim creates an active lease row and returns a claim_id', async () => {
 		await createIssue('clm-1', 'Claimable');

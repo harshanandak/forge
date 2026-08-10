@@ -53,7 +53,7 @@ describe('kernel migration 009 — pr linkage table', () => {
 		]);
 	});
 
-	test('registers 009 last in the default plan and excludes kernel_pr from the 001 schema', () => {
+	test('registers 009 before later additive migrations and excludes kernel_pr from the 001 schema', () => {
 		const plan = buildKernelMigrationPlan();
 
 		expect(plan.migrations.map(migration => migration.id)).toEqual([
@@ -66,6 +66,8 @@ describe('kernel migration 009 — pr linkage table', () => {
 			'007_kernel_worktrees_linkage_columns',
 			'008_kernel_memories_fts',
 			'009_kernel_pr_linkage',
+			'010_memory_monitor_durability',
+			'011_memory_usage_evidence',
 		]);
 		expect(plan.apply).toContain(
 			'CREATE INDEX IF NOT EXISTS idx_pr_common_dir_state_repo_number ON kernel_pr (git_common_dir, state, repo, number);',
@@ -135,9 +137,14 @@ describe('kernel migration 009 — broker application', () => {
 		const migratedBefore = await prTableShape();
 		expect(migratedBefore).toEqual([]);
 
-		// Upgrading with the full plan applies 009 and creates the table.
+		// Upgrading with the full plan applies 009 and every later additive
+		// migration while creating the PR table at the same canonical shape.
 		const upgrade = await makeBroker(buildKernelMigrationPlan()).initialize();
-		expect(upgrade.migrationsNewlyApplied).toEqual(['009_kernel_pr_linkage']);
+		expect(upgrade.migrationsNewlyApplied).toEqual([
+			'009_kernel_pr_linkage',
+			'010_memory_monitor_durability',
+			'011_memory_usage_evidence',
+		]);
 		const migratedShape = await prTableShape();
 
 		// A brand-new DB built straight from the full plan.
