@@ -235,4 +235,34 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
     const ctx = greenContext({ comments: [{ author: 'BoT', at: minAgo(2) }] });
     expect(evaluateMergeRules(ctx, [{ not_commented_by: ['bot'] }]).allowed).toBe(false);
   });
+
+  test('verdict_clean requires a complete MERGE_READY verdict bound to the exact current head', () => {
+    const head = '1'.repeat(40);
+    const ctx = greenContext({
+      headSha: head,
+      expectedHeadSha: head,
+      verdict: { state: 'MERGE_READY', headSha: head, baseSha: 'a'.repeat(40), reasons: [] },
+    });
+    expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
+
+    for (const verdict of [
+      { state: 'BLOCKED', headSha: head, baseSha: 'a'.repeat(40), reasons: [{ code: 'checks' }] },
+      { state: 'MERGE_READY', headSha: '2'.repeat(40), baseSha: 'a'.repeat(40), reasons: [] },
+      { state: 'MERGE_READY', headSha: head, baseSha: 'a'.repeat(40), reasons: [{ code: 'contradiction' }] },
+      null,
+    ]) {
+      expect(evaluateMergeRules({ ...ctx, verdict }, ['verdict_clean']).allowed).toBe(false);
+    }
+  });
+
+  test('verdict_clean fails closed when the caller head lease is absent or malformed', () => {
+    const head = '1'.repeat(40);
+    const verdict = { state: 'MERGE_READY', headSha: head, baseSha: 'a'.repeat(40), reasons: [] };
+    expect(evaluateMergeRules(greenContext({ verdict, headSha: head }), ['verdict_clean']).allowed).toBe(false);
+    expect(evaluateMergeRules(greenContext({ verdict, expectedHeadSha: head }), ['verdict_clean']).allowed).toBe(false);
+    expect(evaluateMergeRules(greenContext({ verdict, headSha: 'short', expectedHeadSha: 'short' }), ['verdict_clean']).allowed).toBe(false);
+    expect(evaluateMergeRules({
+      ...greenContext(), headSha: head, expectedHeadSha: head, verdict: { ...verdict, baseSha: 'short' },
+    }, ['verdict_clean']).allowed).toBe(false);
+  });
 });
