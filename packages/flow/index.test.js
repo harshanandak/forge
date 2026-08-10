@@ -47,12 +47,20 @@ function makeWorkPacket() {
 describe("Flow contract boundary", () => {
   test("exports the pure execution, monitoring, supervision, and skill runtime facade", () => {
     expect(flow).toMatchObject({
+      BoundedLoopError: expect.any(Function),
       FlowExecutionError: expect.any(Function),
+      ProcessLifecycleError: expect.any(Function),
+      createBoundedLoop: expect.any(Function),
+      createBoundedLoopState: expect.any(Function),
       createWorkPacketExecutor: expect.any(Function),
       MonitorRuntimeError: expect.any(Function),
       createMonitorReceipt: expect.any(Function),
       createMonitorState: expect.any(Function),
+      createProcessLifecycle: expect.any(Function),
+      createProcessState: expect.any(Function),
       reduceMonitor: expect.any(Function),
+      reduceBoundedLoop: expect.any(Function),
+      reduceProcessLifecycle: expect.any(Function),
       EfficiencySupervisor: expect.any(Function),
       SkillRuntime: expect.any(Function),
     });

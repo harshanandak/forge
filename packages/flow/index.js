@@ -10,6 +10,18 @@ const {
 } = require("./src/monitor-runtime");
 const { EfficiencySupervisor } = require("./src/efficiency-supervisor");
 const { SkillRuntime } = require("./src/skill-runtime");
+const {
+  BoundedLoopError,
+  createBoundedLoop,
+  createBoundedLoopState,
+  reduceBoundedLoop,
+} = require("./src/bounded-loop");
+const {
+  ProcessLifecycleError,
+  createProcessLifecycle,
+  createProcessState,
+  reduceProcessLifecycle,
+} = require("./src/process-lifecycle");
 
 function requiredString(options, name) {
   const value = options[name];
@@ -74,13 +86,21 @@ function createRunReceiptSkeleton(workPacket, options = {}) {
 }
 
 module.exports = {
+  BoundedLoopError,
   EfficiencySupervisor,
   FlowExecutionError,
   MonitorRuntimeError,
+  ProcessLifecycleError,
   SkillRuntime,
+  createBoundedLoop,
+  createBoundedLoopState,
   createMonitorReceipt,
   createMonitorState,
+  createProcessLifecycle,
+  createProcessState,
   createRunReceiptSkeleton,
   createWorkPacketExecutor,
+  reduceBoundedLoop,
   reduceMonitor,
+  reduceProcessLifecycle,
 };
