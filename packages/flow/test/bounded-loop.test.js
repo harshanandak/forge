@@ -4,6 +4,7 @@ const { describe, expect, test } = require("bun:test");
 
 const {
   BoundedLoopError,
+  EVENT_BYTE_BUDGET,
   createBoundedLoop,
   createBoundedLoopState,
   reduceBoundedLoop,
@@ -28,6 +29,17 @@ function options(overrides = {}) {
 
 function event(id, type, fields = {}) {
   return { id, type, ...fields };
+}
+
+function maxLengthId(index) {
+  const prefix = String(index).padStart(3, "0");
+  return `${prefix}${"i".repeat(128 - prefix.length)}`;
+}
+
+function nearBudgetEvent(id, type) {
+  const empty = event(id, type, { metadata: { blob: "" } });
+  const blobLength = EVENT_BYTE_BUDGET - Buffer.byteLength(JSON.stringify(empty), "utf8") - 32;
+  return event(id, type, { metadata: { blob: "x".repeat(blobLength) } });
 }
 
 function throwingProxy(value, trap) {
@@ -86,6 +98,22 @@ describe("bounded loop state machine", () => {
     expired.dispatch(event("start", "start"));
     const result = expired.dispatch(event("tick", "tick"));
     expect(result.effects).toEqual([{ type: "TIMEOUT", elapsedMs: 101 }]);
+    expect(result.state).toMatchObject({ phase: "TERMINAL", status: "INCOMPLETE", terminalReason: "ELAPSED_CAP" });
+  });
+
+  test("elapsed cap wins over a later attempt", () => {
+    const loop = createBoundedLoop(options({ clock: clockSequence([0, 101]), maxElapsedMs: 100 }));
+    loop.dispatch(event("start", "start"));
+    const result = loop.dispatch(event("late-attempt", "attempt"));
+    expect(result.effects).toEqual([{ type: "TIMEOUT", elapsedMs: 101 }]);
+    expect(result.state).toMatchObject({ phase: "TERMINAL", status: "INCOMPLETE", terminalReason: "ELAPSED_CAP" });
+  });
+
+  test("explicit timeout terminalizes below the elapsed cap", () => {
+    const loop = createBoundedLoop(options({ clock: clockSequence([0, 10]), maxElapsedMs: 100 }));
+    loop.dispatch(event("start", "start"));
+    const result = loop.dispatch(event("early-timeout", "timeout"));
+    expect(result.effects).toEqual([{ type: "TIMEOUT", elapsedMs: 10 }]);
     expect(result.state).toMatchObject({ phase: "TERMINAL", status: "INCOMPLETE", terminalReason: "ELAPSED_CAP" });
   });
 
@@ -218,5 +246,59 @@ describe("bounded loop state machine", () => {
       hostileOptions,
     )).toThrow(BoundedLoopError);
     expect(getCount).toBe(0);
+  });
+
+  test("accepts the configured 256-event ceiling with fixed-size seen-event digests", () => {
+    const loop = createBoundedLoop(options({
+      clock: () => 0,
+      maxEvents: 256,
+      maxHistory: 256,
+    }));
+    loop.dispatch(nearBudgetEvent(maxLengthId(0), "start"));
+    for (let index = 1; index < 256; index += 1) {
+      loop.dispatch(nearBudgetEvent(maxLengthId(index), "tick"));
+    }
+    const snapshot = loop.snapshot();
+    expect(snapshot.eventCount).toBe(256);
+    expect(snapshot.history).toHaveLength(256);
+    expect(Object.keys(snapshot.seenEvents)).toHaveLength(256);
+    expect(Object.values(snapshot.seenEvents).every((digest) => /^[0-9a-f]{64}$/.test(digest))).toBe(true);
+    const serialized = loop.serialize();
+    expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(4_194_304);
+    expect(JSON.parse(serialized)).toEqual(snapshot);
+    expect(() => loop.dispatch(nearBudgetEvent(maxLengthId(256), "tick"))).toThrow("event cap");
+  });
+
+  test("elapsed cap only overrides transitions that would remain nonterminal", () => {
+    const completed = createBoundedLoop(options({ clock: clockSequence([0, 100]), maxElapsedMs: 100 }));
+    completed.dispatch(event("complete-start", "start"));
+    expect(completed.dispatch(event("complete", "complete")).state.status).toBe("PASS");
+
+    const failed = createBoundedLoop(options({ clock: clockSequence([0, 100]), maxElapsedMs: 100 }));
+    failed.dispatch(event("fail-start", "start"));
+    expect(failed.dispatch(event("fail", "fail")).state.status).toBe("FAIL");
+
+    const cancelled = createBoundedLoop(options({ clock: clockSequence([0, 90, 100]), maxElapsedMs: 100 }));
+    cancelled.dispatch(event("cancel-start", "start"));
+    cancelled.dispatch(event("cancel-request", "cancel-requested"));
+    expect(cancelled.dispatch(event("cancel-ack", "cancel-acknowledged")).state.status).toBe("CANCELLED");
+
+    const timeout = createBoundedLoop(options({ clock: clockSequence([0, 10]), maxElapsedMs: 100 }));
+    timeout.dispatch(event("timeout-start", "start"));
+    expect(timeout.dispatch(event("timeout", "timeout")).state).toMatchObject({
+      status: "INCOMPLETE",
+      terminalReason: "ELAPSED_CAP",
+    });
+
+    const attemptCap = createBoundedLoop(options({ clock: clockSequence([0, 100]), maxAttempts: 1, maxElapsedMs: 100 }));
+    attemptCap.dispatch(event("attempt-start", "start"));
+    expect(attemptCap.dispatch(event("attempt-cap", "attempt")).state.terminalReason).toBe("ATTEMPT_CAP");
+
+    const cancelCap = createBoundedLoop(options({ clock: clockSequence([0, 100]), maxElapsedMs: 100 }));
+    cancelCap.dispatch(event("cancel-cap-start", "start"));
+    expect(cancelCap.dispatch(event("cancel-cap", "cancel-requested")).state).toMatchObject({
+      status: "INCOMPLETE",
+      terminalReason: "ELAPSED_CAP",
+    });
   });
 });

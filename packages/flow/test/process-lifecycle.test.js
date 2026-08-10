@@ -3,6 +3,7 @@
 const { describe, expect, test } = require("bun:test");
 
 const {
+  EVENT_BYTE_BUDGET,
   ProcessLifecycleError,
   createProcessLifecycle,
   createProcessState,
@@ -29,6 +30,17 @@ function options(overrides = {}) {
 
 function event(id, type, fields = {}) {
   return { id, type, ...fields };
+}
+
+function maxLengthId(index) {
+  const prefix = String(index).padStart(3, "0");
+  return `${prefix}${"i".repeat(128 - prefix.length)}`;
+}
+
+function nearBudgetEvent(id, type) {
+  const empty = event(id, type, { metadata: { blob: "" } });
+  const blobLength = EVENT_BYTE_BUDGET - Buffer.byteLength(JSON.stringify(empty), "utf8") - 32;
+  return event(id, type, { metadata: { blob: "x".repeat(blobLength) } });
 }
 
 function throwingProxy(value, trap) {
@@ -244,5 +256,40 @@ describe("process lifecycle state machine", () => {
     const terminal = signalled.dispatch(event("reap", "reap", { childReaped: true }));
     expect(terminal.state.status).toBe("FAIL");
     expect(terminal.state.status).not.toBe("PASS");
+  });
+
+  test.each(["tick", "deadline"])("elapsed cap remains INCOMPLETE through %s, acknowledgement, and reap", (eventType) => {
+    const lifecycle = startRunning({ clock: clockSequence([0, 101, 101, 101]), maxElapsedMs: 100 });
+    const capped = lifecycle.dispatch(event(`cap-${eventType}`, eventType));
+    expect(capped.state).toMatchObject({
+      phase: "CANCEL_REQUESTED",
+      status: "INCOMPLETE",
+      terminalReason: "ELAPSED_CAP",
+    });
+    const acknowledged = lifecycle.dispatch(event(`ack-${eventType}`, "cancel-acknowledged"));
+    expect(acknowledged.state.status).toBe("INCOMPLETE");
+    const terminal = lifecycle.dispatch(event(`reap-${eventType}`, "reap", { childReaped: true }));
+    expect(terminal.state).toMatchObject({ phase: "TERMINAL", status: "INCOMPLETE", terminalReason: "ELAPSED_CAP" });
+  });
+
+  test("accepts the configured 256-event ceiling with fixed-size seen-event digests", () => {
+    const lifecycle = createProcessLifecycle(options({
+      clock: () => 0,
+      maxEvents: 256,
+      maxHistory: 256,
+    }));
+    lifecycle.dispatch(nearBudgetEvent(maxLengthId(0), "start"));
+    for (let index = 1; index < 256; index += 1) {
+      lifecycle.dispatch(nearBudgetEvent(maxLengthId(index), "tick"));
+    }
+    const snapshot = lifecycle.snapshot();
+    expect(snapshot.eventCount).toBe(256);
+    expect(snapshot.history).toHaveLength(256);
+    expect(Object.keys(snapshot.seenEvents)).toHaveLength(256);
+    expect(Object.values(snapshot.seenEvents).every((digest) => /^[0-9a-f]{64}$/.test(digest))).toBe(true);
+    const serialized = lifecycle.serialize();
+    expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(4_194_304);
+    expect(JSON.parse(serialized)).toEqual(snapshot);
+    expect(() => lifecycle.dispatch(nearBudgetEvent(maxLengthId(256), "tick"))).toThrow("event cap");
   });
 });

@@ -1,5 +1,7 @@
 "use strict";
 
+const { createHash } = require("node:crypto");
+
 const MAX_ATTEMPTS = 128;
 const MAX_ELAPSED_MS = 86_400_000;
 const MAX_EVENTS = 256;
@@ -16,6 +18,13 @@ const EVENT_TYPES = new Set([
 ]);
 const TERMINAL_STATUSES = new Set(["PASS", "FAIL", "CANCELLED", "INCOMPLETE"]);
 const STATE_CLONE_LIMITS = Object.freeze({ maxBytes: 4_194_304, maxDepth: 8, maxNodes: 32_768 });
+const MAX_EVENT_ID_LENGTH = 128;
+const EVENT_DIGEST_BYTES = 64;
+const STATE_OVERHEAD_RESERVE_BYTES = 32_768;
+const SEEN_EVENT_ENTRY_OVERHEAD_BYTES = (MAX_EVENT_ID_LENGTH * 6) + 2 + EVENT_DIGEST_BYTES + 2 + 3;
+const EVENT_BYTE_BUDGET = Math.floor((STATE_CLONE_LIMITS.maxBytes - STATE_OVERHEAD_RESERVE_BYTES) / MAX_EVENTS)
+  - SEEN_EVENT_ENTRY_OVERHEAD_BYTES;
+const EVENT_CLONE_LIMITS = Object.freeze({ maxBytes: EVENT_BYTE_BUDGET, maxDepth: 8, maxNodes: 256 });
 
 class BoundedLoopError extends Error {
   constructor(code, message, details = {}) {
@@ -143,6 +152,10 @@ function stableStringify(value) {
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
 }
 
+function eventDigest(event) {
+  return createHash("sha256").update(stableStringify(event), "utf8").digest("hex");
+}
+
 function deepFreeze(value, seen = new Set()) {
   if (!value || typeof value !== "object" || seen.has(value)) return value;
   seen.add(value);
@@ -215,7 +228,7 @@ function readNow(options) {
 }
 
 function normalizeEvent(rawEvent) {
-  const event = safeClone(rawEvent);
+  const event = safeClone(rawEvent, EVENT_CLONE_LIMITS);
   assertPlainRecord(event, "event");
   if (typeof event.id !== "string" || event.id.length === 0 || event.id.length > 128) fail("INVALID_EVENT", "event id must be a bounded string");
   if (!EVENT_TYPES.has(event.type)) fail("INVALID_EVENT", `unsupported bounded-loop event: ${String(event.type)}`);
@@ -273,7 +286,7 @@ function reduceBoundedLoop(rawState, rawEvent, rawOptions = {}) {
   const suppliedNow = optionalData(rawOptions, "now");
   if (suppliedNow.present && typeof suppliedNow.value !== "number" && suppliedNow.value !== undefined) fail("CLOCK_INVALID", "reducer time is invalid");
   const seen = state.seenEvents || {};
-  const digest = stableStringify(event);
+  const digest = eventDigest(event);
   if (Object.hasOwn(seen, event.id)) {
     if (seen[event.id] !== digest) fail("IDENTITY_CONFLICT", "event identity conflict");
     return cloneResult(state, []);
@@ -303,6 +316,9 @@ function reduceBoundedLoop(rawState, rawEvent, rawOptions = {}) {
   }
 
   const invalidPhase = (expected) => fail("INVALID_TRANSITION", `${event.type} requires ${expected}`);
+  const elapsedCapReached = event.type !== "start"
+    && next.startAt !== null
+    && next.elapsedMs >= limits.maxElapsedMs;
   let result;
   switch (event.type) {
     case "start":
@@ -353,6 +369,9 @@ function reduceBoundedLoop(rawState, rawEvent, rawOptions = {}) {
     default:
       fail("INVALID_EVENT", `unsupported bounded-loop event: ${event.type}`);
   }
+  if ((elapsedCapReached && !result.state.terminal) || event.type === "timeout") {
+    result = terminal(next, "INCOMPLETE", "ELAPSED_CAP", { type: "TIMEOUT", elapsedMs: next.elapsedMs });
+  }
   return cloneResult(result.state, result.effects);
 }
 
@@ -363,7 +382,7 @@ function createBoundedLoop(rawOptions) {
   return Object.freeze({
     dispatch(rawEvent) {
       const event = normalizeEvent(rawEvent);
-      const digest = stableStringify(event);
+      const digest = eventDigest(event);
       if (Object.hasOwn(current.seenEvents, event.id)) {
         const existing = current.seenEvents[event.id];
         if (existing !== digest) fail("IDENTITY_CONFLICT", "event identity conflict");
@@ -386,6 +405,7 @@ function createBoundedLoop(rawOptions) {
 module.exports = {
   BoundedLoopError,
   MAX_ATTEMPTS,
+  EVENT_BYTE_BUDGET,
   MAX_ELAPSED_MS,
   MAX_EVENTS,
   MAX_HISTORY,
