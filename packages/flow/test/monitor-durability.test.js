@@ -76,7 +76,7 @@ function deliveryReceipt(event, overrides = {}) {
 }
 
 function terminalReceipt(events, overrides = {}) {
-  const hashes = events.slice(-128).map((event) => event.content_hash);
+  const hashes = events.slice(-(overrides.historyWidth ?? 128)).map((event) => event.content_hash);
   return envelope(
     'forge.memory.monitor-receipt.v1',
     overrides.objectId ?? "30000000-0000-4000-8000-000000000001",
@@ -494,6 +494,53 @@ describe('monitor durability bridge', () => {
     expect(Object.isFrozen(delivered.payload.bounded_payload)).toBe(true);
     expect(retained.payload.bounded_payload.state).toBe('value-0');
     expect(delivered.payload.bounded_payload.state).toBe('value-0');
+  });
+
+  test('reconstructs terminal evidence with the configured MonitorSpec history width', async () => {
+    const driver = createDurableDriver();
+    const events = [1, 2, 3].map((sequence) => monitorEvent({ sequence }));
+    const monitorBridge = bridge(driver);
+    for (const event of events) await monitorBridge.persistEvent(event);
+
+    const result = await monitorBridge.recordTerminalReceipt(
+      terminalReceipt(events, { historyWidth: 2 }),
+      { maxHistory: 2 },
+    );
+
+    expect(result.persistence.idempotent).toBe(false);
+    expect(driver.state.terminals.size).toBe(1);
+  });
+
+  test('rejects terminal evidence when the configured width does not match its digest', async () => {
+    const driver = createDurableDriver();
+    const events = [1, 2, 3].map((sequence) => monitorEvent({ sequence }));
+    const monitorBridge = bridge(driver);
+    for (const event of events) await monitorBridge.persistEvent(event);
+
+    await expect(monitorBridge.recordTerminalReceipt(
+      terminalReceipt(events, { historyWidth: 2 }),
+      { maxHistory: 3 },
+    )).rejects.toMatchObject({ code: 'INCOMPLETE_TERMINAL_EVIDENCE' });
+    expect(driver.state.terminals.size).toBe(0);
+    expect(driver.state.terminalWrites).toBe(0);
+  });
+
+  test('rejects an invalid history width before listing or writing terminal evidence', async () => {
+    const driver = createDurableDriver();
+    const event = monitorEvent({ sequence: 1 });
+    await bridge(driver).persistEvent(event);
+    let listCalls = 0;
+    const originalList = driver.listMonitorEvents;
+    driver.listMonitorEvents = (...args) => {
+      listCalls += 1;
+      return originalList.call(driver, ...args);
+    };
+
+    await expect(bridge(driver).recordTerminalReceipt(terminalReceipt([event]), { maxHistory: 0 }))
+      .rejects.toMatchObject({ code: 'INPUT_INVALID' });
+    expect(listCalls).toBe(0);
+    expect(driver.state.terminals.size).toBe(0);
+    expect(driver.state.terminalWrites).toBe(0);
   });
 
   test('rejects hostile accessor input without invoking it or reaching the provider', async () => {

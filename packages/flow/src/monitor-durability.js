@@ -181,10 +181,18 @@ function assertRows(value, monitorId) {
   return rows;
 }
 
-function assertTerminalEvidence(receipt, rows) {
+function assertHistoryWidth(config) {
+  const maxHistory = Object.hasOwn(config, "maxHistory") ? config.maxHistory : MAX_EVIDENCE_HISTORY;
+  if (!Number.isSafeInteger(maxHistory) || maxHistory < 1 || maxHistory > MAX_EVIDENCE_HISTORY) {
+    fail("INPUT_INVALID", `maxHistory must be an integer from 1 to ${MAX_EVIDENCE_HISTORY}`);
+  }
+  return maxHistory;
+}
+
+function assertTerminalEvidence(receipt, rows, maxHistory) {
   const terminalState = receipt.payload.terminal_state;
   if (terminalState !== "PASS" && terminalState !== "FAIL") return;
-  const evidenceRows = rows.slice(-MAX_EVIDENCE_HISTORY);
+  const evidenceRows = rows.slice(-maxHistory);
   const digest = computeContentHash({ evidence_hashes: evidenceRows.map((row) => row.content_hash) });
   if (rows.length === 0) {
     if (terminalState === "FAIL" && receipt.payload.last_sequence === 0 && receipt.payload.evidence_digest === digest) {
@@ -246,10 +254,11 @@ function createMonitorDurabilityBridge(options) {
 
     async recordTerminalReceipt(receipt, config = {}) {
       const safeReceipt = assertEnvelope(receipt, "forge.memory.monitor-receipt.v1");
-      const safeConfig = snapshotCanonical(config, "monitor terminal config");
+      const safeConfig = immutableSnapshot(config, "monitor terminal config");
+      const maxHistory = assertHistoryWidth(safeConfig);
       const monitorId = safeReceipt.payload.monitor_id;
       const rows = assertRows(await providerCall(() => listEvents(monitorId, safeConfig)), monitorId);
-      assertTerminalEvidence(safeReceipt, rows);
+      assertTerminalEvidence(safeReceipt, rows, maxHistory);
       const persistence = await providerCall(() => recordTerminalReceipt(safeReceipt, safeConfig));
       return Object.freeze({ persistence });
     },
