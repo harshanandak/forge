@@ -12,6 +12,7 @@ const {
 	generateNpmPublishWorkflow,
 	renderNpmDistTagResolverScript,
 	renderNpmPublishWorkflow,
+	resolveCurrentHead,
 } = require('../lib/npm-publish-workflow');
 const {
 	PROTECTED_STATE_AUDIT_LOG,
@@ -63,6 +64,26 @@ function resolveNpmDistTag(version) {
 }
 
 describe('Forge-owned npm publish workflow', () => {
+	test('resolves HEAD through the secure command executor', () => {
+		const calls = [];
+		const head = resolveCurrentHead('/repo', (command, args, options) => {
+			calls.push({ command, args, options });
+			return `${TEST_HEAD}\n`;
+		});
+
+		expect(head).toBe(TEST_HEAD);
+		expect(calls).toEqual([{
+			command: 'git',
+			args: ['rev-parse', '--verify', 'HEAD^{commit}'],
+			options: {
+				cwd: '/repo',
+				encoding: 'utf8',
+				stdio: ['ignore', 'pipe', 'pipe'],
+				windowsHide: true,
+			},
+		}]);
+	});
+
 	test('resolves beta, RC, and stable versions to distinct npm dist-tags', () => {
 		expect(resolveNpmDistTag('0.1.0-beta.5')).toMatchObject({ status: 0, output: 'tag=beta\n' });
 		expect(resolveNpmDistTag('0.1.0-beta')).toMatchObject({ status: 0, output: 'tag=beta\n' });
