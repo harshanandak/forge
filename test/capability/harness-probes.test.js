@@ -135,6 +135,35 @@ test('hostile output is neither retained nor hashed as evidence', async () => {
   assert.equal(serialized.includes(String.fromCharCode(27)), false);
 });
 
+test('secret detectors fail closed without overmatching benign controls', async () => {
+  const executorWithBehaviorOutput = (output) => async (request) => {
+    const response = await successfulExecutor()(request);
+    return request.kind === 'version' ? response : { ...response, stdout: output };
+  };
+  const secretOutputs = [
+    `ghp_${'a'.repeat(20)}`,
+    `sk-live-${'b'.repeat(16)}`,
+    `api_key=${'c'.repeat(8)}`,
+  ];
+  for (const secret of secretOutputs) {
+    const result = await probeHarness({
+      harness: 'codex',
+      execute: executorWithBehaviorOutput(`${SUPPORT_OUTPUT.codex}\n${secret}`),
+    });
+    assert.equal(result.status, 'INCOMPLETE');
+    assert.ok(result.capabilities.every((capability) => capability.reason === 'HOSTILE_OUTPUT'));
+    assert.doesNotMatch(JSON.stringify(result), new RegExp(secret));
+  }
+
+  const benign = await probeHarness({
+    harness: 'codex',
+    execute: executorWithBehaviorOutput(
+      `${SUPPORT_OUTPUT.codex}\nghp_short sk-live-short api_key=public`
+    ),
+  });
+  assert.equal(benign.status, 'PASS');
+});
+
 test('oversized output fails closed', async () => {
   const result = await probeHarness({
     harness: 'claude',
