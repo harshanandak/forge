@@ -3,10 +3,29 @@
 const { ContractValidationError, validateContractStructure } = require('@forge/memory-contracts');
 
 const TARGET_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
-const SECRET_PATTERN = /(?:gh[pousr]_[A-Za-z0-9]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,})/i;
-const ABSOLUTE_USER_PATH = /(?:[A-Za-z]:[\\/]Users[\\/][^\\/\s]+(?:[\\/]|$)|\/(?:Users|home)\/[^/\s]+(?:\/|$))/i;
+const SECRET_PATTERNS = [
+  /gh[pousr]_[a-z0-9]{20,}/i,
+  /github_pat_[a-z0-9_]{20,}/i,
+  /sk_(?:live|test)_[a-z0-9]{16,}/i,
+  /sk-[a-z0-9]{16,}/i,
+  /AKIA[0-9A-Z]{16}/i,
+  /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}/i,
+];
+const ABSOLUTE_USER_PATH = /(?:[a-z]:[\\/]Users[\\/][^\\/\s]+(?:[\\/]|$)|\/(?:Users|home|root)\/[^/\s]+(?:\/|$)|\\\\[^\\/\s]+[\\/]Users[\\/][^\\/\s]+(?:[\\/]|$))/i;
 const MAX_TARGETS = 32;
 const MAX_TARGET_LENGTH = 128;
+
+function containsPrivateMonitorData(value) {
+  if (typeof value === 'string') {
+    return SECRET_PATTERNS.some(pattern => pattern.test(value)) || ABSOLUTE_USER_PATH.test(value);
+  }
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(([key, nestedValue]) => (
+    SECRET_PATTERNS.some(pattern => pattern.test(key))
+    || ABSOLUTE_USER_PATH.test(key)
+    || containsPrivateMonitorData(nestedValue)
+  ));
+}
 
 function assertEnvelope(envelope, schemaId) {
   const result = validateContractStructure(envelope);
@@ -15,12 +34,18 @@ function assertEnvelope(envelope, schemaId) {
       ? [{ path: '$.schema_id', code: 'UNEXPECTED_SCHEMA' }]
       : result.errors);
   }
+  const privacyEnvelope = schemaId === 'forge.memory.delivery-receipt.v1' && envelope?.payload
+    ? { ...envelope, payload: { ...envelope.payload, target: '' } }
+    : envelope;
+  if (containsPrivateMonitorData(privacyEnvelope)) {
+    throw new Error(`private content rejected from ${schemaId}`);
+  }
   return envelope;
 }
 
 function assertTarget(target) {
   if (typeof target !== 'string' || target.length === 0 || target.length > MAX_TARGET_LENGTH
-    || !TARGET_PATTERN.test(target) || SECRET_PATTERN.test(target) || ABSOLUTE_USER_PATH.test(target)) {
+    || !TARGET_PATTERN.test(target) || SECRET_PATTERNS.some(pattern => pattern.test(target)) || ABSOLUTE_USER_PATH.test(target)) {
     throw new Error('invalid or private monitor delivery target');
   }
   return target;

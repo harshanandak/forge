@@ -351,4 +351,23 @@ const driver = createBuiltinSQLiteDriver({ databasePath: process.env.MONITOR_RAC
 		await expect(driver.appendMonitorEvent(longToken, ['terminal'])).rejects.toThrow('private');
 		expect(await driver.queryAll('SELECT COUNT(*) AS n FROM memory_monitor_events')).toEqual([{ n: 1 }]);
 	});
+
+	test('rejects GitHub PATs, root paths, and UNC user paths through public and raw seams', async () => {
+		const { driver, store } = await makeStore();
+		const privateValues = [
+			`github_pat_${'x'.repeat(30)}`,
+			'/root/forge/private.txt',
+			'\\\\server\\Users\\alice\\private.txt',
+		];
+
+		for (const [index, value] of privateValues.entries()) {
+			const event = monitorEvent(index, {
+				event_id: `private-event-${index}`,
+				bounded_payload: { value },
+			});
+			await expect(store.appendEvent(event, ['terminal'])).rejects.toThrow(/private|Contract validation failed/);
+			await expect(driver.appendMonitorEvent(event, ['terminal'])).rejects.toThrow('private');
+		}
+		expect(await driver.queryAll('SELECT COUNT(*) AS n FROM memory_monitor_events')).toEqual([{ n: 0 }]);
+	});
 });
