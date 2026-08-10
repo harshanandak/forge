@@ -260,6 +260,15 @@ describe('Kernel receipt-bound PR trace', () => {
 		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
 	});
 
+	test('rejects a hash-valid zero packet revision before writes', async () => {
+		const packet = workPacket({ packet_revision: 0 });
+
+		await expect(broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet))))
+			.rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
+		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
+	});
+
 	test('binds hash-valid WorkPacket repository authority to the normalized linkage repository', async () => {
 		const crossRepoPacket = workPacket({ repository_id: 'owner/repository-a' });
 		await expect(broker.recordPrLinkage(linkage('opened', crossRepoPacket, runReceipt(crossRepoPacket), {
@@ -473,13 +482,28 @@ describe('Kernel receipt-bound PR trace', () => {
 	});
 
 	test('preserves issue PRs when a selected PR is unlinked and reports the gap', async () => {
+		const otherWorkFolder = 'docs/work/2026-08-11-other';
+		await driver.exec(
+			"INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-other', 'Other', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');",
+			config,
+		);
+		driver.registerWorktree({
+			id: 'worktree-other', git_common_dir: gitCommonDir, path: path.join(root, '.worktrees', 'other'),
+			branch: 'codex/other', issue_id: 'issue-other', work_folder: otherWorkFolder,
+			registered_at: '2026-08-11T00:01:00.000Z',
+		}, config);
+		for (const filename of ['plan.md', 'tasks.md', 'decisions.md']) {
+			const filenamePath = path.join(root, otherWorkFolder, filename);
+			fs.mkdirSync(path.dirname(filenamePath), { recursive: true });
+			fs.writeFileSync(filenamePath, `# Other ${filename}\n`, 'utf8');
+		}
 		await driver.upsertPr({
 			id: 'pr-linked', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 600,
 			issue_id: 'issue-trace', worktree_id: 'worktree-trace', branch, head_sha: HEAD_SHA,
 		}, {}, config);
 		await driver.upsertPr({
 			id: 'pr-unlinked', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 601,
-			issue_id: null, worktree_id: 'worktree-trace', branch, head_sha: HEAD_SHA,
+			issue_id: 'issue-other', worktree_id: 'worktree-other', branch: 'codex/other', head_sha: HEAD_SHA,
 		}, {}, config);
 
 		const trace = await broker.readTrace({
@@ -487,6 +511,12 @@ describe('Kernel receipt-bound PR trace', () => {
 		});
 		expect(trace.pull_requests.map(pr => pr.id)).toEqual(['pr-linked', 'pr-unlinked']);
 		expect(trace.gaps).toContain('pull_requests:pr-unlinked:unlinked_issue');
+		expect(trace.worktree.id).toBe('worktree-trace');
+		expect(trace.artifacts).toEqual({
+			plan: { path: `${workFolder}/plan.md`, content: '# Plan\n' },
+			tasks: { path: `${workFolder}/tasks.md`, content: '# Tasks\n' },
+			decisions: { path: `${workFolder}/decisions.md`, content: '# Decisions\n' },
+		});
 	});
 
 	test('fails immediately when an upsert read-back finds no persisted PR row', async () => {
