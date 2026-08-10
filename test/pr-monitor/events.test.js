@@ -4,7 +4,7 @@ const { describe, test, expect } = require('bun:test');
 
 const {
   SCHEMA_VERSION, EVENT_TYPES, makeEvent, finalizeEvent, eventIdentity,
-  canonicalStringify, fingerprint,
+  canonicalStringify, fingerprint, decideTransition, TRANSITION_STATUS,
 } = require('../../lib/pr-monitor/events');
 
 describe('events — schema + envelope', () => {
@@ -48,5 +48,43 @@ describe('events — identity + fingerprint', () => {
     const a = fingerprint({ x: 1, y: [1, 2] });
     expect(fingerprint({ y: [1, 2], x: 1 })).toBe(a);
     expect(fingerprint({ x: 1, y: [1, 3] })).not.toBe(a);
+  });
+});
+
+describe('events - deterministic transition authority', () => {
+  const state = (sequence, value = 'same') => ({ subjectRevision: 'head-a', sequence, value });
+
+  test('identical replay is unchanged and consumes no transition', () => {
+    expect(decideTransition(state(4), state(4))).toEqual({
+      status: TRANSITION_STATUS.UNCHANGED,
+      changed: false,
+      reason: 'identical transition replay',
+    });
+  });
+
+  test('same revision and sequence with different content conflicts closed', () => {
+    expect(decideTransition(state(4), state(4, 'different'))).toMatchObject({
+      status: TRANSITION_STATUS.CONFLICT,
+      changed: false,
+    });
+  });
+
+  test('older sequence is stale and missing authority is incomplete', () => {
+    expect(decideTransition(state(4), state(3))).toMatchObject({
+      status: TRANSITION_STATUS.STALE,
+      changed: false,
+    });
+    expect(decideTransition(state(4), { sequence: 5 })).toMatchObject({
+      status: TRANSITION_STATUS.INCOMPLETE,
+      changed: false,
+    });
+  });
+
+  test('a newer complete sequence is the only actionable transition', () => {
+    expect(decideTransition(state(4), { ...state(5), subjectRevision: 'head-b' })).toEqual({
+      status: TRANSITION_STATUS.CHANGED,
+      changed: true,
+      reason: 'newer complete transition',
+    });
   });
 });

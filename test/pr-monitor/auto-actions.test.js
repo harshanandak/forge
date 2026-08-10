@@ -7,6 +7,8 @@ const {
   decideUpdateBranch,
   decideRerun,
   runIdFromUrl,
+  decideBoundedAutoActions,
+  AUTO_ACTION_STATUS,
 } = require('../../lib/pr-monitor/auto-actions');
 
 /** An otherwise-clean-behind payload; override any field per test. */
@@ -180,8 +182,11 @@ describe('decideRerun — flaky required-check rerun gate', () => {
 
   test('infra conclusion but no derivable run id → NO rerun', () => {
     const d = decideRerun(behindPayload({
-      requiredChecks: { failing: ['test'] },
-      failures: [{ name: 'test', conclusion: 'CANCELLED', jobUrl: 'not-a-url' }],
+      requiredChecks: { failing: ['known', 'unknown'] },
+      failures: [
+        { name: 'known', conclusion: 'CANCELLED', jobUrl: 'https://github.com/o/r/actions/runs/1/job/2' },
+        { name: 'unknown', conclusion: 'TIMED_OUT', jobUrl: 'not-a-url' },
+      ],
     }));
     expect(d.should).toBe(false);
     expect(d.reason).toContain('run id');
@@ -219,5 +224,67 @@ describe('decideAutoActions — combined', () => {
     const d = decideAutoActions(behindPayload());
     expect(d.updateBranch.should).toBe(true);
     expect(d.rerunFlaky.should).toBe(false);
+  });
+});
+
+describe('decideBoundedAutoActions - idempotency and retry bounds', () => {
+  function flakyPayload(over = {}) {
+    return behindPayload({
+      headSha: 'a'.repeat(40),
+      verdict: 'BLOCKED-CHECKS',
+      blockers: [{ type: 'check-failing', detail: 'infra' }],
+      requiredChecks: { failing: ['one', 'two'] },
+      failures: [
+        { name: 'one', conclusion: 'CANCELLED', jobUrl: 'https://github.com/o/r/actions/runs/11/job/1' },
+        { name: 'two', conclusion: 'TIMED_OUT', jobUrl: 'https://github.com/o/r/actions/runs/22/job/2' },
+      ],
+      ...over,
+    });
+  }
+
+  test('selects at most the configured number of deterministic actions', () => {
+    const decision = decideBoundedAutoActions(flakyPayload(), { maxActions: 1, maxAttempts: 2 });
+    expect(decision.status).toBe(AUTO_ACTION_STATUS.PASS);
+    expect(decision.actions).toHaveLength(1);
+    expect(decision.actions[0]).toMatchObject({ type: 'rerunFlaky', runId: '11', attempt: 1 });
+  });
+
+  test('failed action retries once, then identical exhausted/applied input consumes no action', () => {
+    const oneFailure = flakyPayload({
+      requiredChecks: { failing: ['one'] },
+      failures: [{ name: 'one', conclusion: 'CANCELLED', jobUrl: 'https://github.com/o/r/actions/runs/11/job/1' }],
+    });
+    const first = decideBoundedAutoActions(oneFailure, { maxActions: 1, maxAttempts: 2 });
+    const key = first.actions[0].key;
+
+    expect(decideBoundedAutoActions(oneFailure, {
+      maxActions: 1, maxAttempts: 2, history: [{ key, state: 'failed', attempts: 1 }],
+    }).actions[0].attempt).toBe(2);
+
+    for (const prior of [
+      { key, state: 'failed', attempts: 2 },
+      { key, state: 'applied', attempts: 1 },
+      { key, state: 'pending', attempts: 1 },
+    ]) {
+      expect(decideBoundedAutoActions(oneFailure, {
+        maxActions: 1, maxAttempts: 2, history: [prior],
+      })).toMatchObject({ status: AUTO_ACTION_STATUS.UNCHANGED, actions: [] });
+    }
+  });
+
+  test('stale head, incomplete authority, and contradictory decisions fail closed', () => {
+    expect(decideBoundedAutoActions(flakyPayload(), { expectedRevision: 'b'.repeat(40) })).toMatchObject({
+      status: AUTO_ACTION_STATUS.STALE,
+      actions: [],
+    });
+    expect(decideBoundedAutoActions(flakyPayload({ headSha: undefined }))).toMatchObject({
+      status: AUTO_ACTION_STATUS.INCOMPLETE,
+      actions: [],
+    });
+    expect(decideBoundedAutoActions(behindPayload({
+      headSha: 'a'.repeat(40),
+      requiredChecks: { failing: ['one'] },
+      failures: [{ name: 'one', conclusion: 'CANCELLED', jobUrl: 'https://github.com/o/r/actions/runs/11/job/1' }],
+    }))).toMatchObject({ status: AUTO_ACTION_STATUS.CONFLICT, actions: [] });
   });
 });
