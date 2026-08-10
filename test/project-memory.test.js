@@ -81,6 +81,22 @@ describe('project memory kernel adapter', () => {
     expect(calls).toHaveLength(1);
   });
 
+  test('treats project-id resolution failures as advisory evidence failures', () => {
+    const calls = [];
+    const store = {
+      appendUsageEvidence(event) { calls.push(event); return { appended: true }; },
+      rebuildUsageProjection() {}, loadUsageProjection() { return null; }, loadUsageProjections() { return []; },
+    };
+
+    expect(projectMemory.recordRecallUsage(null, [{ id: 'safe-memory' }], {
+      gitCommonDir: 'repo/.git',
+      platform: 'linux',
+      store,
+      realpath() { throw new Error('simulated path resolution failure'); },
+    })).toEqual({ attempted: 1, appended: 0, failed: 1 });
+    expect(calls).toHaveLength(0);
+  });
+
   test('reports unavailable usage projections separately from a successful empty projection', () => {
     const unavailableStore = {
       appendUsageEvidence() {}, rebuildUsageProjection() {}, loadUsageProjection() { return null; },

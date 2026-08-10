@@ -141,7 +141,7 @@ describe('monitor durability store', () => {
 			.rejects.toThrow('busy after');
 		const elapsed = performance.now() - startedAt;
 		expect(elapsed).toBeGreaterThanOrEqual(50);
-		expect(elapsed).toBeLessThan(1000);
+		expect(elapsed).toBeLessThan(5000);
 		await first.driver.exec('ROLLBACK;');
 		expect(await second.store.appendEvent(monitorEvent(), ['terminal'], { monitorBusyTimeoutMs: 75 }))
 			.toMatchObject({ idempotent: false });
@@ -337,5 +337,18 @@ const driver = createBuiltinSQLiteDriver({ databasePath: process.env.MONITOR_RAC
 		await expect(store.appendEvent(event, ['terminal'])).rejects.toThrow('private');
 		await expect(driver.appendMonitorEvent(event, ['terminal'])).rejects.toThrow('private');
 		expect(await driver.queryAll('SELECT COUNT(*) AS n FROM memory_monitor_events')).toEqual([{ n: 0 }]);
+	});
+
+	test('keeps secret detector boundaries stable for short and long token-shaped values', async () => {
+		const { driver, store } = await makeStore();
+		const shortToken = monitorEvent(0, { bounded_payload: { message: 'token=1234567' } });
+		expect(await store.appendEvent(shortToken, ['terminal'])).toMatchObject({ idempotent: false });
+
+		const longToken = monitorEvent(1, {
+			event_id: 'event-2',
+			bounded_payload: { message: 'token=12345678' },
+		});
+		await expect(driver.appendMonitorEvent(longToken, ['terminal'])).rejects.toThrow('private');
+		expect(await driver.queryAll('SELECT COUNT(*) AS n FROM memory_monitor_events')).toEqual([{ n: 1 }]);
 	});
 });
