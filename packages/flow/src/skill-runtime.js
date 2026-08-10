@@ -59,12 +59,15 @@ function selectKeys(source, keys) {
 
 class SkillRuntime {
   constructor(options = {}) {
+    const optionsValid = isPlainObject(options);
+    if (!optionsValid) options = {};
     this.metadata = options.metadata;
     this.handlers = options.handlers || {};
     this.capabilities = new Set(options.capabilities || []);
     this.limits = { ...DEFAULT_LIMITS, ...(options.limits || {}) };
     this.active = false;
     this.nodes = new Map();
+    this.optionsError = optionsValid ? null : { code: "INVALID_OPTIONS", details: {} };
     this.limitError = this._validateLimits(options.limits);
     this.metadataError = this._indexMetadata();
   }
@@ -72,6 +75,7 @@ class SkillRuntime {
   async invoke(request = {}) {
     if (this.active) return safeFailure("RECURSIVE_INVOCATION");
     if (!isPlainObject(request)) return safeFailure("INVALID_REQUEST");
+    if (this.optionsError) return safeFailure(this.optionsError.code, this.optionsError.details);
     if (this.limitError) return safeFailure("INVALID_LIMITS", this.limitError);
     if (this.metadataError) return safeFailure(this.metadataError.code, this.metadataError.details);
 
@@ -135,63 +139,73 @@ class SkillRuntime {
             context: boundedClone(selectKeys(context, node.contextKeys || []), this.limits),
             dependencyEvidence: boundedClone(dependencyEvidence, this.limits),
           });
+          result = boundedClone(result, this.limits);
         } catch {
-          return {
-            status: "INCOMPLETE",
+          return this._boundedResult(
+            "INCOMPLETE",
             invoked,
             skipped,
-            evidence: invoked,
-            error: { code: "HANDLER_FAILED", nodeId: node.id },
-          };
+            { code: result === undefined ? "HANDLER_FAILED" : "INVALID_EVIDENCE", nodeId: node.id },
+          );
         }
 
         if (result && result.status === "INCOMPLETE"
           && result.error?.code === "RECURSIVE_INVOCATION") {
-          return {
-            status: "INCOMPLETE",
+          return this._boundedResult(
+            "INCOMPLETE",
             invoked,
             skipped,
-            evidence: invoked,
-            error: { code: "RECURSIVE_INVOCATION", nodeId: node.id },
-          };
+            { code: "RECURSIVE_INVOCATION", nodeId: node.id },
+          );
         }
         if (!isPlainObject(result)
           || !NODE_STATUSES.has(result.status)
           || !Array.isArray(result.evidence)) {
-          return {
-            status: "INCOMPLETE",
+          return this._boundedResult(
+            "INCOMPLETE",
             invoked,
             skipped,
-            evidence: invoked,
-            error: { code: "INVALID_EVIDENCE", nodeId: node.id },
-          };
+            { code: "INVALID_EVIDENCE", nodeId: node.id },
+          );
         }
 
         let evidence;
         try {
           evidence = boundedClone(result.evidence, this.limits);
         } catch {
-          return {
-            status: "INCOMPLETE",
+          return this._boundedResult(
+            "INCOMPLETE",
             invoked,
             skipped,
-            evidence: invoked,
-            error: { code: "INVALID_EVIDENCE", nodeId: node.id },
-          };
+            { code: "INVALID_EVIDENCE", nodeId: node.id },
+          );
         }
 
         const entry = { nodeId: node.id, status: result.status, evidence };
         invoked.push(entry);
         evidenceByNode.set(node.id, entry);
+        const bounded = this._boundedResult(result.status, invoked, skipped);
+        if (bounded.error?.code === "BOUNDED_OUTPUT_EXCEEDED") return bounded;
         if (result.status !== "PASS") {
-          return { status: result.status, invoked, skipped, evidence: invoked };
+          return bounded;
         }
       }
     } finally {
       this.active = false;
     }
 
-    return { status: "PASS", invoked, skipped, evidence: invoked };
+    return this._boundedResult("PASS", invoked, skipped);
+  }
+
+  _boundedResult(status, invoked, skipped, error) {
+    const output = { status, invoked, skipped, evidence: invoked };
+    if (error) output.error = error;
+    try {
+      boundedClone(output, this.limits);
+      return output;
+    } catch {
+      return safeFailure("BOUNDED_OUTPUT_EXCEEDED");
+    }
   }
 
   _validateLimits(overrides) {

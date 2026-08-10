@@ -15,6 +15,16 @@ function passingHandler(id, calls) {
 }
 
 describe("SkillRuntime", () => {
+  test("fails closed when constructed with null options", async () => {
+    const runtime = new SkillRuntime(null);
+
+    expect(await runtime.invoke({ nodes: ["intent"] })).toMatchObject({
+      status: "INCOMPLETE",
+      invoked: [],
+      error: { code: "INVALID_OPTIONS" },
+    });
+  });
+
   test.each([null, "not-a-request", 42, []])(
     "fails safely for a non-object invocation request (%j)",
     async (request) => {
@@ -220,5 +230,62 @@ describe("SkillRuntime", () => {
       invoked: [],
       error: { code: "INVALID_EVIDENCE", nodeId: "intent" },
     });
+  });
+
+  test("fails closed when reading a hostile handler result", async () => {
+    const runtime = new SkillRuntime({
+      metadata: metadata([{ id: "intent" }]),
+      handlers: {
+        intent: async () => ({
+          get status() { throw new Error("hostile getter"); },
+          evidence: [],
+        }),
+      },
+    });
+
+    expect(await runtime.invoke({ nodes: ["intent"] })).toMatchObject({
+      status: "INCOMPLETE",
+      invoked: [],
+      error: { code: "INVALID_EVIDENCE", nodeId: "intent" },
+    });
+  });
+
+  test("fails closed when aggregate returned evidence exceeds maxNodes", async () => {
+    const nodes = Array.from({ length: 129 }, (_value, index) => ({ id: `node-${index}` }));
+    const runtime = new SkillRuntime({
+      metadata: metadata(nodes),
+      handlers: Object.fromEntries(nodes.map((node) => [
+        node.id,
+        async () => ({ status: "PASS", evidence: [] }),
+      ])),
+    });
+
+    const result = await runtime.invoke({ nodes: nodes.map((node) => node.id) });
+
+    expect(result).toMatchObject({
+      status: "INCOMPLETE",
+      error: { code: "BOUNDED_OUTPUT_EXCEEDED" },
+    });
+    expect(result.invoked).toEqual([]);
+  });
+
+  test("fails closed when aggregate returned evidence exceeds maxBytes", async () => {
+    const nodes = [{ id: "one" }, { id: "two" }];
+    const runtime = new SkillRuntime({
+      metadata: metadata(nodes),
+      limits: { maxBytes: 1_000 },
+      handlers: Object.fromEntries(nodes.map((node) => [
+        node.id,
+        async () => ({ status: "PASS", evidence: [{ summary: "x".repeat(300) }] }),
+      ])),
+    });
+
+    const result = await runtime.invoke({ nodes: ["one", "two"] });
+
+    expect(result).toMatchObject({
+      status: "INCOMPLETE",
+      error: { code: "BOUNDED_OUTPUT_EXCEEDED" },
+    });
+    expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBeLessThanOrEqual(1_000);
   });
 });
