@@ -11,18 +11,52 @@ const SECRET_PATTERNS = [
   /AKIA[0-9A-Z]{16}/i,
   /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}/i,
 ];
-const ABSOLUTE_USER_PATH = /(?:[a-z]:[\\/]Users[\\/][^\\/\s]+(?:[\\/]|$)|\/(?:Users|home|root)\/[^/\s]+(?:\/|$)|\\\\[^\\/\s]+[\\/]Users[\\/][^\\/\s]+(?:[\\/]|$))/i;
 const MAX_TARGETS = 32;
 const MAX_TARGET_LENGTH = 128;
+const PRIVATE_PATH_ROOTS = ['users', 'home', 'root'];
+const MAX_PRIVATE_SCAN_LENGTH = 16_384;
+
+function hasNonWhitespacePathSegment(segment) {
+  if (!segment) return false;
+  for (const character of segment) {
+    if (character.trim() === '') return false;
+  }
+  return true;
+}
+
+function containsPrivateMonitorPath(value) {
+  if (typeof value !== 'string') return false;
+  if (value.length > MAX_PRIVATE_SCAN_LENGTH) return true;
+  const normalized = value.replaceAll('\\', '/').toLowerCase();
+  for (const root of PRIVATE_PATH_ROOTS) {
+    const marker = `/${root}/`;
+    let offset = 0;
+    while (true) {
+      const index = normalized.indexOf(marker, offset);
+      if (index < 0) break;
+      const segment = normalized.slice(index + marker.length).split('/')[0];
+      if (hasNonWhitespacePathSegment(segment)) return true;
+      offset = index + marker.length;
+    }
+  }
+  for (let code = 97; code <= 122; code += 1) {
+    const marker = `${String.fromCharCode(code)}:/users/`;
+    const index = normalized.indexOf(marker);
+    if (index >= 0 && hasNonWhitespacePathSegment(
+      normalized.slice(index + marker.length).split('/')[0],
+    )) return true;
+  }
+  return false;
+}
 
 function containsPrivateMonitorData(value) {
   if (typeof value === 'string') {
-    return SECRET_PATTERNS.some(pattern => pattern.test(value)) || ABSOLUTE_USER_PATH.test(value);
+    return SECRET_PATTERNS.some(pattern => pattern.test(value)) || containsPrivateMonitorPath(value);
   }
   if (!value || typeof value !== 'object') return false;
   return Object.entries(value).some(([key, nestedValue]) => (
     SECRET_PATTERNS.some(pattern => pattern.test(key))
-    || ABSOLUTE_USER_PATH.test(key)
+    || containsPrivateMonitorPath(key)
     || containsPrivateMonitorData(nestedValue)
   ));
 }
@@ -45,7 +79,7 @@ function assertEnvelope(envelope, schemaId) {
 
 function assertTarget(target) {
   if (typeof target !== 'string' || target.length === 0 || target.length > MAX_TARGET_LENGTH
-    || !TARGET_PATTERN.test(target) || SECRET_PATTERNS.some(pattern => pattern.test(target)) || ABSOLUTE_USER_PATH.test(target)) {
+    || !TARGET_PATTERN.test(target) || SECRET_PATTERNS.some(pattern => pattern.test(target)) || containsPrivateMonitorPath(target)) {
     throw new Error('invalid or private monitor delivery target');
   }
   return target;
