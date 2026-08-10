@@ -9,7 +9,7 @@
     "src/"
   ],
   "scripts": {
-    "test": "bun test index.test.js",
+    "test": "bun test",
     "lint": "eslint . --max-warnings 0"
   },
   "dependencies": {
