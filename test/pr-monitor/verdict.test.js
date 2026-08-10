@@ -130,6 +130,39 @@ describe('evaluateCurrentHeadVerdict', () => {
     }
   });
 
+  test('matches wildcard requirements by name while preserving app-specific identity and conflicts', () => {
+    const checks = completeEvidence().checks;
+    expectState(completeEvidence({ checks: {
+      ...checks,
+      required: [{ name: 'lint', appId: null }],
+      observations: [
+        { name: 'lint', appId: 42, status: 'COMPLETED', conclusion: 'SUCCESS', headSha: HEAD },
+      ],
+    } }), VERDICT_STATES.MERGE_READY);
+
+    expectState(completeEvidence({ checks: {
+      ...checks,
+      required: [{ name: 'lint', appId: 42 }],
+      observations: [
+        { name: 'lint', appId: 43, status: 'COMPLETED', conclusion: 'SUCCESS', headSha: HEAD },
+      ],
+    } }), VERDICT_STATES.BLOCKED, 'required_check_missing');
+
+    expectState(completeEvidence({ checks: {
+      ...checks,
+      required: [{ name: 'lint', appId: null }],
+      observations: [
+        { name: 'lint', appId: 42, status: 'COMPLETED', conclusion: 'SUCCESS', headSha: HEAD },
+        { name: 'lint', appId: 42, status: 'COMPLETED', conclusion: 'FAILURE', headSha: HEAD },
+      ],
+    } }), VERDICT_STATES.INCOMPLETE, 'check_observation_conflict');
+
+    for (const required of [[{ name: 'lint' }], [{ name: 'lint', appId: 0 }]]) {
+      expectState(completeEvidence({ checks: { ...checks, required } }),
+        VERDICT_STATES.INCOMPLETE, 'required_policy_malformed');
+    }
+  });
+
   test('ignores neutral and skipped optional checks', () => {
     const checks = completeEvidence().checks;
     const result = evaluateCurrentHeadVerdict(completeEvidence({ checks: {

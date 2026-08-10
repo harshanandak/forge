@@ -254,33 +254,45 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
     });
     expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
 
-    for (const verdict of [
-      { state: 'BLOCKED', headSha: head, baseSha: 'a'.repeat(40), reasons: [{ code: 'checks' }] },
-      { state: 'MERGE_READY', headSha: '2'.repeat(40), baseSha: 'a'.repeat(40), reasons: [] },
-      { state: 'MERGE_READY', headSha: head, baseSha: 'a'.repeat(40), reasons: [{ code: 'contradiction' }] },
-      null,
+    for (const [verdict, expectedReason] of [
+      [{ ...ctx.verdict, state: 'BLOCKED', reasons: [{ code: 'checks' }] }, /BLOCKED/],
+      [{ ...ctx.verdict, headSha: '2'.repeat(40) }, /caller head lease/],
+      [{ ...ctx.verdict, reasons: [{ code: 'contradiction' }] }, /contradictory reasons/],
+      [null, /missing or malformed/],
     ]) {
-      expect(evaluateMergeRules({ ...ctx, verdict }, ['verdict_clean']).allowed).toBe(false);
+      const { allowed, unmet } = evaluateMergeRules({ ...ctx, verdict }, ['verdict_clean']);
+      expect(allowed).toBe(false);
+      expect(unmet[0].reason).toMatch(expectedReason);
     }
   });
 
   test('verdict_clean fails closed when the caller head lease is absent or malformed', () => {
     const head = '1'.repeat(40);
+    const base = 'a'.repeat(40);
     const verdict = {
       state: 'MERGE_READY', repository: 'owner/repo', prNumber: 42,
-      headSha: head, baseSha: 'a'.repeat(40), reasons: [],
+      headSha: head, baseSha: base, reasons: [],
     };
-    expect(evaluateMergeRules(greenContext({ verdict, headSha: head }), ['verdict_clean']).allowed).toBe(false);
-    expect(evaluateMergeRules(greenContext({ verdict, expectedHeadSha: head }), ['verdict_clean']).allowed).toBe(false);
-    expect(evaluateMergeRules(greenContext({ verdict, headSha: 'short', expectedHeadSha: 'short' }), ['verdict_clean']).allowed).toBe(false);
-    expect(evaluateMergeRules({
-      ...greenContext(),
+    const ctx = greenContext({
       headSha: head,
       expectedHeadSha: head,
-      baseSha: 'a'.repeat(40),
-      expectedBaseSha: 'a'.repeat(40),
-      verdict: { ...verdict, baseSha: 'short' },
-    }, ['verdict_clean']).allowed).toBe(false);
+      baseSha: base,
+      expectedBaseSha: base,
+      repository: 'owner/repo',
+      expectedRepository: 'owner/repo',
+      prNumber: 42,
+      expectedPrNumber: 42,
+      verdict,
+    });
+    expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
+    for (const mutation of [
+      { expectedHeadSha: undefined },
+      { headSha: undefined },
+      { headSha: 'short' },
+      { verdict: { ...ctx.verdict, baseSha: 'short' } },
+    ]) {
+      expect(evaluateMergeRules({ ...ctx, ...mutation }, ['verdict_clean']).allowed).toBe(false);
+    }
   });
 
   test('verdict_clean requires the observed, expected, and verdict base SHAs to match exactly', () => {
