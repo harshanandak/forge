@@ -74,6 +74,32 @@ describe("MonitorSpec deterministic reducer", () => {
     expect(result.modelTurns).toBe(1);
   });
 
+  test.each([
+    ["filter promise", { filter: () => Promise.resolve(true), terminalPredicate: () => false }],
+    ["filter non-boolean", { filter: () => "yes", terminalPredicate: () => false }],
+    ["terminal promise", { terminalPredicate: () => Promise.resolve(false) }],
+    ["terminal non-boolean", { terminalPredicate: () => "PASS" }],
+  ])("requires synchronous boolean callback decisions: %s", (_label, overrides) => {
+    const monitorSpec = spec(overrides);
+
+    expect(() => reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
+      kind: "observation",
+      event: observation(0, "PENDING"),
+    })).toThrow("synchronous boolean");
+  });
+
+  test.each([
+    ["source adapter item", { sourceAdapters: [42] }],
+    ["delivery target item", { deliveryTargets: [""] }],
+    ["source adapter count", { sourceAdapters: Array.from({ length: 129 }, (_, index) => `source-${index}`) }],
+    ["max pending", { maxPending: 129 }],
+    ["max retries", { maxRetries: 33 }],
+    ["payload bytes", { securityPolicy: { maxPayloadBytes: 16_385 } }],
+    ["retry overflow", { maxRetries: 32, retryBaseMs: Number.MAX_SAFE_INTEGER }],
+  ])("rejects unsafe or unbounded MonitorSpec values: %s", (_label, overrides) => {
+    expect(() => createMonitorState(spec(overrides))).toThrow();
+  });
+
   test("suppresses duplicate-identical and unchanged observations without a model turn", () => {
     const monitorSpec = spec({ terminalPredicate: () => false });
     const first = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {

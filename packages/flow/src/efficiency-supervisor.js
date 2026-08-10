@@ -59,7 +59,7 @@ class EfficiencySupervisor {
       actions.push({ type: threshold.type, thresholdPercent: threshold.percent });
       if (threshold.type === "STOP") {
         this.terminal = true;
-        this.status = sample.outcomeComplete === true ? "COMPLETE" : "INCOMPLETE";
+        this.status = this.terminalPath === "COMPLETE" ? "COMPLETE" : "INCOMPLETE";
       }
     }
 

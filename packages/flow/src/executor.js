@@ -250,7 +250,11 @@ function createWorkPacketExecutor({ run, onReceipt = () => {} } = {}) {
         receipt = buildReceipt(workPacket, executionContext, result);
       }
       acceptedPackets.set(identity, { packetHash: workPacket.content_hash, receipt: structuredClone(receipt) });
-      onReceipt(structuredClone(receipt));
+      try {
+        onReceipt(structuredClone(receipt));
+      } catch {
+        // Receipt observation is secondary and cannot change the accepted execution result.
+      }
       return receipt;
     },
   });

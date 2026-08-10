@@ -55,6 +55,21 @@ describe("EfficiencySupervisor", () => {
   });
 
   test.each([
+    [true, false, "COMPLETE", "COMPLETE"],
+    [false, true, "HANDOFF", "INCOMPLETE"],
+  ])("keeps the 35%% terminal path locked at the 39%% stop", (initialComplete, laterComplete, terminalPath, status) => {
+    const supervisor = new EfficiencySupervisor({ tokenBudget: 1_000 });
+    supervisor.observe({ totalTokens: 350, outcomeComplete: initialComplete });
+
+    expect(supervisor.observe({ totalTokens: 390, outcomeComplete: laterComplete })).toMatchObject({
+      status,
+      terminal: true,
+      terminalPath,
+      actions: [{ type: "STOP", thresholdPercent: 39 }],
+    });
+  });
+
+  test.each([
     ["null", null],
     ["string", "not-a-sample"],
     ["number", 10],

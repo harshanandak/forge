@@ -113,6 +113,23 @@ describe("WorkPacket executor", () => {
     expect(emissions).toBe(1);
   });
 
+  test("isolates deterministic execution from a failing receipt observer", () => {
+    let runs = 0;
+    let emissions = 0;
+    const executor = createWorkPacketExecutor({
+      run: () => { runs += 1; return successfulResult(); },
+      onReceipt: () => { emissions += 1; throw new Error("observer unavailable"); },
+    });
+    const workPacket = packet();
+
+    const first = executor.execute(workPacket, context());
+    const retry = executor.execute(structuredClone(workPacket), context());
+
+    expect(first).toEqual(retry);
+    expect(runs).toBe(1);
+    expect(emissions).toBe(1);
+  });
+
   test("fails closed when the same packet identity carries different content", () => {
     let runs = 0;
     const executor = createWorkPacketExecutor({ run: () => { runs += 1; return successfulResult(); } });

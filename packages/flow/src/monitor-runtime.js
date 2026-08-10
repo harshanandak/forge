@@ -10,6 +10,10 @@ const {
 const LIFETIMES = new Set(["session", "run", "subject"]);
 const TERMINAL_STATES = new Set(["PASS", "FAIL", "INCOMPLETE", "CANCELLED"]);
 const MAX_HISTORY = 128;
+const MAX_LIST_ITEMS = 128;
+const MAX_PENDING = 128;
+const MAX_RETRIES = 32;
+const MAX_PAYLOAD_BYTES = 16_384;
 
 class MonitorRuntimeError extends Error {
   constructor(code, message, details = []) {
@@ -25,6 +29,13 @@ function nonEmptyString(value, name) {
   return value;
 }
 
+function validateStringList(value, name) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_LIST_ITEMS) {
+    throw new TypeError(`${name} must contain 1 to ${MAX_LIST_ITEMS} items`);
+  }
+  for (const item of value) nonEmptyString(item, `${name} item`);
+}
+
 function validateSpec(spec) {
   if (!spec || typeof spec !== "object" || Array.isArray(spec)) throw new TypeError("MonitorSpec must be an object");
   nonEmptyString(spec.monitorId, "monitorId");
@@ -32,15 +43,27 @@ function validateSpec(spec) {
   nonEmptyString(spec.packetId, "packetId");
   nonEmptyString(spec.subject?.id, "subject.id");
   nonEmptyString(spec.subject?.revision, "subject.revision");
-  if (!Array.isArray(spec.sourceAdapters) || spec.sourceAdapters.length === 0) throw new TypeError("sourceAdapters must not be empty");
-  if (!Array.isArray(spec.deliveryTargets) || spec.deliveryTargets.length === 0) throw new TypeError("deliveryTargets must not be empty");
+  validateStringList(spec.sourceAdapters, "sourceAdapters");
+  validateStringList(spec.deliveryTargets, "deliveryTargets");
   if (!LIFETIMES.has(spec.lifetime)) throw new TypeError("lifetime is invalid");
   if (typeof spec.deadline !== "string" || Number.isNaN(Date.parse(spec.deadline))) throw new TypeError("deadline is invalid");
   if (typeof spec.reducer !== "function" || typeof spec.terminalPredicate !== "function") throw new TypeError("reducer and terminalPredicate are required");
   if (spec.filter !== undefined && typeof spec.filter !== "function") throw new TypeError("filter must be a function");
-  if (!Number.isInteger(spec.maxPending) || spec.maxPending < 1) throw new TypeError("maxPending must be positive");
-  if (!Number.isInteger(spec.maxRetries) || spec.maxRetries < 0) throw new TypeError("maxRetries must be non-negative");
-  if (!Number.isInteger(spec.retryBaseMs) || spec.retryBaseMs < 1) throw new TypeError("retryBaseMs must be positive");
+  if (!Number.isSafeInteger(spec.maxPending) || spec.maxPending < 1 || spec.maxPending > MAX_PENDING) {
+    throw new TypeError(`maxPending must be an integer from 1 to ${MAX_PENDING}`);
+  }
+  if (!Number.isSafeInteger(spec.maxRetries) || spec.maxRetries < 0 || spec.maxRetries > MAX_RETRIES) {
+    throw new TypeError(`maxRetries must be an integer from 0 to ${MAX_RETRIES}`);
+  }
+  if (!Number.isSafeInteger(spec.retryBaseMs) || spec.retryBaseMs < 1) throw new TypeError("retryBaseMs must be a positive safe integer");
+  const maximumRetryDelay = spec.retryBaseMs * (2 ** Math.max(0, spec.maxRetries - 1));
+  if (!Number.isSafeInteger(maximumRetryDelay)) throw new TypeError("retry delay exceeds the safe integer ceiling");
+  if (!spec.securityPolicy || typeof spec.securityPolicy !== "object" || Array.isArray(spec.securityPolicy)
+    || !Number.isSafeInteger(spec.securityPolicy.maxPayloadBytes)
+    || spec.securityPolicy.maxPayloadBytes < 1
+    || spec.securityPolicy.maxPayloadBytes > MAX_PAYLOAD_BYTES) {
+    throw new TypeError(`securityPolicy.maxPayloadBytes must be an integer from 1 to ${MAX_PAYLOAD_BYTES}`);
+  }
   if (spec.maxHistory !== undefined
     && (!Number.isInteger(spec.maxHistory) || spec.maxHistory < 1 || spec.maxHistory > MAX_HISTORY)) {
     throw new TypeError("maxHistory must be an integer from 1 to 128");
@@ -119,6 +142,19 @@ function callbackClone(spec, value) {
   }
 }
 
+function callbackBoolean(name, callback, ...args) {
+  let decision;
+  try {
+    decision = callback(...args);
+  } catch {
+    throw new MonitorRuntimeError("CALLBACK_FAILURE", `${name} failed`);
+  }
+  if (typeof decision !== "boolean") {
+    throw new MonitorRuntimeError("INVALID_CALLBACK_DECISION", `${name} must return a synchronous boolean`);
+  }
+  return decision;
+}
+
 function cloneIdentityMap(source) {
   const clone = Object.create(null);
   for (const key of Object.keys(source)) {
@@ -165,7 +201,7 @@ function reduceObservation(spec, state, event) {
     next.evidenceHashes.splice(0, next.evidenceHashes.length - maxHistory);
   }
   next.lastSequence = payload.sequence;
-  if (spec.filter && !spec.filter(
+  if (spec.filter && !callbackBoolean("filter", spec.filter,
     callbackClone(spec, payload.bounded_payload ?? {}),
     callbackClone(spec, event),
   )) return result(next);
@@ -181,12 +217,12 @@ function reduceObservation(spec, state, event) {
   next.valueDigest = nextDigest;
   if (!changed) return result(next);
 
-  const terminal = spec.terminalPredicate(
+  const terminal = callbackBoolean("terminalPredicate", spec.terminalPredicate,
     callbackClone(spec, nextValue),
     callbackClone(spec, event),
   );
   if (terminal) {
-    const terminalState = terminal === "FAIL" || nextValue === "FAIL" ? "FAIL" : "PASS";
+    const terminalState = nextValue === "FAIL" ? "FAIL" : "PASS";
     return terminating(next, terminalState, "terminal predicate satisfied");
   }
   if (payload.actionability === "advisory") return result(next);
@@ -241,11 +277,13 @@ function reduceDeliveryFailure(spec, state, event) {
   const attempts = (next.retryCounts[event.sequence] ?? 0) + 1;
   next.retryCounts[event.sequence] = attempts;
   if (attempts > spec.maxRetries) return terminating(next, "INCOMPLETE", "delivery retries exhausted");
+  const delayMs = spec.retryBaseMs * (2 ** (attempts - 1));
+  if (!Number.isSafeInteger(delayMs)) return terminating(next, "INCOMPLETE", "delivery retry delay overflow");
   return result(next, [{
     type: "RETRY_DELIVERY",
     sequence: event.sequence,
     attempt: attempts,
-    delayMs: spec.retryBaseMs * (2 ** (attempts - 1)),
+    delayMs,
     observedAt: nonEmptyString(event.observedAt, "observedAt"),
   }]);
 }
