@@ -123,4 +123,47 @@ describe('Kernel live claim authority projection', () => {
 		);
 		expect(projected.data.claims).toEqual([]);
 	});
+
+	for (const status of ['done', 'cancelled']) {
+		test(`claim rejects a ${status} issue before writing guarded state`, async () => {
+			const issueId = `terminal-${status}`;
+			await createIssue(issueId);
+			await driver.exec(
+				`UPDATE kernel_issues SET status = '${status}' WHERE id = '${issueId}';`,
+				config,
+			);
+			const eventCount = (await driver.queryAll('SELECT * FROM kernel_events', config)).length;
+			const outboxCount = (await driver.queryAll('SELECT * FROM kernel_outbox', config)).length;
+
+			const rejected = await claimIssue(issueId, 'late-worker');
+
+			expect(rejected).toMatchObject({
+				ok: false,
+				command: 'claim',
+				error: { code: 'FORGE_ISSUE_VALIDATION', exit_code: 6 },
+			});
+			expect(await driver.queryAll('SELECT * FROM kernel_claims', config)).toHaveLength(0);
+			expect(await driver.queryAll('SELECT * FROM kernel_events', config)).toHaveLength(eventCount);
+			expect(await driver.queryAll('SELECT * FROM kernel_outbox', config)).toHaveLength(outboxCount);
+		});
+	}
+
+	test('release remains allowed for a stale claim on a terminal issue', async () => {
+		await createIssue('terminal-release');
+		await claimIssue('terminal-release', 'worker-a');
+		await driver.exec(
+			"UPDATE kernel_issues SET status = 'done' WHERE id = 'terminal-release';",
+			config,
+		);
+
+		const released = await broker.runIssueOperation(
+			'release', ['--issue', 'terminal-release'], { now, actor: 'worker-a' },
+		);
+
+		expect(released.ok).toBe(true);
+		expect(await driver.queryAll(
+			"SELECT * FROM kernel_claims WHERE issue_id = 'terminal-release' AND state = 'active'",
+			config,
+		)).toHaveLength(0);
+	});
 });
