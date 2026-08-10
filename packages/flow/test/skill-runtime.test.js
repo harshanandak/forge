@@ -152,6 +152,22 @@ describe("SkillRuntime", () => {
     });
   });
 
+  test("bounds and sanitizes attacker-controlled early failure output", async () => {
+    const runtime = new SkillRuntime({ metadata: metadata([{ id: "intent" }]), handlers: {} });
+    const hostileNodeId = "x".repeat(10_000);
+
+    const result = await runtime.invoke({ nodes: [hostileNodeId] });
+
+    expect(result).toMatchObject({
+      status: "INCOMPLETE",
+      invoked: [],
+      error: { code: "UNKNOWN_NODE" },
+    });
+    expect(result.error).not.toHaveProperty("nodeId");
+    expect(JSON.stringify(result)).not.toContain(hostileNodeId);
+    expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBeLessThanOrEqual(8_192);
+  });
+
   test("fails safely for a dependency cycle without invoking handlers", async () => {
     const calls = [];
     const runtime = new SkillRuntime({

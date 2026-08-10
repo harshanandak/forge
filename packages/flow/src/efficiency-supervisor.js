@@ -10,8 +10,8 @@ const THRESHOLDS = Object.freeze([
 class EfficiencySupervisor {
   constructor(options = {}) {
     const { tokenBudget } = options;
-    if (!Number.isInteger(tokenBudget) || tokenBudget <= 0) {
-      throw new TypeError("tokenBudget must be a positive integer");
+    if (!Number.isSafeInteger(tokenBudget) || tokenBudget <= 0) {
+      throw new TypeError("tokenBudget must be a positive safe integer");
     }
 
     this.tokenBudget = tokenBudget;
@@ -31,7 +31,7 @@ class EfficiencySupervisor {
     }
 
     const { totalTokens } = sample;
-    if (!Number.isInteger(totalTokens) || totalTokens < 0) {
+    if (!Number.isSafeInteger(totalTokens) || totalTokens < 0) {
       return this._failClosed("INVALID_USAGE");
     }
     if (totalTokens < this.lastTrustworthyTokens) {
@@ -39,11 +39,12 @@ class EfficiencySupervisor {
     }
 
     this.lastTrustworthyTokens = totalTokens;
+    const usagePercent = (totalTokens / this.tokenBudget) * 100;
     const actions = [];
 
     for (const threshold of THRESHOLDS) {
       if (this.emittedThresholds.has(threshold.percent)
-        || totalTokens * 100 < this.tokenBudget * threshold.percent) {
+        || usagePercent < threshold.percent) {
         continue;
       }
 

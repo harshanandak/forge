@@ -86,9 +86,23 @@ describe("EfficiencySupervisor", () => {
     });
   });
 
-  test.each([undefined, 0, -1, 1.5])("rejects an invalid declared budget (%s)", (tokenBudget) => {
+  test.each([undefined, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, 1e308])("rejects an invalid declared budget (%s)", (tokenBudget) => {
     expect(() => new EfficiencySupervisor({ tokenBudget })).toThrow(
-      "tokenBudget must be a positive integer",
+      "tokenBudget must be a positive safe integer",
     );
   });
+
+  test.each([Number.MAX_SAFE_INTEGER + 1, 1e308])(
+    "fails closed on unsafe provider usage (%s)",
+    (totalTokens) => {
+      const supervisor = new EfficiencySupervisor({ tokenBudget: 1_000 });
+
+      expect(supervisor.observe({ totalTokens })).toMatchObject({
+        status: "INCOMPLETE",
+        terminal: true,
+        actions: [{ type: "STOP", reason: "INVALID_USAGE" }],
+        lastTrustworthyTokens: 0,
+      });
+    },
+  );
 });

@@ -77,7 +77,7 @@ class SkillRuntime {
     if (!isPlainObject(request)) return safeFailure("INVALID_REQUEST");
     if (this.optionsError) return safeFailure(this.optionsError.code, this.optionsError.details);
     if (this.limitError) return safeFailure("INVALID_LIMITS", this.limitError);
-    if (this.metadataError) return safeFailure(this.metadataError.code, this.metadataError.details);
+    if (this.metadataError) return this._failure(this.metadataError.code, this.metadataError.details);
 
     const requestedNodes = request.nodes;
     if (!Array.isArray(requestedNodes) || requestedNodes.length === 0) {
@@ -87,14 +87,14 @@ class SkillRuntime {
     const requestedSet = new Set();
     for (const nodeId of requestedNodes) {
       if (requestedSet.has(nodeId)) {
-        return safeFailure("DUPLICATE_INVOCATION", { nodeId });
+        return this._failure("DUPLICATE_INVOCATION", { nodeId });
       }
       requestedSet.add(nodeId);
     }
 
     const resolution = this._resolve(requestedNodes);
     if (resolution.error) {
-      return safeFailure(resolution.error.code, resolution.error.details);
+      return this._failure(resolution.error.code, resolution.error.details);
     }
 
     const skipped = [...this.nodes.keys()]
@@ -104,7 +104,7 @@ class SkillRuntime {
     for (const node of resolution.ordered) {
       for (const capability of node.capabilities || []) {
         if (!this.capabilities.has(capability)) {
-          return safeFailure(
+          return this._failure(
             "MISSING_CAPABILITY",
             { nodeId: node.id, capability },
             skipped,
@@ -112,7 +112,7 @@ class SkillRuntime {
         }
       }
       if (typeof this.handlers[node.id] !== "function") {
-        return safeFailure("MISSING_HANDLER", { nodeId: node.id }, skipped);
+        return this._failure("MISSING_HANDLER", { nodeId: node.id }, skipped);
       }
     }
 
@@ -122,7 +122,7 @@ class SkillRuntime {
       inputs = boundedClone(request.inputs || {}, this.limits);
       context = boundedClone(request.context || {}, this.limits);
     } catch {
-      return safeFailure("BOUNDED_INPUT_EXCEEDED", {}, skipped);
+      return this._failure("BOUNDED_INPUT_EXCEEDED", {}, skipped);
     }
 
     this.active = true;
@@ -204,8 +204,13 @@ class SkillRuntime {
       boundedClone(output, this.limits);
       return output;
     } catch {
+      if (invoked.length === 0 && error?.code) return safeFailure(error.code);
       return safeFailure("BOUNDED_OUTPUT_EXCEEDED");
     }
+  }
+
+  _failure(code, details = {}, skipped = []) {
+    return this._boundedResult("INCOMPLETE", [], skipped, { code, ...details });
   }
 
   _validateLimits(overrides) {
