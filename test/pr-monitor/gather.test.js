@@ -11,6 +11,17 @@ const {
 } = require('../../lib/pr-monitor/gather');
 
 describe('gather — normalizeSnapshot mapping', () => {
+  function cleanSnapshot(overrides = {}) {
+    return {
+      state: { headSha: 'h1', state: 'OPEN', checks: [] },
+      verdict: 'CLEAN-MERGEABLE',
+      threads: [],
+      reviews: [],
+      issueComments: [],
+      ...overrides,
+    };
+  }
+
   test('classifyCheck reuses the verdict-core predicates', () => {
     expect(classifyCheck({ conclusion: 'FAILURE' })).toBe('failed');
     expect(classifyCheck({ conclusion: 'STALE' })).toBe('failed'); // A5 gap filled
@@ -81,6 +92,51 @@ describe('gather — normalizeSnapshot mapping', () => {
     expect(open.threadState).toBe('OPEN');
     expect(open.openThreadCount).toBe(1);
     expect(open.threads[0].actorKind).toBe('bot');
+  });
+
+  test('keeps omitted compatibility metadata and valid empty arrays healthy', () => {
+    for (const raw of [
+      cleanSnapshot(),
+      cleanSnapshot({ degraded: [], unreadable: [] }),
+    ]) {
+      expect(normalizeSnapshot(raw, { repo: 'r', pr: '1' })).toMatchObject({
+        evidenceStatus: 'COMPLETE',
+        threadState: 'ZERO',
+        verdict: { state: 'CLEAN-MERGEABLE' },
+      });
+    }
+  });
+
+  test('explicit malformed degraded and unreadable metadata fails closed', () => {
+    for (const [field, value] of [
+      ['degraded', null],
+      ['degraded', 7],
+      ['unreadable', null],
+      ['unreadable', { surface: 'checks' }],
+      ['unreadable', 7],
+    ]) {
+      expect(normalizeSnapshot(cleanSnapshot({ [field]: value }), { repo: 'r', pr: '1' })).toMatchObject({
+        evidenceStatus: 'INCOMPLETE',
+        verdict: { state: 'UNKNOWN' },
+      });
+    }
+  });
+
+  test('identifiable malformed thread metadata never reports authoritative zero or clean', () => {
+    for (const metadata of [
+      { degraded: 'threads' },
+      { degraded: { source: 'threads', error: 'provider failed' } },
+      { degraded: ['threads'] },
+      { unreadable: 'threads' },
+      { unreadable: { surface: 'threads' } },
+      { unreadable: [{ surface: 'threads' }] },
+    ]) {
+      expect(normalizeSnapshot(cleanSnapshot(metadata), { repo: 'r', pr: '1' })).toMatchObject({
+        evidenceStatus: 'INCOMPLETE',
+        threadState: 'INCOMPLETE',
+        verdict: { state: 'UNKNOWN' },
+      });
+    }
   });
 
   test('malformed provider evidence fails closed instead of becoming zero', () => {
