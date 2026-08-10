@@ -157,7 +157,7 @@ describe('monitor durability store', () => {
 		const childCode = `
 const { createBuiltinSQLiteDriver } = require(${JSON.stringify(modulePath)});
 const driver = createBuiltinSQLiteDriver({ databasePath: process.env.MONITOR_RACE_DB });
-(async () => {
+await (async () => {
   const observed = await driver.queryAll('SELECT enabled FROM memory_monitor_writer_state WHERE singleton = 1;');
   process.stdout.write('observed:' + observed[0].enabled + '\\n');
   try {
@@ -193,26 +193,76 @@ const driver = createBuiltinSQLiteDriver({ databasePath: process.env.MONITOR_RAC
 		expect(await owner.driver.queryAll('SELECT COUNT(*) AS n FROM memory_monitor_events')).toEqual([{ n: 0 }]);
 	});
 
-	test('records an acknowledgement receipt and advances a target cursor without regression', async () => {
+	test('rejects a stale acknowledgement before inserting its receipt or mutating delivery state', async () => {
 		const { driver, store } = await makeStore();
 		await store.appendEvent(monitorEvent(0), ['terminal']);
 		await store.appendEvent(monitorEvent(1, { event_id: 'event-2' }), ['terminal']);
-		await store.recordDeliveryReceipt(deliveryReceipt({ event_id: 'event-2', attempt: 2 }));
-		await store.recordDeliveryReceipt(deliveryReceipt({ event_id: 'event-1', attempt: 1 }));
+		const latest = deliveryReceipt({ event_id: 'event-2', attempt: 2 });
+		await store.recordDeliveryReceipt(latest);
+		expect(await store.recordDeliveryReceipt(latest)).toMatchObject({ idempotent: true });
+		await expect(store.recordDeliveryReceipt(deliveryReceipt({ event_id: 'event-1', attempt: 1 })))
+			.rejects.toThrow('stale monitor delivery cursor');
 
 		expect(await driver.queryAll('SELECT monitor_id, target, sequence FROM memory_monitor_cursors')).toEqual([
 			{ monitor_id: 'monitor-1', target: 'terminal', sequence: 1 },
 		]);
-		expect(await store.recordDeliveryReceipt(deliveryReceipt({ event_id: 'event-1', attempt: 1 }))).toMatchObject({ idempotent: true });
-		await expect(store.recordDeliveryReceipt(deliveryReceipt({ event_id: 'event-1', attempt: 1, outcome: 'failed' }))).rejects.toThrow('monitor delivery receipt conflict');
+		expect(await driver.queryAll('SELECT event_id, attempt FROM memory_monitor_delivery_receipts')).toEqual([
+			{ event_id: 'event-2', attempt: 2 },
+		]);
+		expect(await driver.queryAll('SELECT event_id, status, attempts FROM memory_monitor_outbox ORDER BY event_id')).toEqual([
+			{ event_id: 'event-1', status: 'pending', attempts: 0 },
+			{ event_id: 'event-2', status: 'acknowledged', attempts: 1 },
+		]);
+		await expect(store.recordDeliveryReceipt(deliveryReceipt({ event_id: 'event-2', attempt: 2, outcome: 'failed' }))).rejects.toThrow('monitor delivery receipt conflict');
 	});
 
 	test('makes terminal receipts idempotent only for identical content', async () => {
 		const { store } = await makeStore();
-		const receipt = monitorReceipt();
+		const receipt = monitorReceipt({ last_sequence: 0 });
 		expect(await store.recordTerminalReceipt(receipt)).toMatchObject({ idempotent: false, monitor_id: 'monitor-1' });
 		expect(await store.recordTerminalReceipt(receipt)).toMatchObject({ idempotent: true, monitor_id: 'monitor-1' });
-		await expect(store.recordTerminalReceipt(monitorReceipt({ terminal_reason: 'different terminal evidence' }))).rejects.toThrow('monitor receipt conflict');
+		await expect(store.recordTerminalReceipt(monitorReceipt({ last_sequence: 0, terminal_reason: 'different terminal evidence' }))).rejects.toThrow('monitor receipt conflict');
+	});
+
+	test('rejects terminal evidence that does not match the current durable event maximum', async () => {
+		const { driver, store } = await makeStore();
+		await store.appendEvent(monitorEvent(0), ['terminal']);
+
+		await expect(store.recordTerminalReceipt(monitorReceipt({ last_sequence: 1 })))
+			.rejects.toThrow('stale monitor terminal sequence');
+		expect(await driver.queryAll('SELECT * FROM memory_monitor_receipts')).toEqual([]);
+		expect(await store.recordTerminalReceipt(monitorReceipt({ last_sequence: 0 })))
+			.toMatchObject({ idempotent: false, monitor_id: 'monitor-1' });
+	});
+
+	test('serializes event and terminal writers so either ordering rejects the stale second write', async () => {
+		const appendFirstPath = makeDatabasePath();
+		const appendFirstOwner = await makeStore(appendFirstPath);
+		const appendFirstPeer = await makeStore(appendFirstPath);
+		await appendFirstOwner.store.appendEvent(monitorEvent(0), ['terminal']);
+		await appendFirstOwner.store.appendEvent(monitorEvent(1, { event_id: 'event-2' }), ['terminal']);
+		await expect(appendFirstPeer.store.recordTerminalReceipt(monitorReceipt({ last_sequence: 0 })))
+			.rejects.toThrow('stale monitor terminal sequence');
+		expect(await appendFirstOwner.driver.queryAll('SELECT COUNT(*) AS n FROM memory_monitor_receipts')).toEqual([{ n: 0 }]);
+		expect(await appendFirstOwner.driver.queryAll('SELECT COUNT(*) AS n FROM memory_monitor_events')).toEqual([{ n: 2 }]);
+		expect(await appendFirstOwner.driver.queryAll('SELECT COUNT(*) AS n FROM memory_monitor_outbox')).toEqual([{ n: 2 }]);
+
+		const terminalFirstPath = makeDatabasePath();
+		const terminalFirstOwner = await makeStore(terminalFirstPath);
+		const terminalFirstPeer = await makeStore(terminalFirstPath);
+		await terminalFirstOwner.store.appendEvent(monitorEvent(0), ['terminal']);
+		await terminalFirstOwner.store.recordTerminalReceipt(monitorReceipt({ last_sequence: 0 }));
+		await expect(terminalFirstPeer.store.appendEvent(monitorEvent(1, { event_id: 'event-2' }), ['terminal']))
+			.rejects.toThrow('monitor already has a terminal receipt');
+		expect(await terminalFirstOwner.driver.queryAll('SELECT event_id FROM memory_monitor_events')).toEqual([
+			{ event_id: 'event-1' },
+		]);
+		expect(await terminalFirstOwner.driver.queryAll('SELECT event_id, target FROM memory_monitor_outbox')).toEqual([
+			{ event_id: 'event-1', target: 'terminal' },
+		]);
+		expect(await terminalFirstOwner.driver.queryAll('SELECT monitor_id, last_sequence FROM memory_monitor_receipts')).toEqual([
+			{ monitor_id: 'monitor-1', last_sequence: 0 },
+		]);
 	});
 
 	test('rejects unbounded or private monitor payloads before they reach SQLite', async () => {
