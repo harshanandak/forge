@@ -179,9 +179,14 @@ async function providerCall(operation) {
   }
 }
 
-function assertRows(value, monitorId, limit = MAX_EVIDENCE_HISTORY) {
+function assertRows(
+  value,
+  monitorId,
+  limit = MAX_EVIDENCE_HISTORY,
+  code = "INCOMPLETE_TERMINAL_EVIDENCE",
+) {
   if (!Array.isArray(value) || value.length > limit) {
-    fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event history is unavailable or exceeds its bound");
+    fail(code, "Monitor event history is unavailable or exceeds its bound");
   }
   const rows = value.map((row) => {
     if (
@@ -193,13 +198,13 @@ function assertRows(value, monitorId, limit = MAX_EVIDENCE_HISTORY) {
       typeof row.event_id !== "string" ||
       !SHA256.test(row.content_hash)
     ) {
-      fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event history is incomplete");
+      fail(code, "Monitor event history is incomplete");
     }
     return row;
   });
   for (let index = 1; index < rows.length; index += 1) {
     if (rows[index].sequence <= rows[index - 1].sequence) {
-      fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event history is not monotonic");
+      fail(code, "Monitor event history is not monotonic");
     }
   }
   return rows;
@@ -215,7 +220,7 @@ function assertEvent(value, monitorId, eventId) {
   ) {
     fail("INPUT_INVALID", "Delivery receipt references an unknown monitor event");
   }
-  const [event] = assertRows([snapshot], monitorId, 1);
+  const [event] = assertRows([snapshot], monitorId, 1, "INPUT_INVALID");
   return event;
 }
 
@@ -362,7 +367,7 @@ function createMonitorDurabilityBridge(options) {
       const deliveryState = assertDeliveryState(
         await providerCall(() => readDeliveryState(
           safeMonitorId,
-          { limit: targets.length },
+          { limit: MAX_EVIDENCE_HISTORY },
           safeConfig,
         )),
         safeMonitorId,
@@ -386,7 +391,7 @@ function createMonitorDurabilityBridge(options) {
       const deliveryState = assertDeliveryState(
         await providerCall(() => readDeliveryState(
           monitorId,
-          { limit: targets.length },
+          { limit: MAX_EVIDENCE_HISTORY },
           safeConfig,
         )),
         monitorId,

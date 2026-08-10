@@ -453,6 +453,51 @@ describe('monitor durability bridge', () => {
     expect(driver.state.eventReads).toBe(2);
   });
 
+  test('classifies a malformed acknowledgement event as invalid delivery input', async () => {
+    const driver = createDurableDriver();
+    const event = monitorEvent();
+    await bridge(driver).persistEvent(event);
+    const getMonitorEvent = driver.getMonitorEvent.bind(driver);
+    driver.getMonitorEvent = (eventId) => ({
+      ...getMonitorEvent(eventId),
+      sequence: 'not-an-integer',
+    });
+
+    await expect(
+      bridge(driver).acknowledgeDelivery('monitor-1', deliveryReceipt(event)),
+    ).rejects.toMatchObject({ code: 'INPUT_INVALID' });
+    expect(driver.state.deliveryReceipts.size).toBe(0);
+  });
+
+  test('reads retained delivery state with a bound independent of current targets', async () => {
+    const driver = createDurableDriver();
+    const event = monitorEvent();
+    await bridge(driver).persistEvent(event);
+    driver.state.cursors.set('monitor-1:retired-target-a', 0);
+    driver.state.cursors.set('monitor-1:retired-target-b', 0);
+    const readMonitorDeliveryState = driver.readMonitorDeliveryState.bind(driver);
+    const limits = [];
+    driver.readMonitorDeliveryState = (monitorId, options = {}) => {
+      limits.push(options.limit);
+      const snapshot = readMonitorDeliveryState(monitorId);
+      const cursors = snapshot.cursors.slice(0, options.limit);
+      return {
+        ...snapshot,
+        cursors,
+        overflow: {
+          ...snapshot.overflow,
+          cursors: snapshot.cursors.length > options.limit,
+        },
+      };
+    };
+    const monitorBridge = bridge(driver);
+
+    await monitorBridge.acknowledgeDelivery('monitor-1', deliveryReceipt(event));
+    await monitorBridge.recordTerminalReceipt(terminalReceipt([event]));
+
+    expect(limits).toEqual([128, 128]);
+  });
+
   test('records one terminal receipt across restarts and rejects a conflicting terminal', async () => {
     const driver = createDurableDriver();
     const events = [monitorEvent({ sequence: 0 }), monitorEvent({ sequence: 1 })];
