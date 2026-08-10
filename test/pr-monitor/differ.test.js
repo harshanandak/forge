@@ -43,6 +43,8 @@ describe('diffVerdictEvidence exact-current-head changes', () => {
   const head2 = '2'.repeat(40);
   const verdict = (state, headSha, codes = []) => ({
     state,
+    repository: 'owner/repo',
+    prNumber: 42,
     headSha,
     baseSha: 'a'.repeat(40),
     reasons: codes.map((code) => ({ code })),
@@ -58,8 +60,12 @@ describe('diffVerdictEvidence exact-current-head changes', () => {
       headChanged: true,
       stateChanged: true,
       baseChanged: false,
+      repositoryChanged: false,
+      prChanged: false,
       from: 'BLOCKED',
       to: 'MERGE_READY',
+      repository: 'owner/repo',
+      prNumber: 42,
       headSha: head2,
       baseSha: 'a'.repeat(40),
       addedReasons: [],
@@ -89,13 +95,58 @@ describe('diffVerdictEvidence exact-current-head changes', () => {
       headChanged: false,
       stateChanged: false,
       baseChanged: true,
+      repositoryChanged: false,
+      prChanged: false,
       from: 'MERGE_READY',
       to: 'MERGE_READY',
+      repository: 'owner/repo',
+      prNumber: 42,
       headSha: head1,
       baseSha: 'b'.repeat(40),
       addedReasons: [],
       removedReasons: [],
     });
+  });
+
+  test('retains repository and PR identity and detects replay-only changes', () => {
+    const previous = verdict('MERGE_READY', head1);
+    const repositoryReplay = { ...previous, repository: 'other/repo' };
+    const prReplay = { ...previous, prNumber: 43 };
+    expect(diffVerdictEvidence(previous, repositoryReplay)).toMatchObject({
+      changed: true,
+      repositoryChanged: true,
+      prChanged: false,
+      repository: 'other/repo',
+      prNumber: 42,
+    });
+    expect(diffVerdictEvidence(previous, prReplay)).toMatchObject({
+      changed: true,
+      repositoryChanged: false,
+      prChanged: true,
+      repository: 'owner/repo',
+      prNumber: 43,
+    });
+  });
+
+  test('is descriptor-safe for root/nested accessors and hostile or revoked proxies', () => {
+    let getterCalls = 0;
+    const accessor = { ...verdict('MERGE_READY', head1) };
+    Object.defineProperty(accessor, 'state', {
+      enumerable: true,
+      get() { getterCalls += 1; throw new Error('getter must not run'); },
+    });
+    expect(diffVerdictEvidence(null, accessor).to).toBe('INCOMPLETE');
+
+    const hostile = new Proxy(verdict('MERGE_READY', head1), {
+      get() { getterCalls += 1; throw new Error('get trap must not run'); },
+      ownKeys() { getterCalls += 1; throw new Error('ownKeys trap must not run'); },
+    });
+    expect(diffVerdictEvidence(null, hostile).to).toBe('INCOMPLETE');
+
+    const revoked = Proxy.revocable(verdict('MERGE_READY', head1), {});
+    revoked.revoke();
+    expect(diffVerdictEvidence(null, revoked.proxy).to).toBe('INCOMPLETE');
+    expect(getterCalls).toBe(0);
   });
 });
 
