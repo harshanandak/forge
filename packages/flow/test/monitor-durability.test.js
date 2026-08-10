@@ -103,6 +103,8 @@ function createDurableDriver() {
     deliveryReceipts: new Map(),
     cursors: new Map(),
     terminals: new Map(),
+    staleTerminal: false,
+    terminalWrites: 0,
     log: [],
   };
 
@@ -155,6 +157,9 @@ function createDurableDriver() {
     },
     recordMonitorTerminalReceipt(receipt) {
       requireAvailable();
+      if (state.staleTerminal) {
+        throw new Error('stale monitor terminal sequence: last_sequence does not match durable events');
+      }
       const prior = state.terminals.get(receipt.payload.monitor_id);
       if (prior) {
         if (prior.content_hash !== receipt.content_hash) {
@@ -163,6 +168,7 @@ function createDurableDriver() {
         return { monitorId: receipt.payload.monitor_id, idempotent: true };
       }
       state.terminals.set(receipt.payload.monitor_id, receipt);
+      state.terminalWrites += 1;
       return { monitorId: receipt.payload.monitor_id, idempotent: false };
     },
     listMonitorEvents(monitorId) {
@@ -367,6 +373,46 @@ describe('monitor durability bridge', () => {
       code: 'INCOMPLETE_TERMINAL_EVIDENCE',
     });
     expect(driver.state.terminals.size).toBe(0);
+    expect(driver.state.terminalWrites).toBe(0);
+  });
+
+  test('rejects FAIL with incomplete event evidence without writing a terminal receipt', async () => {
+    const driver = createDurableDriver();
+    const stored = monitorEvent();
+    await bridge(driver).persistEvent(stored);
+    const receipt = terminalReceipt([stored], {
+      terminalState: 'FAIL',
+      evidenceDigest: ZERO_HASH,
+    });
+
+    await expect(bridge(driver).recordTerminalReceipt(receipt)).rejects.toMatchObject({
+      code: 'INCOMPLETE_TERMINAL_EVIDENCE',
+    });
+    expect(driver.state.terminals.size).toBe(0);
+    expect(driver.state.terminalWrites).toBe(0);
+  });
+
+  test('preserves the legitimate empty-history FAIL terminal receipt', async () => {
+    const driver = createDurableDriver();
+    const receipt = terminalReceipt([], { terminalState: 'FAIL' });
+
+    const result = await bridge(driver).recordTerminalReceipt(receipt);
+
+    expect(result.persistence.idempotent).toBe(false);
+    expect(driver.state.terminals.size).toBe(1);
+  });
+
+  test('maps stale terminal sequence provider errors to incomplete evidence', async () => {
+    const driver = createDurableDriver();
+    const event = monitorEvent();
+    await bridge(driver).persistEvent(event);
+    driver.state.staleTerminal = true;
+
+    await expect(bridge(driver).recordTerminalReceipt(terminalReceipt([event]))).rejects.toMatchObject({
+      code: 'INCOMPLETE_TERMINAL_EVIDENCE',
+    });
+    expect(driver.state.terminals.size).toBe(0);
+    expect(driver.state.terminalWrites).toBe(0);
   });
 
   test('rejects hostile accessor input without invoking it or reaching the provider', async () => {

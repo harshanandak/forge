@@ -124,6 +124,12 @@ function mapProviderFailure(error) {
   if (message.includes("stale") && message.includes("cursor")) {
     return new MonitorDurabilityError("STALE_CURSOR", "Monitor delivery cursor is stale");
   }
+  if (message.includes("stale") && message.includes("terminal")) {
+    return new MonitorDurabilityError(
+      "INCOMPLETE_TERMINAL_EVIDENCE",
+      "Monitor terminal evidence is stale",
+    );
+  }
   return new MonitorDurabilityError("PROVIDER_UNAVAILABLE", "Monitor durability provider unavailable");
 }
 
@@ -163,14 +169,21 @@ function assertRows(value, monitorId) {
   return rows;
 }
 
-function assertPassEvidence(receipt, rows) {
-  if (receipt.payload.terminal_state !== "PASS") return;
-  if (rows.length === 0 || rows.at(-1).sequence !== receipt.payload.last_sequence) {
-    fail("INCOMPLETE_TERMINAL_EVIDENCE", "PASS receipt does not cover durable monitor events");
-  }
+function assertTerminalEvidence(receipt, rows) {
+  const terminalState = receipt.payload.terminal_state;
+  if (terminalState !== "PASS" && terminalState !== "FAIL") return;
   const digest = computeContentHash({ evidence_hashes: rows.map((row) => row.content_hash) });
+  if (rows.length === 0) {
+    if (terminalState === "FAIL" && receipt.payload.last_sequence === 0 && receipt.payload.evidence_digest === digest) {
+      return;
+    }
+    fail("INCOMPLETE_TERMINAL_EVIDENCE", `${terminalState} receipt does not cover durable monitor events`);
+  }
+  if (rows.at(-1).sequence !== receipt.payload.last_sequence) {
+    fail("INCOMPLETE_TERMINAL_EVIDENCE", `${terminalState} receipt does not cover durable monitor events`);
+  }
   if (digest !== receipt.payload.evidence_digest) {
-    fail("INCOMPLETE_TERMINAL_EVIDENCE", "PASS receipt evidence digest is incomplete");
+    fail("INCOMPLETE_TERMINAL_EVIDENCE", `${terminalState} receipt evidence digest is incomplete`);
   }
 }
 
@@ -221,7 +234,7 @@ function createMonitorDurabilityBridge(options) {
       const safeConfig = snapshotCanonical(config, "monitor terminal config");
       const monitorId = safeReceipt.payload.monitor_id;
       const rows = assertRows(await providerCall(() => listEvents(monitorId, safeConfig)), monitorId);
-      assertPassEvidence(safeReceipt, rows);
+      assertTerminalEvidence(safeReceipt, rows);
       const persistence = await providerCall(() => recordTerminalReceipt(safeReceipt, safeConfig));
       return Object.freeze({ persistence });
     },
