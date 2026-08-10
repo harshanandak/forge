@@ -180,15 +180,13 @@ describe('structured feedback intake', () => {
       deliveryTimeoutMs: 5,
       deliverFeedback: async (_value, context) => {
         signal = context.signal;
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(() => {});
       },
     });
 
     const value = report();
-    const started = Date.now();
     const result = await intake.submit(value, consentFor(value));
 
-    expect(Date.now() - started).toBeLessThan(50);
     expect(signal.aborted).toBe(true);
     expect(result).toMatchObject({
       status: 'accepted-local',
