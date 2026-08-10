@@ -21,9 +21,9 @@ describe('kernel migration plans', () => {
 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_events (\n  id TEXT NOT NULL PRIMARY KEY,\n  entity_type TEXT NOT NULL,\n  entity_id TEXT NOT NULL,\n  event_type TEXT NOT NULL,\n  idempotency_key TEXT NOT NULL,\n  actor TEXT NOT NULL,\n  origin TEXT NOT NULL,\n  payload_json TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);');
 		expect(plan.apply).toContain('ALTER TABLE kernel_events ADD COLUMN expected_revision INTEGER NOT NULL DEFAULT 0;');
 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_outbox (\n  id TEXT NOT NULL PRIMARY KEY,\n  event_id TEXT NOT NULL REFERENCES kernel_events(id),\n  target TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT \'pending\',\n  attempts INTEGER NOT NULL DEFAULT 0,\n  next_attempt_at TEXT,\n  created_at TEXT NOT NULL\n);');
-		// Rollback runs migrations in reverse, so 009 (the latest migration) rolls back
-		// after the non-destructive monitor rollback disables writers without dropping evidence.
-		expect(plan.rollback[0]).toBe('UPDATE memory_monitor_writer_state SET enabled = 0 WHERE singleton = 1;');
+		// Rollback runs migrations in reverse. Evidence remains retained while fresh writes
+		// are disabled before the monitor writer is demoted.
+		expect(plan.rollback[0]).toBe('UPDATE memory_usage_writer_state SET enabled = 0 WHERE singleton = 1;');
 		expect(plan.rollback).toContain('DROP TABLE IF EXISTS kernel_pr;');
 		expect(plan.rollback).toContain('DROP INDEX IF EXISTS idx_kernel_memories_source_agent;');
 		expect(plan.rollback).toContain('DROP TABLE IF EXISTS kernel_memories;');
@@ -44,6 +44,25 @@ describe('kernel migration plans', () => {
 			'008_kernel_memories_fts',
 			'009_kernel_pr_linkage',
 			'010_memory_monitor_durability',
+			'011_memory_usage_evidence',
+		]);
+	});
+
+	test('migration 011 adds usage evidence and rolls back by disabling usage writes only', () => {
+		const { buildUsageEvidenceMigration } = require('../../lib/kernel/migrations');
+		const migration = buildUsageEvidenceMigration();
+		const applied = migration.apply.join('\n');
+
+		expect(migration.id).toBe('011_memory_usage_evidence');
+		for (const table of [
+			'memory_usage_writer_state',
+			'memory_usage_events',
+			'memory_usage_projection',
+		]) expect(applied).toContain(`CREATE TABLE IF NOT EXISTS ${table}`);
+		expect(applied).toContain('idx_memory_usage_events_memory_observed');
+		expect(applied).toContain('idx_memory_usage_projection_scope_last_used_memory');
+		expect(migration.rollback).toEqual([
+			'UPDATE memory_usage_writer_state SET enabled = 0 WHERE singleton = 1;',
 		]);
 	});
 

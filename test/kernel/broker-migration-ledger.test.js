@@ -132,6 +132,7 @@ describe('Kernel broker — migration ledger', () => {
 			'008_kernel_memories_fts',
 			'009_kernel_pr_linkage',
 			'010_memory_monitor_durability',
+			'011_memory_usage_evidence',
 		]);
 
 		const after = await driver.queryAll('PRAGMA table_info(kernel_issues);', config);
@@ -163,7 +164,7 @@ describe('Kernel broker — migration ledger', () => {
 		expect(reapplied.migrationsNewlyApplied).toEqual([]);
 	});
 
-	test('upgrades a beta.5 database through ledgered monitor migration and preserves evidence on rollback', async () => {
+	test('upgrades a beta.5 database through ledgered evidence migrations and preserves evidence on rollback', async () => {
 		const migrations = require('../../lib/kernel/migrations');
 		const priorPlan = buildKernelMigrationPlan([
 			migrations.buildSchemaMigration(),
@@ -179,7 +180,7 @@ describe('Kernel broker — migration ledger', () => {
 		await makeBroker(priorPlan).initialize();
 
 		const upgraded = await makeBroker().initialize();
-		expect(upgraded.migrationsNewlyApplied).toEqual(['010_memory_monitor_durability']);
+		expect(upgraded.migrationsNewlyApplied).toEqual(['010_memory_monitor_durability', '011_memory_usage_evidence']);
 		const tableNames = [
 			'memory_monitor_writer_state',
 			'memory_monitor_events',
@@ -206,6 +207,7 @@ describe('Kernel broker — migration ledger', () => {
 			schema_id: 'forge.memory.monitor-event.v1', content_hash: 'b'.repeat(64), created_at: '2026-08-10T00:00:00.000Z',
 			payload: { monitor_id: 'monitor-upgrade', event_id: 'event-after-rollback', sequence: 1 },
 		}, ['terminal'], config)).rejects.toThrow('disabled');
+
 	});
 
 	test('two brokers initializing the same DB concurrently both succeed with one ledger row per migration', async () => {

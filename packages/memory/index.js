@@ -62,5 +62,6 @@ module.exports = {
   ...require('./src/authority-provider'),
   ...require('./src/backend-registry'),
   ...require('./src/feedback-intake'),
+  ...require('./src/usage-evidence'),
   createMonitorStore,
 };
