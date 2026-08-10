@@ -197,6 +197,43 @@ describe("MonitorSpec deterministic reducer", () => {
     expect(ended.state).toMatchObject({ lifecycle: "TERMINATING", terminalState: "CANCELLED" });
   });
 
+  test.each([
+    ["run-terminal", undefined],
+    ["run-terminal", "UNKNOWN"],
+    ["subject-terminal", undefined],
+    ["subject-terminal", "UNKNOWN"],
+  ])("rejects %s without an explicit contract terminal state (%s)", (kind, terminalState) => {
+    const monitorSpec = spec({ terminalPredicate: () => false });
+
+    expect(() => reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
+      kind,
+      terminalState,
+    })).toThrow("terminal state");
+  });
+
+  test("rejects cancellation acknowledgement until cancellation was requested", () => {
+    const monitorSpec = spec({ terminalPredicate: () => false });
+
+    expect(() => reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
+      kind: "cancel-acknowledged",
+      observedAt: "2026-08-09T12:02:00.000Z",
+    })).toThrow("cancellation acknowledgement");
+  });
+
+  test("bounds recent observation identity and evidence history", () => {
+    const monitorSpec = spec({ maxHistory: 2, terminalPredicate: () => false });
+    let state = createMonitorState(monitorSpec);
+    for (let sequence = 0; sequence < 3; sequence += 1) {
+      state = reduceMonitor(monitorSpec, state, {
+        kind: "observation",
+        event: observation(sequence, `STATE-${sequence}`, { actionability: "advisory" }),
+      }).state;
+    }
+
+    expect(Object.keys(state.seenEvents)).toEqual(["event-1", "event-2"]);
+    expect(state.evidenceHashes).toHaveLength(2);
+  });
+
   test("rejects every event after terminal cleanup", () => {
     const monitorSpec = spec({ terminalPredicate: () => false });
     const terminating = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {

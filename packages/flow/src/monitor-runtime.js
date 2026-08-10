@@ -8,6 +8,8 @@ const {
 } = require("@forge/memory-contracts");
 
 const LIFETIMES = new Set(["session", "run", "subject"]);
+const TERMINAL_STATES = new Set(["PASS", "FAIL", "INCOMPLETE", "CANCELLED"]);
+const MAX_HISTORY = 128;
 
 class MonitorRuntimeError extends Error {
   constructor(code, message, details = []) {
@@ -39,6 +41,10 @@ function validateSpec(spec) {
   if (!Number.isInteger(spec.maxPending) || spec.maxPending < 1) throw new TypeError("maxPending must be positive");
   if (!Number.isInteger(spec.maxRetries) || spec.maxRetries < 0) throw new TypeError("maxRetries must be non-negative");
   if (!Number.isInteger(spec.retryBaseMs) || spec.retryBaseMs < 1) throw new TypeError("retryBaseMs must be positive");
+  if (spec.maxHistory !== undefined
+    && (!Number.isInteger(spec.maxHistory) || spec.maxHistory < 1 || spec.maxHistory > MAX_HISTORY)) {
+    throw new TypeError("maxHistory must be an integer from 1 to 128");
+  }
 }
 
 function createMonitorState(spec) {
@@ -115,6 +121,13 @@ function reduceObservation(spec, state, event) {
   const next = structuredClone(state);
   next.seenEvents[payload.event_id] = { sequence: payload.sequence, contentHash: event.content_hash };
   next.evidenceHashes.push(event.content_hash);
+  const maxHistory = spec.maxHistory ?? MAX_HISTORY;
+  while (Object.keys(next.seenEvents).length > maxHistory) {
+    delete next.seenEvents[Object.keys(next.seenEvents)[0]];
+  }
+  if (next.evidenceHashes.length > maxHistory) {
+    next.evidenceHashes.splice(0, next.evidenceHashes.length - maxHistory);
+  }
   next.lastSequence = payload.sequence;
   if (spec.filter && !spec.filter(payload.bounded_payload ?? {}, event)) return result(next);
 
@@ -157,6 +170,9 @@ function reduceAcknowledgement(spec, state, event) {
   const next = structuredClone(state);
   next.acknowledgementCursor = event.sequence;
   next.pending = next.pending.filter((item) => item.sequence > event.sequence);
+  for (const sequence of Object.keys(next.retryCounts)) {
+    if (Number(sequence) <= event.sequence) delete next.retryCounts[sequence];
+  }
   const effects = [];
   while (next.pending.length < spec.maxPending && next.deferred.length > 0) {
     const delivery = next.deferred.shift();
@@ -196,6 +212,9 @@ function reduceActive(spec, state, event) {
     case "cancel-requested":
       return result({ ...state, cancellationRequested: true }, [{ type: "CANCEL_SOURCE" }]);
     case "cancel-acknowledged":
+      if (!state.cancellationRequested) {
+        throw new MonitorRuntimeError("UNREQUESTED_CANCELLATION_ACK", "Invalid cancellation acknowledgement");
+      }
       return terminating(state, "CANCELLED", "cancellation acknowledged", { cancellationAcknowledged: true });
     case "deadline":
       return Date.parse(nonEmptyString(event.observedAt, "observedAt")) < Date.parse(spec.deadline)
@@ -203,10 +222,19 @@ function reduceActive(spec, state, event) {
         : terminating(state, "INCOMPLETE", "deadline exceeded");
     case "session-ended":
       return spec.lifetime === "session" ? terminating(state, "CANCELLED", "session lifetime ended") : result(state);
-    case "run-terminal":
-      return spec.lifetime === "run" ? terminating(state, event.terminalState === "FAIL" ? "FAIL" : "PASS", "owner run terminal") : result(state);
-    case "subject-terminal":
-      return terminating(state, event.terminalState === "FAIL" ? "FAIL" : "PASS", "subject terminal");
+    case "run-terminal": {
+      if (spec.lifetime !== "run") return result(state);
+      if (!TERMINAL_STATES.has(event.terminalState)) {
+        throw new MonitorRuntimeError("INVALID_TERMINAL_STATE", "Invalid terminal state");
+      }
+      return terminating(state, event.terminalState, "owner run terminal");
+    }
+    case "subject-terminal": {
+      if (!TERMINAL_STATES.has(event.terminalState)) {
+        throw new MonitorRuntimeError("INVALID_TERMINAL_STATE", "Invalid terminal state");
+      }
+      return terminating(state, event.terminalState, "subject terminal");
+    }
     case "lease-lost": return terminating(state, "INCOMPLETE", "lease lost");
     default: throw new MonitorRuntimeError("UNKNOWN_EVENT", `Unsupported monitor event: ${event.kind}`);
   }
