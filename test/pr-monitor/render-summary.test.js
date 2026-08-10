@@ -2,7 +2,12 @@
 
 const { describe, test, expect } = require('bun:test');
 
-const { renderSummary } = require('../../lib/pr-monitor/render-summary');
+const {
+  MAX_SUMMARY_CHARS,
+  MAX_SUMMARY_CHECKS,
+  MAX_SUMMARY_THREADS,
+  renderSummary,
+} = require('../../lib/pr-monitor/render-summary');
 
 /**
  * Build a minimal bundle in the exact shape gatherPrBundle emits
@@ -28,9 +33,19 @@ function makeBundle(overrides = {}) {
 
 const NOW = new Date('2026-07-15T10:00:00Z');
 
+function expectIncompleteBlocked(result) {
+  expect(result.evidenceStatus).toBe('INCOMPLETE');
+  expect(result.body).toContain('`INCOMPLETE`');
+  expect(result.body).toContain('merge readiness blocked');
+  expect(result.body).not.toContain('clean-mergeable');
+  expect(result.body).not.toContain('ready for a human to merge');
+  expect(result.body).toContain('Detailed JSON: `forge shepherd 123 --pull --json`');
+  expect(result.body).toContain('Updated 2026-07-15T10:00:00.000Z');
+}
+
 describe('renderSummary', () => {
   test('renders a deterministic Actions summary without a sticky marker or comment API language', () => {
-    const { body } = renderSummary(makeBundle(), { now: NOW, verdict: 'CLEAN-MERGEABLE' });
+    const { body, evidenceStatus, threadState } = renderSummary(makeBundle(), { now: NOW, verdict: 'CLEAN-MERGEABLE' });
     expect(body).toContain('Forge PR Monitor');
     expect(body).toContain('clean-mergeable');
     expect(body).toContain('Updated 2026-07-15T10:00:00.000Z');
@@ -38,6 +53,8 @@ describe('renderSummary', () => {
     expect(body).not.toContain('<!-- forge-pr-monitor -->');
     expect(body.toLowerCase()).not.toContain('sticky comment');
     expect(body.toLowerCase()).toContain('does not merge');
+    expect(evidenceStatus).toBe('COMPLETE');
+    expect(threadState).toBe('ZERO');
   });
 
   test('an UNKNOWN verdict names which signal(s) were unreadable', () => {
@@ -87,27 +104,35 @@ describe('renderSummary', () => {
       unresolvedCommentsAvailable: false,
       unresolvedCommentsError: 'GraphQL 502',
     });
-    const { body } = renderSummary(bundle, { now: NOW });
+    const result = renderSummary(bundle, { now: NOW, verdict: 'CLEAN-MERGEABLE' });
+    const { body, evidenceStatus, threadState } = result;
     expect(body.toLowerCase()).toContain('unreadable');
     expect(body).toContain('GraphQL 502');
     expect(body.toLowerCase()).not.toContain('no unresolved review threads');
+    expect(evidenceStatus).toBe('INCOMPLETE');
+    expect(threadState).toBe('INCOMPLETE');
+    expectIncompleteBlocked(result);
   });
 
   test('unread CI never renders a false clean check state', () => {
     const bundle = makeBundle({ ciAvailable: false, ci: { checks: [], failing: [], pending: [] } });
-    const { body } = renderSummary(bundle, { now: NOW });
+    const result = renderSummary(bundle, { now: NOW, verdict: 'CLEAN-MERGEABLE' });
+    const { body } = result;
     expect(body.toLowerCase()).not.toContain('no failing or pending checks');
     expect(body.toLowerCase()).toContain('checks were **unreadable**'.toLowerCase());
+    expectIncompleteBlocked(result);
   });
 
   test('missing availability flags remain fail-closed', () => {
     const bundle = makeBundle();
     delete bundle.ciAvailable;
     delete bundle.unresolvedCommentsAvailable;
-    const { body } = renderSummary(bundle, { now: NOW });
+    const result = renderSummary(bundle, { now: NOW, verdict: 'CLEAN-MERGEABLE' });
+    const { body } = result;
     expect(body.toLowerCase()).not.toContain('no failing or pending checks');
     expect(body.toLowerCase()).not.toContain('no unresolved review threads');
     expect(body.toLowerCase()).toContain('unreadable');
+    expectIncompleteBlocked(result);
   });
 
   test('surfaces branch lag and never presents merge authority', () => {
@@ -121,6 +146,82 @@ describe('renderSummary', () => {
     const a = renderSummary(makeBundle(), { now: NOW }).body;
     const b = renderSummary(makeBundle(), { now: NOW }).body;
     expect(a).toBe(b);
+  });
+
+  test('marks over-limit thread evidence incomplete while keeping its summary bounded', () => {
+    const secret = 'ghp_123456789012345678901234567890';
+    const unresolvedComments = Array.from({ length: MAX_SUMMARY_THREADS + 1 }, (_, index) => ({
+      author: `reviewer-${index}-${secret}`,
+      path: `C:\\Users\\alice\\private-${index}.js`,
+      line: index,
+      threadId: `thread-${index}`,
+      comments: [],
+    }));
+    const first = renderSummary(makeBundle({
+      unresolvedComments,
+    }), { now: NOW, verdict: 'CLEAN-MERGEABLE' });
+    const second = renderSummary(makeBundle({
+      unresolvedComments,
+    }), { now: NOW, verdict: 'CLEAN-MERGEABLE' });
+
+    expect(first.body.length).toBeLessThanOrEqual(MAX_SUMMARY_CHARS);
+    expect(first.body).not.toContain(secret);
+    expect(first.body).not.toContain('alice');
+    expect(first.body).toContain('more');
+    expect(first.evidenceStatus).toBe('INCOMPLETE');
+    expect(first.threadState).toBe('INCOMPLETE');
+    expectIncompleteBlocked(first);
+    expect(first).toEqual(second);
+  });
+
+  test('marks every over-limit check array incomplete', () => {
+    for (const surface of ['checks', 'failing', 'pending']) {
+      const ci = { checks: [], failing: [], pending: [] };
+      ci[surface] = Array.from({ length: MAX_SUMMARY_CHECKS + 1 }, (_, index) => ({
+        name: `${surface}-${index}`,
+      }));
+
+      const result = renderSummary(makeBundle({ ci }), { now: NOW, verdict: 'CLEAN-MERGEABLE' });
+      expect(result).toMatchObject({
+        evidenceStatus: 'INCOMPLETE',
+        threadState: 'ZERO',
+      });
+      expectIncompleteBlocked(result);
+    }
+  });
+
+  test('redacts hostile check evidence', () => {
+    const secret = 'ghp_123456789012345678901234567890';
+    const { body, evidenceStatus } = renderSummary(makeBundle({
+      ci: { checks: [], failing: [{ name: `check-${secret}` }], pending: [] },
+    }), { now: NOW });
+
+    expect(body).not.toContain(secret);
+    expect(body).toContain('[REDACTED]');
+    expect(evidenceStatus).toBe('COMPLETE');
+  });
+
+  test('marks malformed thread and check items incomplete instead of rendering them', () => {
+    const malformedThread = renderSummary(makeBundle({ unresolvedComments: [{}] }), {
+      now: NOW,
+      verdict: 'CLEAN-MERGEABLE',
+    });
+    expect(malformedThread).toMatchObject({
+      evidenceStatus: 'INCOMPLETE',
+      threadState: 'INCOMPLETE',
+    });
+    expectIncompleteBlocked(malformedThread);
+
+    for (const surface of ['checks', 'failing', 'pending']) {
+      const ci = { checks: [], failing: [], pending: [] };
+      ci[surface] = [{}];
+      const result = renderSummary(makeBundle({ ci }), { now: NOW, verdict: 'CLEAN-MERGEABLE' });
+      expect(result).toMatchObject({
+        evidenceStatus: 'INCOMPLETE',
+        threadState: 'ZERO',
+      });
+      expectIncompleteBlocked(result);
+    }
   });
 
   test('keeps untrusted thread locators and check names inside safe code fences', () => {

@@ -3,6 +3,7 @@
 const { describe, test, expect } = require('bun:test');
 const { gatherPrSnapshot } = require('../lib/pr-pull');
 const { isFailed } = require('../lib/pr-shepherd');
+const { normalizeSnapshot } = require('../lib/pr-monitor/gather');
 
 /** A fake pr-state adapter that records the ORDER of its method calls. */
 function recordingAdapter(order) {
@@ -60,6 +61,26 @@ describe('gatherPrSnapshot — the shared monitor gather', () => {
     expect(snap.unreadable).toContain('fetchBase');
     expect(snap.degraded.some((d) => d.source === 'fetchBase')).toBe(true);
     expect(snap.verdict).toBe('UNKNOWN');
+  });
+
+  test('normalizes provider actor mechanism without display-name inference', async () => {
+    const adapter = recordingAdapter([]);
+    adapter.readComments = () => [{
+      threadId: 't1', isResolved: false, isOutdated: false, path: 'lib/a.js',
+      comments: [{ author: 'ordinary-name', authorType: 'Bot', body: 'fix', commentId: '1' }],
+    }];
+    adapter.readReviews = () => [{
+      author: 'coderabbitai[bot]', authorTypename: 'User', state: 'COMMENTED',
+      commitOid: 'h1', submittedAt: 't1',
+    }];
+    const raw = await gatherPrSnapshot({
+      pr: '1', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      adapter, self: 'forge-bot', now: 2000, settleWindowMs: 0,
+    });
+    const normalized = normalizeSnapshot(raw, { repo: 'r', pr: '1' });
+
+    expect(normalized.threads[0].actorKind).toBe('bot');
+    expect(normalized.reviews[0].actorKind).toBe('user');
   });
 });
 

@@ -1,14 +1,57 @@
 const { describe, test, expect } = require('bun:test');
 
 const {
+  REVIEW_EVIDENCE_LIMITS,
   ReviewAdapter,
   REQUIRED_REVIEW_ADAPTER_METHODS,
+  classifyReviewActor,
+  normalizeEvidenceText,
   validateReviewAdapter,
 } = require('../lib/review-adapter');
 const { GreptileReviewAdapter } = require('../lib/adapters/greptile-review-adapter');
 const { matchThreadsToCommits } = require('../lib/greptile-match');
 
 describe('ReviewAdapter SPI', () => {
+  test('classifies bots by provider mechanism rather than display name', () => {
+    expect(classifyReviewActor({ author: 'ordinary-name', authorTypename: 'Bot' })).toBe('bot');
+    expect(classifyReviewActor({ author: 'renovate[bot]', authorTypename: 'User' })).toBe('user');
+    expect(classifyReviewActor({ author: 'coderabbitai[bot]' })).toBe('unknown');
+  });
+
+  test('normalizes bounded privacy-safe evidence text', () => {
+    const secret = 'ghp_123456789012345678901234567890';
+    const normalized = normalizeEvidenceText(`failure ${secret} at C:\\Users\\alice\\private\nnext`, {
+      maxChars: REVIEW_EVIDENCE_LIMITS.maxTextChars,
+    });
+    expect(normalized).not.toContain(secret);
+    expect(normalized).not.toContain('alice');
+    expect(normalized).not.toContain('\n');
+    expect(normalized.length).toBeLessThanOrEqual(REVIEW_EVIDENCE_LIMITS.maxTextChars);
+  });
+
+  test('redacts established secret and root-path classes in nested key/value text', () => {
+    const githubPat = `github_pat_${'x'.repeat(30)}`;
+    const awsKey = `AKIA${'A1'.repeat(8)}`;
+    const nested = JSON.stringify({
+      nested: {
+        [githubPat]: awsKey,
+        path: '/root/forge/private.txt',
+      },
+    });
+    const normalized = normalizeEvidenceText(nested);
+
+    expect(normalized).not.toContain(githubPat);
+    expect(normalized).not.toContain(awsKey);
+    expect(normalized).not.toContain('/root/forge/private.txt');
+    expect(normalized).toContain('[REDACTED]');
+    expect(normalized).toContain('[REDACTED_PATH]');
+  });
+
+  test('does not over-redact benign secret-like controls', () => {
+    const benign = 'github_pat_short AKIA123 /rooted/project root cause';
+    expect(normalizeEvidenceText(benign)).toBe(benign);
+  });
+
   test('base adapter documents the required review lifecycle methods', () => {
     expect(REQUIRED_REVIEW_ADAPTER_METHODS).toEqual([
       'fetchThreads',
