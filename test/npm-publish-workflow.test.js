@@ -26,6 +26,16 @@ const repoRoot = path.resolve(__dirname, '..');
 const bashExecutable = process.platform === 'win32'
 	? path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe')
 	: 'bash';
+const TEST_HEAD = 'a'.repeat(40);
+
+function generationOptions(overrides = {}) {
+	return {
+		actor: 'release-test',
+		expectedHead: TEST_HEAD,
+		resolveHead: () => TEST_HEAD,
+		...overrides,
+	};
+}
 
 function normalizeNewlines(content) {
 	return content.replace(/\r\n/g, '\n');
@@ -190,10 +200,10 @@ describe('Forge-owned npm publish workflow', () => {
 		try {
 			expect(spawnSync('git', ['init'], { cwd: root }).status).toBe(0);
 			const result = await releaseCommand.handler(
-				['generate-npm-workflow'],
+				['generate-npm-workflow', '--expect-head', TEST_HEAD],
 				{},
 				root,
-				{ env: { FORGE_ACTOR: 'release-test' } },
+				{ env: { FORGE_ACTOR: 'release-test' }, resolveHead: () => TEST_HEAD },
 			);
 
 			expect(result.success).toBe(true);
@@ -211,9 +221,39 @@ describe('Forge-owned npm publish workflow', () => {
 				path: NPM_PUBLISH_WORKFLOW_PATH,
 				requiredSurface: 'workflows',
 				decision: 'allowed',
+				viaForgeApi: true,
+				sourceHead: TEST_HEAD,
 			});
 			expect(records.at(-1).contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
 			expect(result.generated.trustedAuthorization.capabilityId).toBeTruthy();
+			expect(result.generated.trustedAuthorization.event.sourceHead).toBe(TEST_HEAD);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test.each([
+		{ label: 'missing', expectedHead: undefined, resolvedHead: TEST_HEAD, error: '--expect-head is required' },
+		{ label: 'abbreviated', expectedHead: TEST_HEAD.slice(0, 12), resolvedHead: TEST_HEAD, error: 'full 40-character lowercase commit SHA' },
+		{ label: 'mismatched', expectedHead: TEST_HEAD, resolvedHead: 'b'.repeat(40), error: 'does not match current HEAD' },
+	])('fails closed before writing for $label expected HEAD', async ({ expectedHead, resolvedHead, error }) => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-head-gate-'));
+		let writeCalls = 0;
+		try {
+			const result = await generateNpmPublishWorkflow(root, generationOptions({
+				expectedHead,
+				resolveHead: () => resolvedHead,
+				writeProtectedFile: () => {
+					writeCalls += 1;
+					throw new Error('must not write');
+				},
+			}));
+
+			expect(result).toMatchObject({ success: false });
+			expect(result.error).toContain(error);
+			expect(writeCalls).toBe(0);
+			expect(fs.existsSync(path.join(root, NPM_PUBLISH_WORKFLOW_PATH))).toBe(false);
+			expect(fs.existsSync(path.join(root, PROTECTED_STATE_AUDIT_LOG))).toBe(false);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -223,8 +263,7 @@ describe('Forge-owned npm publish workflow', () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-write-failure-'));
 		let auditCalls = 0;
 		try {
-			const result = await generateNpmPublishWorkflow(root, {
-				actor: 'release-test',
+			const result = await generateNpmPublishWorkflow(root, generationOptions({
 				writeProtectedFile: () => ({
 					allowed: false,
 					decision: 'blocked',
@@ -234,7 +273,7 @@ describe('Forge-owned npm publish workflow', () => {
 					auditCalls += 1;
 					return { success: true };
 				},
-			});
+			}));
 
 			expect(result).toMatchObject({ success: false, error: 'injected write failure' });
 			expect(auditCalls).toBe(0);
@@ -251,13 +290,12 @@ describe('Forge-owned npm publish workflow', () => {
 		try {
 			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
 			fs.writeFileSync(workflowPath, previous);
-			const result = await generateNpmPublishWorkflow(root, {
-				actor: 'release-test',
+			const result = await generateNpmPublishWorkflow(root, generationOptions({
 				recordProtectedStateAuditEvent: () => ({
 					success: false,
 					error: 'audit sink unavailable',
 				}),
-			});
+			}));
 
 			expect(result).toMatchObject({
 				success: false,
@@ -273,12 +311,11 @@ describe('Forge-owned npm publish workflow', () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-audit-throw-'));
 		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
 		try {
-			const result = await generateNpmPublishWorkflow(root, {
-				actor: 'release-test',
+			const result = await generateNpmPublishWorkflow(root, generationOptions({
 				recordProtectedStateAuditEvent: () => {
 					throw new Error('audit sink exploded');
 				},
-			});
+			}));
 
 			expect(result).toMatchObject({
 				success: false,
@@ -315,7 +352,7 @@ describe('Forge-owned npm publish workflow', () => {
 				return realWriteFileSync(target, ...args);
 			};
 
-			const result = await generateNpmPublishWorkflow(root, { actor: 'release-test' });
+			const result = await generateNpmPublishWorkflow(root, generationOptions());
 			expect(result).toMatchObject({
 				success: false,
 				error: 'Could not record protected-state authorization: forced audit temp failure',
@@ -337,13 +374,12 @@ describe('Forge-owned npm publish workflow', () => {
 		try {
 			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
 			fs.writeFileSync(workflowPath, previous);
-			const result = await generateNpmPublishWorkflow(root, {
-				actor: 'release-test',
+			const result = await generateNpmPublishWorkflow(root, generationOptions({
 				issueNpmPublishWorkflowAuthorization: async () => ({
 					success: false,
 					error: 'kernel authority unavailable',
 				}),
-			});
+			}));
 
 			expect(result).toMatchObject({
 				success: false,
@@ -367,8 +403,12 @@ describe('Forge-owned npm publish workflow', () => {
 		});
 		try {
 			expect(run('git', ['init']).status).toBe(0);
+			expect(run('git', ['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+			expect(run('git', ['config', 'user.name', 'Forge Test']).status).toBe(0);
+			expect(run('git', ['commit', '--allow-empty', '-m', 'base']).status).toBe(0);
+			const head = run('git', ['rev-parse', 'HEAD']).stdout.trim();
 			expect((await releaseCommand.handler(
-				['generate-npm-workflow'],
+				['generate-npm-workflow', '--expect-head', head],
 				{},
 				root,
 				{ env: { FORGE_ACTOR: actor } },
@@ -380,11 +420,11 @@ describe('Forge-owned npm publish workflow', () => {
 				env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: `${actor}-other` },
 			});
 			expect(wrongActor.status).toBe(1);
-			expect(`${wrongActor.stdout}${wrongActor.stderr}`).toContain('content-bound authorization');
+			expect(`${wrongActor.stdout}${wrongActor.stderr}`).toContain('authorization');
 			expect(check().status).toBe(0);
 
 			expect((await releaseCommand.handler(
-				['generate-npm-workflow'],
+				['generate-npm-workflow', '--expect-head', head],
 				{},
 				root,
 				{ env: { FORGE_ACTOR: actor } },
@@ -393,7 +433,7 @@ describe('Forge-owned npm publish workflow', () => {
 			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
 			const rawEdit = check();
 			expect(rawEdit.status).toBe(1);
-			expect(`${rawEdit.stdout}${rawEdit.stderr}`).toContain('content-bound authorization');
+			expect(`${rawEdit.stdout}${rawEdit.stderr}`).toContain('authorization');
 
 			fs.rmSync(path.join(root, '.git', 'forge'), { recursive: true, force: true });
 			const missingEvidence = check();
@@ -452,8 +492,15 @@ describe('Forge-owned npm publish workflow', () => {
 		const run = (command, args) => spawnSync(command, args, { cwd: root, encoding: 'utf8' });
 		try {
 			expect(run('git', ['init']).status).toBe(0);
+			expect(run('git', ['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+			expect(run('git', ['config', 'user.name', 'Forge Test']).status).toBe(0);
+			expect(run('git', ['commit', '--allow-empty', '-m', 'base']).status).toBe(0);
+			const head = run('git', ['rev-parse', 'HEAD']).stdout.trim();
 			expect(protectedStateAuthority.issueProtectedStateAuthorization).toBeUndefined();
-			const authorization = await protectedStateAuthority.issueNpmPublishWorkflowAuthorization(root, { actor });
+			const authorization = await protectedStateAuthority.issueNpmPublishWorkflowAuthorization(root, {
+				actor,
+				sourceHead: head,
+			});
 			expect(authorization.success).toBe(true);
 			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
 			fs.writeFileSync(workflowPath, arbitraryContent, 'utf8');
@@ -466,7 +513,7 @@ describe('Forge-owned npm publish workflow', () => {
 			});
 
 			expect(result.status).toBe(1);
-			expect(`${result.stdout}${result.stderr}`).toContain('content-bound authorization');
+			expect(`${result.stdout}${result.stderr}`).toContain('authorization');
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -487,8 +534,10 @@ describe('Forge-owned npm publish workflow', () => {
 			expect(run('git', ['init']).status).toBe(0);
 			expect(run('git', ['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
 			expect(run('git', ['config', 'user.name', 'Forge Test']).status).toBe(0);
+			expect(run('git', ['commit', '--allow-empty', '-m', 'base']).status).toBe(0);
+			const head = run('git', ['rev-parse', 'HEAD']).stdout.trim();
 			expect((await releaseCommand.handler(
-				['generate-npm-workflow'],
+				['generate-npm-workflow', '--expect-head', head],
 				{},
 				root,
 				{ env: { FORGE_ACTOR: actor } },

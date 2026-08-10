@@ -79,6 +79,18 @@ function getStagedContent(file) {
 	}
 }
 
+function getCurrentHead() {
+	try {
+		const head = execFileSync('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
+			encoding: 'utf8',
+			stdio: ['ignore', 'pipe', 'pipe'],
+		}).trim();
+		return /^[0-9a-f]{40}$/.test(head) ? head : null;
+	} catch {
+		return null;
+	}
+}
+
 async function main() {
 	const actor =
 		process.env.FORGE_PROTECTED_STATE_ACTOR ||
@@ -86,6 +98,7 @@ async function main() {
 		process.env.USER ||
 		process.env.USERNAME ||
 		'unknown';
+	const sourceHead = getCurrentHead();
 	const probes = getStagedFiles()
 		.map(file => {
 			const probe = assertProtectedWriteAllowed(file, { actor, operation: 'staged_edit' });
@@ -110,6 +123,7 @@ async function main() {
 					path: probe.path,
 					content,
 					operation: 'staged_edit',
+					sourceHead,
 				},
 			};
 		});

@@ -11,6 +11,7 @@ const {
 } = require('../lib/protected-state-authority');
 
 const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
+const TEST_HEAD = 'a'.repeat(40);
 
 const target = {
 	actor: 'forge-release',
@@ -18,6 +19,7 @@ const target = {
 	path: '.github/workflows/npm-publish.yml',
 	content: 'generated: true\n',
 	worktreeScope: 'scope-a',
+	sourceHead: TEST_HEAD,
 };
 
 function eventRow(eventType, capabilityId, overrides = {}) {
@@ -44,6 +46,9 @@ function eventRow(eventType, capabilityId, overrides = {}) {
 			contentHash: hashProtectedContent(content),
 			worktreeScope: overrides.worktreeScope || target.worktreeScope,
 			operation: eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED ? 'generate_npm_workflow' : 'staged_edit',
+			sourceHead: Object.prototype.hasOwnProperty.call(overrides, 'sourceHead')
+				? overrides.sourceHead
+				: target.sourceHead,
 			sourceCommand: overrides.sourceCommand || (
 				eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
 					? NPM_WORKFLOW_SOURCE_COMMAND
@@ -77,6 +82,20 @@ describe('protected-state Kernel authority', () => {
 			requiredSurface: target.surface,
 			capabilityId: 'capability-1',
 		});
+	});
+
+	test('fails closed when the staged HEAD differs from or is absent on the capability', () => {
+		const mismatched = evaluateAuthorization(
+			{ ...target, sourceHead: 'b'.repeat(40) },
+			[eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-head')],
+		);
+		const missing = evaluateAuthorization(
+			target,
+			[eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-missing-head', { sourceHead: undefined })],
+		);
+
+		expect(mismatched).toMatchObject({ allowed: false, decision: 'blocked' });
+		expect(missing).toMatchObject({ allowed: false, decision: 'blocked' });
 	});
 
 	test('fails closed on cross-actor, cross-surface, and malformed issuer records', () => {
