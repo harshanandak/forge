@@ -7,7 +7,6 @@ const {
   validateContractStructure,
 } = require("@forge/memory-contracts");
 
-const MAX_EVENTS_PER_RECEIPT = 4096;
 const MAX_EVIDENCE_HISTORY = 128;
 const MAX_INPUT_BYTES = 1_048_576;
 const MAX_MONITOR_ID_LENGTH = 128;
@@ -129,18 +128,26 @@ function assertTargets(value) {
 }
 
 function mapProviderFailure(error) {
-  const message = error instanceof Error ? error.message.toLowerCase() : "";
-  if (message.includes("conflict")) {
+  const code = typeof error?.code === "string" ? error.code : "";
+  if ([
+    "MONITOR_EVENT_CONFLICT",
+    "MONITOR_TARGET_SET_CONFLICT",
+    "MONITOR_DELIVERY_CONFLICT",
+    "MONITOR_RECEIPT_CONFLICT",
+  ].includes(code)) {
     return new MonitorDurabilityError("IDENTITY_CONFLICT", "Monitor identity/content conflict");
   }
-  if (message.includes("stale") && message.includes("cursor")) {
+  if (code === "MONITOR_STALE_CURSOR") {
     return new MonitorDurabilityError("STALE_CURSOR", "Monitor delivery cursor is stale");
   }
-  if (message.includes("stale") && message.includes("terminal")) {
+  if (code === "MONITOR_STALE_TERMINAL") {
     return new MonitorDurabilityError(
       "INCOMPLETE_TERMINAL_EVIDENCE",
       "Monitor terminal evidence is stale",
     );
+  }
+  if (code === "MONITOR_TERMINAL") {
+    return new MonitorDurabilityError("TERMINAL_FENCED", "Monitor is already terminal");
   }
   return new MonitorDurabilityError("PROVIDER_UNAVAILABLE", "Monitor durability provider unavailable");
 }
@@ -154,12 +161,11 @@ async function providerCall(operation) {
   }
 }
 
-function assertRows(value, monitorId) {
-  const snapshot = snapshotCanonical(value, "monitor event history");
-  if (!Array.isArray(snapshot) || snapshot.length > MAX_EVENTS_PER_RECEIPT) {
+function assertRows(value, monitorId, limit = MAX_EVIDENCE_HISTORY) {
+  if (!Array.isArray(value) || value.length > limit) {
     fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event history is unavailable or exceeds its bound");
   }
-  const rows = snapshot.map((row) => {
+  const rows = value.map((row) => {
     if (
       !row ||
       typeof row !== "object" ||
@@ -179,6 +185,86 @@ function assertRows(value, monitorId) {
     }
   }
   return rows;
+}
+
+function assertEvent(value, monitorId, eventId) {
+  const snapshot = snapshotCanonical(value, "monitor event");
+  if (
+    !snapshot ||
+    typeof snapshot !== "object" ||
+    snapshot.monitor_id !== monitorId ||
+    snapshot.event_id !== eventId
+  ) {
+    fail("INPUT_INVALID", "Delivery receipt references an unknown monitor event");
+  }
+  const [event] = assertRows([snapshot], monitorId, 1);
+  return event;
+}
+
+function assertTail(value, monitorId, maxHistory) {
+  const snapshot = snapshotCanonical(value, "monitor event tail");
+  if (
+    !snapshot ||
+    typeof snapshot !== "object" ||
+    Array.isArray(snapshot) ||
+    typeof snapshot.overflow !== "boolean"
+  ) {
+    fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event tail is incomplete");
+  }
+  const rows = assertRows(snapshot.events, monitorId, maxHistory);
+  const expectedTruncation = snapshot.overflow && rows.length > 0 ? rows[0].sequence : null;
+  if (
+    (snapshot.overflow && rows.length !== maxHistory) ||
+    snapshot.truncated_before_sequence !== expectedTruncation
+  ) {
+    fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event tail overflow metadata is inconsistent");
+  }
+  return rows;
+}
+
+function assertDeliveryState(value, monitorId) {
+  const snapshot = snapshotCanonical(value, "monitor delivery state");
+  if (
+    !snapshot ||
+    typeof snapshot !== "object" ||
+    Array.isArray(snapshot) ||
+    !Array.isArray(snapshot.cursors) ||
+    !Array.isArray(snapshot.outbox) ||
+    !snapshot.overflow ||
+    typeof snapshot.overflow.cursors !== "boolean" ||
+    typeof snapshot.overflow.outbox !== "boolean"
+  ) {
+    fail("PROVIDER_UNAVAILABLE", "Monitor delivery state is incomplete");
+  }
+  if (snapshot.overflow.cursors) {
+    fail("PROVIDER_UNAVAILABLE", "Monitor delivery cursor state exceeds its bound");
+  }
+  const cursors = snapshot.cursors.map((cursor) => {
+    if (
+      !cursor ||
+      typeof cursor !== "object" ||
+      cursor.monitor_id !== monitorId ||
+      typeof cursor.target !== "string" ||
+      !Number.isSafeInteger(cursor.sequence) ||
+      cursor.sequence < 0
+    ) {
+      fail("PROVIDER_UNAVAILABLE", "Monitor delivery cursor state is incomplete");
+    }
+    return cursor;
+  });
+  const terminal = snapshot.terminal_receipt;
+  if (
+    terminal !== null && (
+      !terminal ||
+      typeof terminal !== "object" ||
+      terminal.monitor_id !== monitorId ||
+      !SHA256.test(terminal.content_hash) ||
+      typeof terminal.envelope_json !== "string"
+    )
+  ) {
+    fail("PROVIDER_UNAVAILABLE", "Monitor terminal state is incomplete");
+  }
+  return { cursors, terminal };
 }
 
 function assertHistoryWidth(config) {
@@ -213,7 +299,9 @@ function createMonitorDurabilityBridge(options) {
   const appendEvent = assertMethod(store, "appendEvent");
   const recordDeliveryReceipt = assertMethod(store, "recordDeliveryReceipt");
   const recordTerminalReceipt = assertMethod(store, "recordTerminalReceipt");
-  const listEvents = assertMethod(store, "listEvents");
+  const getEvent = assertMethod(store, "getEvent");
+  const readEventTail = assertMethod(store, "readEventTail");
+  const readDeliveryState = assertMethod(store, "readDeliveryState");
   const targets = assertTargets(ownValue(options, "deliveryTargets"));
   const deliver = ownValue(options, "deliver");
   if (typeof deliver !== "function") {
@@ -240,24 +328,63 @@ function createMonitorDurabilityBridge(options) {
 
     async acknowledgeDelivery(monitorId, receipt, config = {}) {
       const safeMonitorId = assertMonitorId(monitorId);
-      const safeReceipt = assertEnvelope(receipt, "forge.memory.delivery-receipt.v1");
-      const safeConfig = snapshotCanonical(config, "monitor acknowledgement config");
+      const safeReceipt = immutableSnapshot(
+        assertEnvelope(receipt, "forge.memory.delivery-receipt.v1"),
+        "monitor delivery receipt",
+      );
+      const safeConfig = immutableSnapshot(config, "monitor acknowledgement config");
       if (!targets.includes(safeReceipt.payload.target)) {
         fail("INPUT_INVALID", "Delivery receipt target is outside the monitor targets");
       }
-      const rows = assertRows(await providerCall(() => listEvents(safeMonitorId, safeConfig)), safeMonitorId);
-      const event = rows.find((row) => row.event_id === safeReceipt.payload.event_id);
-      if (!event) fail("INPUT_INVALID", "Delivery receipt references an unknown monitor event");
+      const event = assertEvent(
+        await providerCall(() => getEvent(safeReceipt.payload.event_id, safeConfig)),
+        safeMonitorId,
+        safeReceipt.payload.event_id,
+      );
+      const deliveryState = assertDeliveryState(
+        await providerCall(() => readDeliveryState(
+          safeMonitorId,
+          { limit: targets.length },
+          safeConfig,
+        )),
+        safeMonitorId,
+      );
+      const cursor = deliveryState.cursors.find(({ target }) => target === safeReceipt.payload.target);
+      if (cursor && cursor.sequence > event.sequence) {
+        fail("STALE_CURSOR", "Monitor delivery cursor is stale");
+      }
       const persistence = await providerCall(() => recordDeliveryReceipt(safeReceipt, safeConfig));
       return Object.freeze({ persistence, sequence: event.sequence });
     },
 
     async recordTerminalReceipt(receipt, config = {}) {
-      const safeReceipt = assertEnvelope(receipt, "forge.memory.monitor-receipt.v1");
+      const safeReceipt = immutableSnapshot(
+        assertEnvelope(receipt, "forge.memory.monitor-receipt.v1"),
+        "monitor terminal receipt",
+      );
       const safeConfig = immutableSnapshot(config, "monitor terminal config");
       const maxHistory = assertHistoryWidth(safeConfig);
       const monitorId = safeReceipt.payload.monitor_id;
-      const rows = assertRows(await providerCall(() => listEvents(monitorId, safeConfig)), monitorId);
+      const deliveryState = assertDeliveryState(
+        await providerCall(() => readDeliveryState(
+          monitorId,
+          { limit: targets.length },
+          safeConfig,
+        )),
+        monitorId,
+      );
+      if (deliveryState.terminal) {
+        if (deliveryState.terminal.content_hash !== safeReceipt.content_hash) {
+          fail("IDENTITY_CONFLICT", "Monitor identity/content conflict");
+        }
+        const persistence = await providerCall(() => recordTerminalReceipt(safeReceipt, safeConfig));
+        return Object.freeze({ persistence });
+      }
+      const rows = assertTail(
+        await providerCall(() => readEventTail(monitorId, { limit: maxHistory }, safeConfig)),
+        monitorId,
+        maxHistory,
+      );
       assertTerminalEvidence(safeReceipt, rows, maxHistory);
       const persistence = await providerCall(() => recordTerminalReceipt(safeReceipt, safeConfig));
       return Object.freeze({ persistence });

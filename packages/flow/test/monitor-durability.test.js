@@ -95,6 +95,24 @@ function terminalReceipt(events, overrides = {}) {
   );
 }
 
+function monitorProviderError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function eventRow(event) {
+  return {
+    event_id: event.payload.event_id,
+    monitor_id: event.payload.monitor_id,
+    sequence: event.payload.sequence,
+    content_hash: event.content_hash,
+    envelope_json: canonicalize(event),
+    artifact_digest: event.payload.artifact_digest,
+    created_at: event.created_at,
+  };
+}
+
 function createDurableDriver() {
   const state = {
     available: true,
@@ -105,7 +123,10 @@ function createDurableDriver() {
     terminals: new Map(),
     staleTerminal: false,
     terminalWrites: 0,
-    listLimit: undefined,
+    tailResultOverride: undefined,
+    eventReads: 0,
+    tailReads: 0,
+    deliveryStateReads: 0,
     log: [],
   };
 
@@ -117,6 +138,9 @@ function createDurableDriver() {
     state,
     appendMonitorEvent(event, targets) {
       requireAvailable();
+      if (state.terminals.has(event.payload.monitor_id)) {
+        throw monitorProviderError('MONITOR_TERMINAL', 'monitor already has a terminal receipt');
+      }
       const monitorKey = `${event.payload.monitor_id}:${event.payload.sequence}`;
       const existingById = state.events.get(event.payload.event_id);
       const existingByPosition = state.identity.get(monitorKey);
@@ -126,7 +150,7 @@ function createDurableDriver() {
           existing.event.content_hash !== event.content_hash ||
           canonicalize(existing.targets) !== canonicalize(targets)
         ) {
-          throw new Error('monitor event identity conflict');
+          throw monitorProviderError('MONITOR_EVENT_CONFLICT', 'monitor event identity conflict');
         }
         return { eventId: event.payload.event_id, idempotent: true };
       }
@@ -144,14 +168,16 @@ function createDurableDriver() {
       const priorReceipt = state.deliveryReceipts.get(receipt.object_id);
       if (priorReceipt) {
         if (priorReceipt.content_hash !== receipt.content_hash) {
-          throw new Error('delivery receipt identity conflict');
+          throw monitorProviderError('MONITOR_DELIVERY_CONFLICT', 'delivery receipt identity conflict');
         }
         return { receiptId: receipt.object_id, idempotent: true };
       }
 
       const cursorKey = `${event.payload.monitor_id}:${receipt.payload.target}`;
       const cursor = state.cursors.get(cursorKey) ?? -1;
-      if (event.payload.sequence < cursor) throw new Error('stale delivery cursor');
+      if (event.payload.sequence < cursor) {
+        throw monitorProviderError('MONITOR_STALE_CURSOR', 'stale delivery cursor');
+      }
       state.deliveryReceipts.set(receipt.object_id, receipt);
       state.cursors.set(cursorKey, Math.max(cursor, event.payload.sequence));
       return { receiptId: receipt.object_id, idempotent: false };
@@ -159,12 +185,15 @@ function createDurableDriver() {
     recordMonitorTerminalReceipt(receipt) {
       requireAvailable();
       if (state.staleTerminal) {
-        throw new Error('stale monitor terminal sequence: last_sequence does not match durable events');
+        throw monitorProviderError(
+          'MONITOR_STALE_TERMINAL',
+          'stale monitor terminal sequence: last_sequence does not match durable events',
+        );
       }
       const prior = state.terminals.get(receipt.payload.monitor_id);
       if (prior) {
         if (prior.content_hash !== receipt.content_hash) {
-          throw new Error('terminal receipt identity conflict');
+          throw monitorProviderError('MONITOR_RECEIPT_CONFLICT', 'terminal receipt identity conflict');
         }
         return { monitorId: receipt.payload.monitor_id, idempotent: true };
       }
@@ -172,29 +201,60 @@ function createDurableDriver() {
       state.terminalWrites += 1;
       return { monitorId: receipt.payload.monitor_id, idempotent: false };
     },
-    listMonitorEvents(monitorId) {
+    getMonitorEvent(eventId) {
       requireAvailable();
+      state.eventReads += 1;
+      const event = state.events.get(eventId)?.event;
+      return event ? eventRow(event) : null;
+    },
+    readMonitorEventTail(monitorId, options = {}) {
+      requireAvailable();
+      state.tailReads += 1;
+      if (state.tailResultOverride !== undefined) return state.tailResultOverride;
       const rows = [...state.events.values()]
         .map(({ event }) => event)
         .filter((event) => event.payload.monitor_id === monitorId)
         .sort((left, right) => left.payload.sequence - right.payload.sequence)
-        .map((event) => ({
-          event_id: event.payload.event_id,
-          monitor_id: event.payload.monitor_id,
-          sequence: event.payload.sequence,
-          content_hash: event.content_hash,
-          envelope_json: canonicalize(event),
-          artifact_digest: event.payload.artifact_digest,
-          created_at: event.created_at,
+        .map(eventRow);
+      const limit = options.limit ?? 128;
+      const events = rows.slice(-limit);
+      return {
+        events,
+        overflow: rows.length > limit,
+        truncated_before_sequence: rows.length > limit ? events[0].sequence : null,
+      };
+    },
+    readMonitorDeliveryState(monitorId) {
+      requireAvailable();
+      state.deliveryStateReads += 1;
+      const cursors = [...state.cursors.entries()]
+        .filter(([key]) => key.startsWith(`${monitorId}:`))
+        .map(([key, sequence]) => ({
+          monitor_id: monitorId,
+          target: key.slice(monitorId.length + 1),
+          sequence,
+          updated_at: '2026-08-10T00:01:00.000Z',
         }));
-      return state.listLimit === undefined ? rows : rows.slice(0, state.listLimit);
+      const terminal = state.terminals.get(monitorId);
+      return {
+        cursors,
+        outbox: [],
+        terminal_receipt: terminal ? {
+          monitor_id: monitorId,
+          content_hash: terminal.content_hash,
+          envelope_json: canonicalize(terminal),
+        } : null,
+        overflow: { cursors: false, outbox: false },
+      };
     },
   };
 }
 
 function bridge(driver, deliver = async () => undefined) {
+  const store = createMonitorStore(driver);
+  delete store.listEvents;
   return createMonitorDurabilityBridge({
-    store: createMonitorStore(driver),
+    store,
     deliveryTargets: ['target-1'],
     deliver,
   });
@@ -244,6 +304,17 @@ describe('monitor durability bridge', () => {
     expect(driver.state.events.size).toBe(0);
   });
 
+  test('classifies only exact public monitor codes and ignores provider message bait', async () => {
+    const driver = createDurableDriver();
+    driver.appendMonitorEvent = () => {
+      throw new Error('conflict stale cursor terminal');
+    };
+
+    await expect(bridge(driver).persistEvent(monitorEvent())).rejects.toMatchObject({
+      code: 'PROVIDER_UNAVAILABLE',
+    });
+  });
+
   test('rejects hash-consistent structurally invalid events and receipts before provider calls', async () => {
     const driver = createDurableDriver();
     const deliver = mock(async () => undefined);
@@ -259,13 +330,6 @@ describe('monitor durability bridge', () => {
     expect(deliver).not.toHaveBeenCalled();
 
     await bridge(driver).persistEvent(validEvent);
-    let listCalls = 0;
-    const originalList = driver.listMonitorEvents;
-    driver.listMonitorEvents = (...args) => {
-      listCalls += 1;
-      return originalList.call(driver, ...args);
-    };
-
     const validDelivery = deliveryReceipt(validEvent);
     const invalidDeliveryPayload = { ...validDelivery.payload };
     delete invalidDeliveryPayload.event_id;
@@ -282,12 +346,13 @@ describe('monitor durability bridge', () => {
       code: 'INPUT_INVALID',
     });
 
-    expect(listCalls).toBe(0);
+    expect(driver.state.eventReads).toBe(0);
+    expect(driver.state.tailReads).toBe(0);
     expect(driver.state.deliveryReceipts.size).toBe(0);
     expect(driver.state.terminals.size).toBe(0);
   });
 
-  test('rejects monitor IDs that are not bounded before append or list provider calls', async () => {
+  test('rejects monitor IDs that are not bounded before append or bounded provider reads', async () => {
     const driver = createDurableDriver();
     const longMonitorId = 'm'.repeat(129);
     const deliver = mock(async () => undefined);
@@ -298,17 +363,13 @@ describe('monitor durability bridge', () => {
 
     const validEvent = monitorEvent();
     await bridge(driver).persistEvent(validEvent);
-    let listCalls = 0;
-    const originalList = driver.listMonitorEvents;
-    driver.listMonitorEvents = (...args) => {
-      listCalls += 1;
-      return originalList.call(driver, ...args);
-    };
     await expect(bridge(driver).acknowledgeDelivery(longMonitorId, deliveryReceipt(validEvent)))
       .rejects.toMatchObject({ code: 'INPUT_INVALID' });
     await expect(bridge(driver).recordTerminalReceipt(terminalReceipt([validEvent], { monitorId: longMonitorId })))
       .rejects.toMatchObject({ code: 'INPUT_INVALID' });
-    expect(listCalls).toBe(0);
+    expect(driver.state.eventReads).toBe(0);
+    expect(driver.state.tailReads).toBe(0);
+    expect(driver.state.deliveryStateReads).toBe(0);
   });
 
   test('reports delivery failure without hiding that the event is already durable', async () => {
@@ -344,6 +405,23 @@ describe('monitor durability bridge', () => {
       bridge(driver).acknowledgeDelivery('monitor-1', deliveryReceipt(firstEvent)),
     ).rejects.toMatchObject({ code: 'STALE_CURSOR' });
     expect(driver.state.cursors.get('monitor-1:target-1')).toBe(1);
+    expect(driver.state.eventReads).toBe(3);
+    expect(driver.state.deliveryStateReads).toBe(3);
+  });
+
+  test('rejects missing and cross-monitor acknowledgement events through getEvent', async () => {
+    const driver = createDurableDriver();
+    const stored = monitorEvent({ monitorId: 'monitor-2' });
+    await bridge(driver).persistEvent(stored);
+
+    await expect(
+      bridge(driver).acknowledgeDelivery('monitor-1', deliveryReceipt(stored)),
+    ).rejects.toMatchObject({ code: 'INPUT_INVALID' });
+    const unknown = monitorEvent({ eventId: 'missing-event' });
+    await expect(
+      bridge(driver).acknowledgeDelivery('monitor-1', deliveryReceipt(unknown)),
+    ).rejects.toMatchObject({ code: 'INPUT_INVALID' });
+    expect(driver.state.eventReads).toBe(2);
   });
 
   test('records one terminal receipt across restarts and rejects a conflicting terminal', async () => {
@@ -354,15 +432,30 @@ describe('monitor durability bridge', () => {
     const receipt = terminalReceipt(events);
 
     const first = await firstBridge.recordTerminalReceipt(receipt);
+    const tailReadsAfterFirst = driver.state.tailReads;
     const replay = await bridge(driver).recordTerminalReceipt(receipt);
     expect(first.persistence.idempotent).toBe(false);
     expect(replay.persistence.idempotent).toBe(true);
     expect(driver.state.terminals.size).toBe(1);
+    expect(driver.state.deliveryStateReads).toBe(2);
+    expect(driver.state.tailReads).toBe(tailReadsAfterFirst);
 
     const conflict = terminalReceipt(events, { terminalReason: 'conflicting terminal result' });
     await expect(bridge(driver).recordTerminalReceipt(conflict)).rejects.toMatchObject({
       code: 'IDENTITY_CONFLICT',
     });
+    expect(driver.state.tailReads).toBe(tailReadsAfterFirst);
+  });
+
+  test('preserves the public terminal fence after restart', async () => {
+    const driver = createDurableDriver();
+    const event = monitorEvent();
+    await bridge(driver).persistEvent(event);
+    await bridge(driver).recordTerminalReceipt(terminalReceipt([event]));
+
+    await expect(
+      bridge(driver).persistEvent(monitorEvent({ sequence: 1 })),
+    ).rejects.toMatchObject({ code: 'TERMINAL_FENCED' });
   });
 
   test('rejects PASS with incomplete event evidence without consuming the terminal slot', async () => {
@@ -451,7 +544,11 @@ describe('monitor durability bridge', () => {
     }));
     const monitorBridge = bridge(driver);
     for (const event of events) await monitorBridge.persistEvent(event);
-    driver.state.listLimit = 128;
+    driver.state.tailResultOverride = {
+      events: events.slice(0, 128).map(eventRow),
+      overflow: true,
+      truncated_before_sequence: 1,
+    };
 
     await expect(monitorBridge.recordTerminalReceipt(terminalReceipt(events))).rejects.toMatchObject({
       code: 'INCOMPLETE_TERMINAL_EVIDENCE',
@@ -525,20 +622,14 @@ describe('monitor durability bridge', () => {
     expect(driver.state.terminalWrites).toBe(0);
   });
 
-  test('rejects an invalid history width before listing or writing terminal evidence', async () => {
+  test('rejects an invalid history width before reading or writing terminal evidence', async () => {
     const driver = createDurableDriver();
     const event = monitorEvent({ sequence: 1 });
     await bridge(driver).persistEvent(event);
-    let listCalls = 0;
-    const originalList = driver.listMonitorEvents;
-    driver.listMonitorEvents = (...args) => {
-      listCalls += 1;
-      return originalList.call(driver, ...args);
-    };
-
     await expect(bridge(driver).recordTerminalReceipt(terminalReceipt([event]), { maxHistory: 0 }))
       .rejects.toMatchObject({ code: 'INPUT_INVALID' });
-    expect(listCalls).toBe(0);
+    expect(driver.state.tailReads).toBe(0);
+    expect(driver.state.deliveryStateReads).toBe(0);
     expect(driver.state.terminals.size).toBe(0);
     expect(driver.state.terminalWrites).toBe(0);
   });
