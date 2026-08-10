@@ -2,35 +2,24 @@
 
 const { describe, expect, test } = require('bun:test');
 const { spawnSync } = require('node:child_process');
-const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
+const { performance } = require('node:perf_hooks');
+const {
+  createSkillEvalFixture,
+  formatPhaseDiagnostics,
+} = require('../helpers/skill-eval-fixture');
 
 const FORGE_BIN = path.resolve(__dirname, '../../bin/forge.js');
 
 describe('forge skill eval behavioral CLI', () => {
   test('real node subprocess rejects a nonexistent issue before runtime or fake PR attribution', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skill-eval-cli-'));
+    let fixture;
+    const phases = {};
     try {
-      fs.mkdirSync(path.join(root, 'skills', 'demo'), { recursive: true });
-      fs.writeFileSync(path.join(root, 'AGENTS.md'), '# test\n');
-      fs.writeFileSync(
-        path.join(root, 'skills', 'demo', 'SKILL.md'),
-        '---\nname: demo\ndescription: behavioral demo\n---\nbody\n',
-      );
-      for (const args of [
-        ['init', '-q'],
-        ['config', 'user.email', 'eval@example.test'],
-        ['config', 'user.name', 'Eval Test'],
-        ['config', 'commit.gpgsign', 'false'],
-        ['config', 'tag.gpgsign', 'false'],
-        ['config', 'core.hooksPath', ''],
-        ['add', '.'],
-        ['commit', '-qm', 'fixture'],
-      ]) {
-        const git = spawnSync('git', args, { cwd: root, encoding: 'utf8', timeout: 20000 });
-        expect(git.status).toBe(0);
-      }
+      fixture = createSkillEvalFixture();
+      Object.assign(phases, fixture.phases);
+      const root = fixture.root;
+      const started = performance.now();
       const result = spawnSync(process.execPath, [
         FORGE_BIN, 'skill', 'eval', 'demo', '--full', '--tier', '30', '--json',
       ], {
@@ -46,6 +35,16 @@ describe('forge skill eval behavioral CLI', () => {
           FORGE_EVAL_PR_HEAD: 'a'.repeat(40),
         },
       });
+      phases.cli = {
+        phase: 'cli',
+        elapsedMs: Math.round(performance.now() - started),
+        status: result.status === null ? 'null' : result.status,
+        signal: result.signal || 'none',
+        error: result.error?.message,
+      };
+      if (result.status === null) {
+        throw new Error('skill-eval CLI did not exit cleanly');
+      }
 
       expect(result.status).toBe(1);
       const output = JSON.parse(result.stdout);
@@ -55,8 +54,11 @@ describe('forge skill eval behavioral CLI', () => {
       expect(output.issueId).toBeUndefined();
       expect(output.pr).toBeUndefined();
       expect(result.stderr).not.toContain('arms.invalid');
+    } catch (error) {
+      const diagnostics = formatPhaseDiagnostics(phases);
+      throw new Error(`${error.message}${diagnostics ? ` [${diagnostics}]` : ''}`);
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      fixture?.cleanup();
     }
   }, 30000);
 });
