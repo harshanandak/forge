@@ -241,6 +241,8 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
     const ctx = greenContext({
       headSha: head,
       expectedHeadSha: head,
+      baseSha: 'a'.repeat(40),
+      expectedBaseSha: 'a'.repeat(40),
       verdict: { state: 'MERGE_READY', headSha: head, baseSha: 'a'.repeat(40), reasons: [] },
     });
     expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
@@ -262,7 +264,33 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
     expect(evaluateMergeRules(greenContext({ verdict, expectedHeadSha: head }), ['verdict_clean']).allowed).toBe(false);
     expect(evaluateMergeRules(greenContext({ verdict, headSha: 'short', expectedHeadSha: 'short' }), ['verdict_clean']).allowed).toBe(false);
     expect(evaluateMergeRules({
-      ...greenContext(), headSha: head, expectedHeadSha: head, verdict: { ...verdict, baseSha: 'short' },
+      ...greenContext(),
+      headSha: head,
+      expectedHeadSha: head,
+      baseSha: 'a'.repeat(40),
+      expectedBaseSha: 'a'.repeat(40),
+      verdict: { ...verdict, baseSha: 'short' },
     }, ['verdict_clean']).allowed).toBe(false);
+  });
+
+  test('verdict_clean requires the observed, expected, and verdict base SHAs to match exactly', () => {
+    const head = '1'.repeat(40);
+    const base = 'a'.repeat(40);
+    const ctx = greenContext({
+      headSha: head,
+      expectedHeadSha: head,
+      baseSha: base,
+      expectedBaseSha: base,
+      verdict: { state: 'MERGE_READY', headSha: head, baseSha: base, reasons: [] },
+    });
+    expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
+    for (const mutation of [
+      { expectedBaseSha: undefined },
+      { baseSha: undefined },
+      { expectedBaseSha: 'b'.repeat(40) },
+      { verdict: { ...ctx.verdict, baseSha: 'b'.repeat(40) } },
+    ]) {
+      expect(evaluateMergeRules({ ...ctx, ...mutation }, ['verdict_clean']).allowed).toBe(false);
+    }
   });
 });

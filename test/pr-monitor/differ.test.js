@@ -57,9 +57,11 @@ describe('diffVerdictEvidence exact-current-head changes', () => {
       changed: true,
       headChanged: true,
       stateChanged: true,
+      baseChanged: false,
       from: 'BLOCKED',
       to: 'MERGE_READY',
       headSha: head2,
+      baseSha: 'a'.repeat(40),
       addedReasons: [],
       removedReasons: ['required_check_not_successful'],
     });
@@ -77,6 +79,23 @@ describe('diffVerdictEvidence exact-current-head changes', () => {
     const change = diffVerdictEvidence(null, { state: 'MERGE_READY', headSha: 'short', reasons: [] });
     expect(change.to).toBe('INCOMPLETE');
     expect(change.addedReasons).toContain('malformed_verdict');
+  });
+
+  test('retains the exact base and treats a base-only advance as a material change', () => {
+    const previous = verdict('MERGE_READY', head1);
+    const next = { ...previous, baseSha: 'b'.repeat(40) };
+    expect(diffVerdictEvidence(previous, next)).toEqual({
+      changed: true,
+      headChanged: false,
+      stateChanged: false,
+      baseChanged: true,
+      from: 'MERGE_READY',
+      to: 'MERGE_READY',
+      headSha: head1,
+      baseSha: 'b'.repeat(40),
+      addedReasons: [],
+      removedReasons: [],
+    });
   });
 });
 

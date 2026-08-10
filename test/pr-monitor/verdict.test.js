@@ -10,6 +10,7 @@ const BASE = 'a'.repeat(40);
 function completeEvidence(overrides = {}) {
   return {
     expectedHeadSha: HEAD,
+    expectedBaseSha: BASE,
     head: { sha: HEAD, repository: 'owner/repo', source: 'same-repository', acquired: true },
     base: { sha: BASE, repository: 'owner/repo' },
     ancestry: {
@@ -25,7 +26,9 @@ function completeEvidence(overrides = {}) {
         { name: 'lint', appId: null, status: 'COMPLETED', conclusion: 'SUCCESS', headSha: HEAD },
       ],
     },
-    review: { complete: true, headSha: HEAD, required: false, decision: 'NONE' },
+    review: {
+      complete: true, headSha: HEAD, required: false, decision: 'NONE', conflicting: false,
+    },
     threads: { complete: true, headSha: HEAD, items: [] },
     ...overrides,
   };
@@ -47,8 +50,14 @@ describe('evaluateCurrentHeadVerdict', () => {
 
   test('fails closed when the expected, observed, or base SHA is absent or malformed', () => {
     expectState(completeEvidence({ expectedHeadSha: 'short' }), VERDICT_STATES.INCOMPLETE, 'invalid_expected_head');
+    expectState(completeEvidence({ expectedBaseSha: 'short' }), VERDICT_STATES.INCOMPLETE, 'invalid_expected_base');
     expectState(completeEvidence({ head: { ...completeEvidence().head, sha: null } }), VERDICT_STATES.INCOMPLETE, 'invalid_observed_head');
     expectState(completeEvidence({ base: { sha: '', repository: 'owner/repo' } }), VERDICT_STATES.INCOMPLETE, 'invalid_base');
+  });
+
+  test('leases the exact base SHA and classifies observed base drift as stale', () => {
+    expectState(completeEvidence({ expectedBaseSha: OTHER_HEAD }), VERDICT_STATES.STALE, 'base_mismatch');
+    expectState(completeEvidence({ expectedBaseSha: undefined }), VERDICT_STATES.INCOMPLETE, 'invalid_expected_base');
   });
 
   test('classifies a moved head or stale surface as STALE, never merge-ready', () => {
@@ -65,9 +74,27 @@ describe('evaluateCurrentHeadVerdict', () => {
 
   test('requires an external or fork head to be explicitly acquired before ancestry is trusted', () => {
     for (const source of ['fork', 'external']) {
-      expectState(completeEvidence({ head: { ...completeEvidence().head, source, acquired: false } }), VERDICT_STATES.INCOMPLETE, 'external_head_not_acquired');
-      expectState(completeEvidence({ head: { ...completeEvidence().head, source, acquired: true } }), VERDICT_STATES.MERGE_READY);
+      const externalHead = { ...completeEvidence().head, repository: 'contributor/fork', source };
+      expectState(completeEvidence({ head: { ...externalHead, acquired: false } }), VERDICT_STATES.INCOMPLETE, 'external_head_not_acquired');
+      expectState(completeEvidence({ head: { ...externalHead, acquired: true } }), VERDICT_STATES.MERGE_READY);
     }
+  });
+
+  test('derives head source from normalized repository identity and rejects contradictory claims', () => {
+    expectState(completeEvidence({
+      head: { ...completeEvidence().head, repository: ' OWNER/REPO ', source: 'same-repository' },
+    }), VERDICT_STATES.MERGE_READY);
+    expectState(completeEvidence({
+      head: { ...completeEvidence().head, source: 'fork' },
+    }), VERDICT_STATES.INCOMPLETE, 'head_source_conflict');
+    expectState(completeEvidence({
+      head: {
+        ...completeEvidence().head, repository: 'contributor/fork', source: 'same-repository', acquired: true,
+      },
+    }), VERDICT_STATES.INCOMPLETE, 'head_source_conflict');
+    expectState(completeEvidence({
+      head: { ...completeEvidence().head, repository: 'contributor/fork', source: 'fork', acquired: true },
+    }), VERDICT_STATES.MERGE_READY);
   });
 
   test('requires every protected check exactly once and literally COMPLETED/SUCCESS', () => {
@@ -145,6 +172,22 @@ describe('evaluateCurrentHeadVerdict', () => {
         { id: 't1', resolved: false, outdated: false },
       ],
     } }), VERDICT_STATES.INCOMPLETE, 'thread_state_conflict');
+  });
+
+  test('requires an explicit boolean review conflict signal and rejects policy contradictions', () => {
+    const review = completeEvidence().review;
+    expectState(completeEvidence({
+      review: { ...review, conflicting: undefined },
+    }), VERDICT_STATES.INCOMPLETE, 'review_malformed');
+    expectState(completeEvidence({
+      review: { ...review, conflicting: 'false' },
+    }), VERDICT_STATES.INCOMPLETE, 'review_malformed');
+    expectState(completeEvidence({
+      review: { ...review, required: false, decision: 'REVIEW_REQUIRED' },
+    }), VERDICT_STATES.INCOMPLETE, 'review_state_conflict');
+    expectState(completeEvidence({
+      review: { ...review, required: false, decision: 'NONE', conflicting: false },
+    }), VERDICT_STATES.MERGE_READY);
   });
 
   test('accepts an optional approval because it does not conflict with a non-required policy', () => {
