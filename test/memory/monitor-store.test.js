@@ -358,6 +358,7 @@ const driver = createBuiltinSQLiteDriver({ databasePath: process.env.MONITOR_RAC
 			`github_pat_${'x'.repeat(30)}`,
 			'/root/forge/private.txt',
 			'\\\\server\\Users\\alice\\private.txt',
+			'C:\\Users\\John Doe\\secret.txt',
 		];
 
 		for (const [index, value] of privateValues.entries()) {

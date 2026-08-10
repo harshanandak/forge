@@ -17,11 +17,7 @@ const PRIVATE_PATH_ROOTS = ['users', 'home', 'root'];
 const MAX_PRIVATE_SCAN_LENGTH = 16_384;
 
 function hasNonWhitespacePathSegment(segment) {
-  if (!segment) return false;
-  for (const character of segment) {
-    if (character.trim() === '') return false;
-  }
-  return true;
+  return Boolean(segment && segment.trim());
 }
 
 function containsPrivateMonitorPath(value) {
