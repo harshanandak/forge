@@ -131,6 +131,7 @@ describe('Kernel broker — migration ledger', () => {
 			'007_kernel_worktrees_linkage_columns',
 			'008_kernel_memories_fts',
 			'009_kernel_pr_linkage',
+			'010_memory_monitor_durability',
 		]);
 
 		const after = await driver.queryAll('PRAGMA table_info(kernel_issues);', config);
@@ -160,6 +161,51 @@ describe('Kernel broker — migration ledger', () => {
 
 		const reapplied = await makeBroker(extendedPlan).initialize();
 		expect(reapplied.migrationsNewlyApplied).toEqual([]);
+	});
+
+	test('upgrades a beta.5 database through ledgered monitor migration and preserves evidence on rollback', async () => {
+		const migrations = require('../../lib/kernel/migrations');
+		const priorPlan = buildKernelMigrationPlan([
+			migrations.buildSchemaMigration(),
+			migrations.buildEventExpectedRevisionMigration(),
+			migrations.buildClaimActiveLeaseMigration(),
+			migrations.buildIssueContentFieldsMigration(),
+			migrations.buildMemoryProjectionMigration(),
+			migrations.buildIssueFidelityColumnsMigration(),
+			migrations.buildWorktreeLinkageColumnsMigration(),
+			migrations.buildMemoryFtsMigration(),
+			migrations.buildPrLinkageMigration(),
+		]);
+		await makeBroker(priorPlan).initialize();
+
+		const upgraded = await makeBroker().initialize();
+		expect(upgraded.migrationsNewlyApplied).toEqual(['010_memory_monitor_durability']);
+		const tableNames = [
+			'memory_monitor_writer_state',
+			'memory_monitor_events',
+			'memory_monitor_outbox',
+			'memory_monitor_delivery_receipts',
+			'memory_monitor_cursors',
+			'memory_monitor_receipts',
+		];
+		const tables = await driver.queryAll("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'memory_monitor_%'", config);
+		expect(tables.map(row => row.name).sort()).toEqual([...tableNames].sort());
+
+		await driver.appendMonitorEvent({
+			schema_id: 'forge.memory.monitor-event.v1', content_hash: 'a'.repeat(64), created_at: '2026-08-10T00:00:00.000Z',
+			payload: { monitor_id: 'monitor-upgrade', event_id: 'event-upgrade', sequence: 0 },
+		}, ['terminal'], config);
+		for (const statement of migrations.buildMonitorDurabilityMigration().rollback) await driver.exec(statement, config);
+
+		for (const table of tableNames) {
+			const rows = await driver.queryAll(`SELECT COUNT(*) AS n FROM ${table}`, config);
+			expect(Number(rows[0].n)).toBeGreaterThanOrEqual(0);
+		}
+		expect(Number((await driver.queryAll('SELECT COUNT(*) AS n FROM memory_monitor_events', config))[0].n)).toBe(1);
+		await expect(driver.appendMonitorEvent({
+			schema_id: 'forge.memory.monitor-event.v1', content_hash: 'b'.repeat(64), created_at: '2026-08-10T00:00:00.000Z',
+			payload: { monitor_id: 'monitor-upgrade', event_id: 'event-after-rollback', sequence: 1 },
+		}, ['terminal'], config)).rejects.toThrow('disabled');
 	});
 
 	test('two brokers initializing the same DB concurrently both succeed with one ledger row per migration', async () => {

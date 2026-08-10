@@ -9,6 +9,7 @@ const memory = require('./index');
 test('@forge/memory exposes the stable backend registry entrypoint', () => {
   expect(memory.BACKEND_METHODS).toEqual(['add', 'recall', 'search', 'capture', 'digest']);
   expect(typeof memory.createMemoryBackendRegistry).toBe('function');
+  expect(typeof memory.createMonitorStore).toBe('function');
 });
 
 test('@forge/memory supports at least the runtime floor required by memory-contracts', () => {
