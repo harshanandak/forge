@@ -1,0 +1,249 @@
+"use strict";
+
+const {
+  canonicalize,
+  computeContentHash,
+  validateContract,
+  validateContractStructure,
+} = require("@forge/memory-contracts");
+
+const LIFETIMES = new Set(["session", "run", "subject"]);
+
+class MonitorRuntimeError extends Error {
+  constructor(code, message, details = []) {
+    super(message);
+    this.name = "MonitorRuntimeError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
+function nonEmptyString(value, name) {
+  if (typeof value !== "string" || value.length === 0) throw new TypeError(`${name} must be a non-empty string`);
+  return value;
+}
+
+function validateSpec(spec) {
+  if (!spec || typeof spec !== "object" || Array.isArray(spec)) throw new TypeError("MonitorSpec must be an object");
+  nonEmptyString(spec.monitorId, "monitorId");
+  nonEmptyString(spec.ownerRunId, "ownerRunId");
+  nonEmptyString(spec.packetId, "packetId");
+  nonEmptyString(spec.subject?.id, "subject.id");
+  nonEmptyString(spec.subject?.revision, "subject.revision");
+  if (!Array.isArray(spec.sourceAdapters) || spec.sourceAdapters.length === 0) throw new TypeError("sourceAdapters must not be empty");
+  if (!Array.isArray(spec.deliveryTargets) || spec.deliveryTargets.length === 0) throw new TypeError("deliveryTargets must not be empty");
+  if (!LIFETIMES.has(spec.lifetime)) throw new TypeError("lifetime is invalid");
+  if (typeof spec.deadline !== "string" || Number.isNaN(Date.parse(spec.deadline))) throw new TypeError("deadline is invalid");
+  if (typeof spec.reducer !== "function" || typeof spec.terminalPredicate !== "function") throw new TypeError("reducer and terminalPredicate are required");
+  if (spec.filter !== undefined && typeof spec.filter !== "function") throw new TypeError("filter must be a function");
+  if (!Number.isInteger(spec.maxPending) || spec.maxPending < 1) throw new TypeError("maxPending must be positive");
+  if (!Number.isInteger(spec.maxRetries) || spec.maxRetries < 0) throw new TypeError("maxRetries must be non-negative");
+  if (!Number.isInteger(spec.retryBaseMs) || spec.retryBaseMs < 1) throw new TypeError("retryBaseMs must be positive");
+}
+
+function createMonitorState(spec) {
+  validateSpec(spec);
+  return {
+    monitorId: spec.monitorId,
+    ownerRunId: spec.ownerRunId,
+    lifecycle: "ACTIVE",
+    value: undefined,
+    valueDigest: undefined,
+    lastSequence: -1,
+    acknowledgementCursor: -1,
+    seenEvents: {},
+    evidenceHashes: [],
+    pending: [],
+    retryCounts: {},
+    cancellationRequested: false,
+    cancellationAcknowledged: false,
+    terminalState: undefined,
+    terminalReason: undefined,
+    processCleanup: undefined,
+    leaseCleanup: undefined,
+    undeliveredCursor: undefined,
+  };
+}
+
+function result(state, effects = [], modelTurns = 0) {
+  return { state, effects, modelTurns };
+}
+
+function terminating(state, terminalState, terminalReason, extra = {}) {
+  return result({
+    ...state,
+    ...extra,
+    lifecycle: "TERMINATING",
+    terminalState,
+    terminalReason,
+    undeliveredCursor: state.pending.length === 0 ? undefined : state.acknowledgementCursor + 1,
+  }, [{ type: "CLEANUP_PROCESS" }, { type: "CLEANUP_LEASE" }]);
+}
+
+function validateObservation(spec, event) {
+  const validation = validateContract(event, {
+    expected: { monitorId: spec.monitorId, subjectRevision: spec.subject.revision },
+  });
+  if (event?.schema_id !== "forge.memory.monitor-event.v1" || !validation.ok) {
+    throw new MonitorRuntimeError("INVALID_OBSERVATION", "MonitorEvent validation failed", validation.errors);
+  }
+  const configuredLimit = spec.securityPolicy?.maxPayloadBytes;
+  if (configuredLimit !== undefined) {
+    const bytes = Buffer.byteLength(canonicalize(event.payload.bounded_payload ?? {}), "utf8");
+    if (bytes > configuredLimit) throw new MonitorRuntimeError("INVALID_OBSERVATION", "MonitorEvent exceeds security policy");
+  }
+}
+
+function reduceObservation(spec, state, event) {
+  validateObservation(spec, event);
+  const payload = event.payload;
+  const seen = state.seenEvents[payload.event_id];
+  if (seen) {
+    if (seen.sequence !== payload.sequence || seen.contentHash !== event.content_hash) {
+      throw new MonitorRuntimeError("IDENTITY_CONFLICT", "MonitorEvent identity conflict");
+    }
+    return result(state);
+  }
+  if (payload.sequence <= state.lastSequence) {
+    throw new MonitorRuntimeError("OUT_OF_ORDER", "MonitorEvent sequence is not monotonic");
+  }
+
+  const next = structuredClone(state);
+  next.seenEvents[payload.event_id] = { sequence: payload.sequence, contentHash: event.content_hash };
+  next.evidenceHashes.push(event.content_hash);
+  next.lastSequence = payload.sequence;
+  if (spec.filter && !spec.filter(payload.bounded_payload ?? {}, event)) return result(next);
+
+  const nextValue = spec.reducer(state.value, payload.bounded_payload ?? {}, event);
+  const nextDigest = computeContentHash({ value: nextValue });
+  const changed = nextDigest !== state.valueDigest;
+  next.value = structuredClone(nextValue);
+  next.valueDigest = nextDigest;
+  if (!changed) return result(next);
+
+  const terminal = spec.terminalPredicate(nextValue, event);
+  if (terminal) {
+    const terminalState = terminal === "FAIL" || nextValue === "FAIL" ? "FAIL" : "PASS";
+    return terminating(next, terminalState, "terminal predicate satisfied");
+  }
+  if (payload.actionability === "advisory") return result(next);
+  if (next.pending.length >= spec.maxPending) {
+    return result(next, [{ type: "BACKPRESSURE", decision: "DEFER", sequence: payload.sequence }]);
+  }
+  next.pending.push({ sequence: payload.sequence, eventId: payload.event_id });
+  return result(next, [{
+    type: "DELIVER",
+    eventId: payload.event_id,
+    sequence: payload.sequence,
+    targets: [...spec.deliveryTargets],
+  }], 1);
+}
+
+function reduceAcknowledgement(state, event) {
+  if (!Number.isInteger(event.sequence) || event.sequence < state.acknowledgementCursor || event.sequence > state.lastSequence) {
+    throw new MonitorRuntimeError("INVALID_ACKNOWLEDGEMENT", "Invalid acknowledgement cursor");
+  }
+  if (event.sequence === state.acknowledgementCursor) return result(state);
+  const next = structuredClone(state);
+  next.acknowledgementCursor = event.sequence;
+  next.pending = next.pending.filter((item) => item.sequence > event.sequence);
+  return result(next);
+}
+
+function reduceDeliveryFailure(spec, state, event) {
+  if (!Number.isInteger(event.sequence) || !state.pending.some((item) => item.sequence === event.sequence)) {
+    throw new MonitorRuntimeError("INVALID_RETRY", "Retry does not reference pending delivery");
+  }
+  const next = structuredClone(state);
+  const attempts = (next.retryCounts[event.sequence] ?? 0) + 1;
+  next.retryCounts[event.sequence] = attempts;
+  if (attempts > spec.maxRetries) return terminating(next, "INCOMPLETE", "delivery retries exhausted");
+  return result(next, [{
+    type: "RETRY_DELIVERY",
+    sequence: event.sequence,
+    attempt: attempts,
+    delayMs: spec.retryBaseMs * (2 ** (attempts - 1)),
+    observedAt: nonEmptyString(event.observedAt, "observedAt"),
+  }]);
+}
+
+function reduceActive(spec, state, event) {
+  switch (event.kind) {
+    case "observation": return reduceObservation(spec, state, event.event);
+    case "acknowledge": return reduceAcknowledgement(state, event);
+    case "delivery-failed": return reduceDeliveryFailure(spec, state, event);
+    case "cancel-requested":
+      return result({ ...state, cancellationRequested: true }, [{ type: "CANCEL_SOURCE" }]);
+    case "cancel-acknowledged":
+      return terminating(state, "CANCELLED", "cancellation acknowledged", { cancellationAcknowledged: true });
+    case "deadline":
+      return Date.parse(nonEmptyString(event.observedAt, "observedAt")) < Date.parse(spec.deadline)
+        ? result(state)
+        : terminating(state, "INCOMPLETE", "deadline exceeded");
+    case "session-ended":
+      return spec.lifetime === "session" ? terminating(state, "CANCELLED", "session lifetime ended") : result(state);
+    case "run-terminal":
+      return spec.lifetime === "run" ? terminating(state, event.terminalState === "FAIL" ? "FAIL" : "PASS", "owner run terminal") : result(state);
+    case "subject-terminal":
+      return terminating(state, event.terminalState === "FAIL" ? "FAIL" : "PASS", "subject terminal");
+    case "lease-lost": return terminating(state, "INCOMPLETE", "lease lost");
+    default: throw new MonitorRuntimeError("UNKNOWN_EVENT", `Unsupported monitor event: ${event.kind}`);
+  }
+}
+
+function reduceMonitor(spec, state, event) {
+  validateSpec(spec);
+  if (!state || state.monitorId !== spec.monitorId || state.ownerRunId !== spec.ownerRunId) {
+    throw new MonitorRuntimeError("STATE_MISMATCH", "Monitor state does not match MonitorSpec");
+  }
+  if (!event || typeof event !== "object" || Array.isArray(event)) throw new MonitorRuntimeError("INVALID_EVENT", "Monitor event is invalid");
+  if (state.lifecycle === "TERMINAL") throw new MonitorRuntimeError("POST_TERMINAL_EVENT", "Monitor rejects post-terminal events");
+  if (state.lifecycle === "TERMINATING") {
+    if (event.kind !== "cleanup-complete") throw new MonitorRuntimeError("TERMINATING_EVENT", "Monitor accepts only cleanup completion while terminating");
+    if (!event.processCleanup || typeof event.processCleanup !== "object" || !event.leaseCleanup || typeof event.leaseCleanup !== "object") {
+      throw new MonitorRuntimeError("INVALID_CLEANUP", "Cleanup proof is required");
+    }
+    return result({
+      ...state,
+      lifecycle: "TERMINAL",
+      processCleanup: structuredClone(event.processCleanup),
+      leaseCleanup: structuredClone(event.leaseCleanup),
+    }, [{ type: "ISSUE_MONITOR_RECEIPT" }]);
+  }
+  return reduceActive(spec, state, event);
+}
+
+function createMonitorReceipt(spec, state, options = {}) {
+  validateSpec(spec);
+  if (state?.lifecycle !== "TERMINAL") throw new MonitorRuntimeError("NOT_TERMINAL", "Monitor is not ready for a receipt");
+  const producerInstanceId = nonEmptyString(options.producerInstanceId, "producerInstanceId");
+  const payload = {
+    monitor_id: spec.monitorId,
+    owner_run_id: spec.ownerRunId,
+    terminal_state: state.terminalState,
+    terminal_reason: state.terminalReason,
+    last_sequence: Math.max(0, state.lastSequence),
+    evidence_digest: computeContentHash({ evidence_hashes: state.evidenceHashes }),
+    cancellation_acknowledged: state.cancellationAcknowledged,
+    process_cleanup: structuredClone(state.processCleanup),
+    lease_cleanup: structuredClone(state.leaseCleanup),
+  };
+  if (state.undeliveredCursor !== undefined) payload.undelivered_cursor = state.undeliveredCursor;
+  const receipt = {
+    schema_id: "forge.memory.monitor-receipt.v1",
+    schema_version: 1,
+    object_id: nonEmptyString(options.objectId, "objectId"),
+    created_at: nonEmptyString(options.createdAt, "createdAt"),
+    producer: { product_id: "forge-flow", product_version: "0.1.0-beta.6", instance_id: producerInstanceId },
+    capabilities_used: [],
+    provenance: { source_kind: "monitor", actor_class: "system", actor_id: producerInstanceId },
+    payload,
+    extensions: {},
+  };
+  receipt.content_hash = computeContentHash(receipt);
+  const validation = validateContractStructure(receipt);
+  if (!validation.ok) throw new MonitorRuntimeError("INVALID_RECEIPT", "MonitorReceipt validation failed", validation.errors);
+  return receipt;
+}
+
+module.exports = { MonitorRuntimeError, createMonitorReceipt, createMonitorState, reduceMonitor };
