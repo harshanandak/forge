@@ -4,7 +4,9 @@ const { describe, expect, mock, test } = require("bun:test");
 const contracts = require("../memory-contracts");
 mock.module("@forge/memory-contracts", () => contracts);
 const { computeContentHash, validateContractStructure } = contracts;
-const { createRunReceiptSkeleton } = require(".");
+const flow = require(".");
+const { createRunReceiptSkeleton } = flow;
+const packageManifest = require("./package.json");
 
 function makeWorkPacket() {
   const packet = {
@@ -43,6 +45,23 @@ function makeWorkPacket() {
 }
 
 describe("Flow contract boundary", () => {
+  test("exports the pure execution, monitoring, supervision, and skill runtime facade", () => {
+    expect(flow).toMatchObject({
+      FlowExecutionError: expect.any(Function),
+      createWorkPacketExecutor: expect.any(Function),
+      MonitorRuntimeError: expect.any(Function),
+      createMonitorReceipt: expect.any(Function),
+      createMonitorState: expect.any(Function),
+      reduceMonitor: expect.any(Function),
+      EfficiencySupervisor: expect.any(Function),
+      SkillRuntime: expect.any(Function),
+    });
+  });
+
+  test("publishes the runtime implementation used by the public facade", () => {
+    expect(packageManifest.files).toContain("src/");
+  });
+
   test("turns a valid WorkPacket into a contract-valid non-execution RunReceipt", () => {
     const packet = makeWorkPacket();
     const receipt = createRunReceiptSkeleton(packet, {
