@@ -29,6 +29,29 @@ describe('ReviewAdapter SPI', () => {
     expect(normalized.length).toBeLessThanOrEqual(REVIEW_EVIDENCE_LIMITS.maxTextChars);
   });
 
+  test('redacts established secret and root-path classes in nested key/value text', () => {
+    const githubPat = `github_pat_${'x'.repeat(30)}`;
+    const awsKey = `AKIA${'A1'.repeat(8)}`;
+    const nested = JSON.stringify({
+      nested: {
+        [githubPat]: awsKey,
+        path: '/root/forge/private.txt',
+      },
+    });
+    const normalized = normalizeEvidenceText(nested);
+
+    expect(normalized).not.toContain(githubPat);
+    expect(normalized).not.toContain(awsKey);
+    expect(normalized).not.toContain('/root/forge/private.txt');
+    expect(normalized).toContain('[REDACTED]');
+    expect(normalized).toContain('[REDACTED_PATH]');
+  });
+
+  test('does not over-redact benign secret-like controls', () => {
+    const benign = 'github_pat_short AKIA123 /rooted/project root cause';
+    expect(normalizeEvidenceText(benign)).toBe(benign);
+  });
+
   test('base adapter documents the required review lifecycle methods', () => {
     expect(REQUIRED_REVIEW_ADAPTER_METHODS).toEqual([
       'fetchThreads',

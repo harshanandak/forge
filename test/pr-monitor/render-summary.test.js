@@ -132,33 +132,70 @@ describe('renderSummary', () => {
     expect(a).toBe(b);
   });
 
-  test('bounds and redacts hostile thread and check evidence', () => {
+  test('marks over-limit thread evidence incomplete while keeping its summary bounded', () => {
     const secret = 'ghp_123456789012345678901234567890';
-    const unresolvedComments = Array.from({ length: MAX_SUMMARY_THREADS + 20 }, (_, index) => ({
+    const unresolvedComments = Array.from({ length: MAX_SUMMARY_THREADS + 1 }, (_, index) => ({
       author: `reviewer-${index}-${secret}`,
       path: `C:\\Users\\alice\\private-${index}.js`,
       line: index,
       threadId: `thread-${index}`,
       comments: [],
     }));
-    const failing = Array.from({ length: MAX_SUMMARY_CHECKS + 20 }, (_, index) => ({
-      name: `check-${index}-${secret}`,
-    }));
     const first = renderSummary(makeBundle({
       unresolvedComments,
-      ci: { checks: [], failing, pending: [] },
     }), { now: NOW, verdict: 'BLOCKED-THREADS' });
     const second = renderSummary(makeBundle({
       unresolvedComments,
-      ci: { checks: [], failing, pending: [] },
     }), { now: NOW, verdict: 'BLOCKED-THREADS' });
 
     expect(first.body.length).toBeLessThanOrEqual(MAX_SUMMARY_CHARS);
     expect(first.body).not.toContain(secret);
     expect(first.body).not.toContain('alice');
     expect(first.body).toContain('more');
-    expect(first.threadState).toBe('OPEN');
+    expect(first.evidenceStatus).toBe('INCOMPLETE');
+    expect(first.threadState).toBe('INCOMPLETE');
     expect(first).toEqual(second);
+  });
+
+  test('marks every over-limit check array incomplete', () => {
+    for (const surface of ['checks', 'failing', 'pending']) {
+      const ci = { checks: [], failing: [], pending: [] };
+      ci[surface] = Array.from({ length: MAX_SUMMARY_CHECKS + 1 }, (_, index) => ({
+        name: `${surface}-${index}`,
+      }));
+
+      expect(renderSummary(makeBundle({ ci }), { now: NOW })).toMatchObject({
+        evidenceStatus: 'INCOMPLETE',
+        threadState: 'ZERO',
+      });
+    }
+  });
+
+  test('redacts hostile check evidence', () => {
+    const secret = 'ghp_123456789012345678901234567890';
+    const { body, evidenceStatus } = renderSummary(makeBundle({
+      ci: { checks: [], failing: [{ name: `check-${secret}` }], pending: [] },
+    }), { now: NOW });
+
+    expect(body).not.toContain(secret);
+    expect(body).toContain('[REDACTED]');
+    expect(evidenceStatus).toBe('COMPLETE');
+  });
+
+  test('marks malformed thread and check items incomplete instead of rendering them', () => {
+    expect(renderSummary(makeBundle({ unresolvedComments: [{}] }), { now: NOW })).toMatchObject({
+      evidenceStatus: 'INCOMPLETE',
+      threadState: 'INCOMPLETE',
+    });
+
+    for (const surface of ['checks', 'failing', 'pending']) {
+      const ci = { checks: [], failing: [], pending: [] };
+      ci[surface] = [{}];
+      expect(renderSummary(makeBundle({ ci }), { now: NOW })).toMatchObject({
+        evidenceStatus: 'INCOMPLETE',
+        threadState: 'ZERO',
+      });
+    }
   });
 
   test('keeps untrusted thread locators and check names inside safe code fences', () => {
