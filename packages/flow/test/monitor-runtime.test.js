@@ -136,6 +136,25 @@ describe("MonitorSpec deterministic reducer", () => {
     expect(retry.effects).toEqual([expect.objectContaining({ type: "RETRY_DELIVERY", delayMs: 100 })]);
   });
 
+  test("queues a backpressured transition, fences its acknowledgement, and drains it after capacity opens", () => {
+    const monitorSpec = spec({ maxPending: 1, terminalPredicate: () => false });
+    const first = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
+      kind: "observation", event: observation(0, "PENDING"),
+    });
+    const pressured = reduceMonitor(monitorSpec, first.state, {
+      kind: "observation", event: observation(1, "RUNNING"),
+    });
+
+    expect(pressured.state.deferred).toEqual([{ sequence: 1, eventId: "event-1" }]);
+    expect(() => reduceMonitor(monitorSpec, pressured.state, { kind: "acknowledge", sequence: 1 })).toThrow("acknowledgement cursor");
+
+    const drained = reduceMonitor(monitorSpec, pressured.state, { kind: "acknowledge", sequence: 0 });
+    expect(drained.state.pending).toEqual([{ sequence: 1, eventId: "event-1" }]);
+    expect(drained.state.deferred).toEqual([]);
+    expect(drained.effects).toEqual([expect.objectContaining({ type: "DELIVER", eventId: "event-1" })]);
+    expect(drained.modelTurns).toBe(1);
+  });
+
   test("waits for cancellation acknowledgement, performs cleanup, and emits a valid terminal receipt", () => {
     const monitorSpec = spec({ terminalPredicate: () => false });
     const requested = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), { kind: "cancel-requested" });

@@ -37,54 +37,60 @@ function assertPacket(workPacket, expected) {
   }
 }
 
-function normalizeProviderResult(result, failure) {
-  if (failure) {
-    return {
-      status: "INCOMPLETE",
-      executor: { product_id: "forge-flow", mode: "injected-provider" },
-      evidenceRefs: [],
-      validation: { status: "INCOMPLETE", code: "PROVIDER_FAILURE" },
-      cleanup: { status: "UNKNOWN" },
-      mutationsAttempted: [],
-      mutationsAuthorized: [],
-    };
-  }
-  if (!result || typeof result !== "object" || Array.isArray(result)) {
-    return {
-      status: "INCOMPLETE",
-      executor: { product_id: "forge-flow", mode: "injected-provider" },
-      evidenceRefs: [],
-      validation: { status: "INCOMPLETE", code: "INVALID_PROVIDER_RESULT" },
-      cleanup: { status: "UNKNOWN" },
-      mutationsAttempted: [],
-      mutationsAuthorized: [],
-    };
-  }
+function incompleteProviderResult(code) {
   return {
-    status: TERMINAL_STATUSES.has(result.status) ? result.status : "INCOMPLETE",
-    executor: result.executor && typeof result.executor === "object" && !Array.isArray(result.executor)
-      ? structuredClone(result.executor)
-      : { product_id: "forge-flow", mode: "injected-provider" },
-    evidenceRefs: Array.isArray(result.evidenceRefs) ? structuredClone(result.evidenceRefs) : [],
-    validation: result.validation && typeof result.validation === "object" && !Array.isArray(result.validation)
-      ? structuredClone(result.validation)
-      : { status: "INCOMPLETE", code: "MISSING_VALIDATION" },
-    cleanup: result.cleanup && typeof result.cleanup === "object" && !Array.isArray(result.cleanup)
-      ? structuredClone(result.cleanup)
-      : { status: "UNKNOWN" },
-    mutationsAttempted: Array.isArray(result.mutationsAttempted) ? [...result.mutationsAttempted] : [],
-    mutationsAuthorized: Array.isArray(result.mutationsAuthorized) ? [...result.mutationsAuthorized] : [],
-    tokens: result.tokens,
-    retries: result.retries,
-    corrections: result.corrections,
-    activeTimeMs: result.activeTimeMs,
-    passiveTimeMs: result.passiveTimeMs,
+    status: "INCOMPLETE",
+    executor: { product_id: "forge-flow", mode: "injected-provider" },
+    evidenceRefs: [],
+    validation: { status: "INCOMPLETE", code },
+    cleanup: { status: "UNKNOWN" },
+    mutationsAttempted: [],
+    mutationsAuthorized: [],
   };
+}
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringArray(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isOptionalNonNegativeInteger(value) {
+  return value === undefined || (Number.isInteger(value) && value >= 0);
+}
+
+function normalizeProviderResult(result, failure) {
+  if (failure) return incompleteProviderResult("PROVIDER_FAILURE");
+  try {
+    const cloned = structuredClone(result);
+    const valid = isRecord(cloned)
+      && TERMINAL_STATUSES.has(cloned.status)
+      && isRecord(cloned.executor)
+      && Array.isArray(cloned.evidenceRefs)
+      && cloned.evidenceRefs.every(isRecord)
+      && isRecord(cloned.validation)
+      && isRecord(cloned.cleanup)
+      && isStringArray(cloned.mutationsAttempted)
+      && isStringArray(cloned.mutationsAuthorized)
+      && (cloned.tokens === undefined || isRecord(cloned.tokens))
+      && isOptionalNonNegativeInteger(cloned.retries)
+      && isOptionalNonNegativeInteger(cloned.corrections)
+      && isOptionalNonNegativeInteger(cloned.activeTimeMs)
+      && isOptionalNonNegativeInteger(cloned.passiveTimeMs);
+    if (!valid) return incompleteProviderResult("INVALID_PROVIDER_RESULT");
+    return cloned;
+  } catch {
+    return incompleteProviderResult("INVALID_PROVIDER_RESULT");
+  }
 }
 
 function authorizeAndClassify(result, allowedMutations) {
   const allowed = new Set(allowedMutations);
-  const unauthorized = result.mutationsAttempted.filter((mutation) => !allowed.has(mutation));
+  const attempted = new Set(result.mutationsAttempted);
+  const authorized = new Set(result.mutationsAuthorized);
+  const unauthorized = [...attempted, ...authorized].filter((mutation) => !allowed.has(mutation));
   if (unauthorized.length > 0) {
     result.status = "FAIL";
     result.validation = {
@@ -95,7 +101,18 @@ function authorizeAndClassify(result, allowedMutations) {
     result.mutationsAuthorized = result.mutationsAuthorized.filter((mutation) => allowed.has(mutation));
     return;
   }
-  if (result.status === "PASS" && (result.evidenceRefs.length === 0 || result.validation.status !== "PASS")) {
+  const inconsistent = [...attempted].some((mutation) => !authorized.has(mutation))
+    || [...authorized].some((mutation) => !attempted.has(mutation));
+  if (inconsistent) {
+    result.status = "FAIL";
+    result.validation = { status: "REJECTED", code: "INCONSISTENT_AUTHORIZATION" };
+    return;
+  }
+  const incompletePass = result.status === "PASS"
+    && (result.evidenceRefs.length === 0 || result.validation.status !== "PASS");
+  const incompleteFail = result.status === "FAIL"
+    && (result.evidenceRefs.length === 0 || result.validation.status !== "FAIL");
+  if (incompletePass || incompleteFail) {
     result.status = "INCOMPLETE";
     result.validation = { status: "INCOMPLETE", code: "INCOMPLETE_EVIDENCE" };
   }
@@ -197,9 +214,16 @@ function createWorkPacketExecutor({ run, onReceipt = () => {} } = {}) {
       } catch (error) {
         providerFailure = error;
       }
-      const result = normalizeProviderResult(providerResult, providerFailure);
+      let result = normalizeProviderResult(providerResult, providerFailure);
       authorizeAndClassify(result, workPacket.payload.allowed_mutations);
-      const receipt = buildReceipt(workPacket, executionContext, result);
+      let receipt;
+      try {
+        receipt = buildReceipt(workPacket, executionContext, result);
+      } catch (error) {
+        if (!(error instanceof FlowExecutionError) || error.code !== "OUTPUT_INVALID") throw error;
+        result = incompleteProviderResult("INVALID_PROVIDER_RESULT");
+        receipt = buildReceipt(workPacket, executionContext, result);
+      }
       acceptedPackets.set(identity, { packetHash: workPacket.content_hash, receipt: structuredClone(receipt) });
       onReceipt(structuredClone(receipt));
       return receipt;

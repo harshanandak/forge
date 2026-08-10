@@ -163,4 +163,58 @@ describe("WorkPacket executor", () => {
     expect(receipt.payload.validation).toMatchObject({ code: "INCOMPLETE_EVIDENCE" });
     expect(validateContractStructure(receipt).ok).toBe(true);
   });
+
+  test("downgrades FAIL without terminal evidence to INCOMPLETE", () => {
+    const executor = createWorkPacketExecutor({
+      run: () => successfulResult({ status: "FAIL", evidenceRefs: [], validation: { status: "FAIL" } }),
+    });
+
+    const receipt = executor.execute(packet(), context());
+
+    expect(receipt.payload.status).toBe("INCOMPLETE");
+    expect(receipt.payload.validation).toMatchObject({ code: "INCOMPLETE_EVIDENCE" });
+    expect(validateContractStructure(receipt).ok).toBe(true);
+  });
+
+  test.each([
+    ["authorized mutation outside packet scope", {
+      mutationsAttempted: [],
+      mutationsAuthorized: ["git.push"],
+    }, "UNAUTHORIZED_MUTATION"],
+    ["attempt not claimed as authorized", {
+      mutationsAttempted: ["packages/flow"],
+      mutationsAuthorized: [],
+    }, "INCONSISTENT_AUTHORIZATION"],
+    ["authorization claim without an attempt", {
+      mutationsAttempted: [],
+      mutationsAuthorized: ["packages/flow"],
+    }, "INCONSISTENT_AUTHORIZATION"],
+  ])("fails closed for %s", (_label, override, code) => {
+    const executor = createWorkPacketExecutor({ run: () => successfulResult(override) });
+
+    const receipt = executor.execute(packet(), context());
+
+    expect(receipt.payload.status).toBe("FAIL");
+    expect(receipt.payload.validation).toMatchObject({ code });
+    expect(validateContractStructure(receipt).ok).toBe(true);
+  });
+
+  test.each([
+    ["non-cloneable nested output", { executor: { callback() {} } }],
+    ["malformed nested evidence", { evidenceRefs: [null] }],
+    ["malformed mutation claim", { mutationsAttempted: [42] }],
+  ])("normalizes %s into exactly one validated INCOMPLETE receipt", (_label, malformed) => {
+    const emitted = [];
+    const executor = createWorkPacketExecutor({
+      run: () => successfulResult(malformed),
+      onReceipt: (receipt) => emitted.push(receipt),
+    });
+
+    const receipt = executor.execute(packet(), context());
+
+    expect(receipt.payload.status).toBe("INCOMPLETE");
+    expect(receipt.payload.validation).toMatchObject({ code: "INVALID_PROVIDER_RESULT" });
+    expect(validateContractStructure(receipt).ok).toBe(true);
+    expect(emitted).toEqual([receipt]);
+  });
 });

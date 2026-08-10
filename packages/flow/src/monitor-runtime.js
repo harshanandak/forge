@@ -54,6 +54,7 @@ function createMonitorState(spec) {
     seenEvents: {},
     evidenceHashes: [],
     pending: [],
+    deferred: [],
     retryCounts: {},
     cancellationRequested: false,
     cancellationAcknowledged: false,
@@ -70,13 +71,16 @@ function result(state, effects = [], modelTurns = 0) {
 }
 
 function terminating(state, terminalState, terminalReason, extra = {}) {
+  const undelivered = [...state.pending, ...state.deferred];
   return result({
     ...state,
     ...extra,
     lifecycle: "TERMINATING",
     terminalState,
     terminalReason,
-    undeliveredCursor: state.pending.length === 0 ? undefined : state.acknowledgementCursor + 1,
+    undeliveredCursor: undelivered.length === 0
+      ? undefined
+      : Math.min(...undelivered.map((item) => item.sequence)),
   }, [{ type: "CLEANUP_PROCESS" }, { type: "CLEANUP_LEASE" }]);
 }
 
@@ -128,6 +132,9 @@ function reduceObservation(spec, state, event) {
   }
   if (payload.actionability === "advisory") return result(next);
   if (next.pending.length >= spec.maxPending) {
+    const deferred = { sequence: payload.sequence, eventId: payload.event_id };
+    if (next.deferred.length < spec.maxPending) next.deferred.push(deferred);
+    else next.deferred[next.deferred.length - 1] = deferred;
     return result(next, [{ type: "BACKPRESSURE", decision: "DEFER", sequence: payload.sequence }]);
   }
   next.pending.push({ sequence: payload.sequence, eventId: payload.event_id });
@@ -139,15 +146,29 @@ function reduceObservation(spec, state, event) {
   }], 1);
 }
 
-function reduceAcknowledgement(state, event) {
+function reduceAcknowledgement(spec, state, event) {
   if (!Number.isInteger(event.sequence) || event.sequence < state.acknowledgementCursor || event.sequence > state.lastSequence) {
     throw new MonitorRuntimeError("INVALID_ACKNOWLEDGEMENT", "Invalid acknowledgement cursor");
   }
   if (event.sequence === state.acknowledgementCursor) return result(state);
+  if (!state.pending.some((item) => item.sequence === event.sequence)) {
+    throw new MonitorRuntimeError("INVALID_ACKNOWLEDGEMENT", "Invalid acknowledgement cursor");
+  }
   const next = structuredClone(state);
   next.acknowledgementCursor = event.sequence;
   next.pending = next.pending.filter((item) => item.sequence > event.sequence);
-  return result(next);
+  const effects = [];
+  while (next.pending.length < spec.maxPending && next.deferred.length > 0) {
+    const delivery = next.deferred.shift();
+    next.pending.push(delivery);
+    effects.push({
+      type: "DELIVER",
+      eventId: delivery.eventId,
+      sequence: delivery.sequence,
+      targets: [...spec.deliveryTargets],
+    });
+  }
+  return result(next, effects, effects.length);
 }
 
 function reduceDeliveryFailure(spec, state, event) {
@@ -170,7 +191,7 @@ function reduceDeliveryFailure(spec, state, event) {
 function reduceActive(spec, state, event) {
   switch (event.kind) {
     case "observation": return reduceObservation(spec, state, event.event);
-    case "acknowledge": return reduceAcknowledgement(state, event);
+    case "acknowledge": return reduceAcknowledgement(spec, state, event);
     case "delivery-failed": return reduceDeliveryFailure(spec, state, event);
     case "cancel-requested":
       return result({ ...state, cancellationRequested: true }, [{ type: "CANCEL_SOURCE" }]);
