@@ -218,6 +218,67 @@ describe('Kernel receipt-bound PR trace', () => {
 		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
 	});
 
+	test('resolves gate authority historically at the linkage occurrence time', async () => {
+		await driver.insertKernelEvent({
+			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.rejected',
+			idempotency_key: 'gate.rejected:issue-trace:gate.merge:future', expected_revision: 0,
+			actor: 'maintainer', origin: 'test', payload: { gate: GATE_ID, expires_at: null, generation: 1 },
+			created_at: '2026-08-11T00:08:00.000Z',
+		}, {}, config);
+
+		await broker.recordPrLinkage(linkage());
+
+		const trace = await broker.readTrace({ issue_id: 'issue-trace' });
+		expect(trace.pull_requests[0].iterations[0].gate_receipts).toEqual([GATE_RECEIPT]);
+	});
+
+	test('keeps an exact T1 replay idempotent after T2 rejection and renewed approval', async () => {
+		const packet = workPacket();
+		const opened = linkage('opened', packet, runReceipt(packet));
+		await broker.recordPrLinkage(opened);
+
+		await driver.insertKernelEvent({
+			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.rejected',
+			idempotency_key: 'gate.rejected:issue-trace:gate.merge:t2', expected_revision: 0,
+			actor: 'maintainer', origin: 'test', payload: { gate: GATE_ID, expires_at: null, generation: 1 },
+			created_at: '2026-08-11T00:10:00.000Z',
+		}, {}, config);
+		await broker.recordPrLinkage(opened);
+
+		const renewedReceipt = 'gate.approved:issue-trace:gate.merge:renewed';
+		await driver.insertKernelEvent({
+			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.approved',
+			idempotency_key: renewedReceipt, expected_revision: 0,
+			actor: 'maintainer', origin: 'test', payload: { gate: GATE_ID, expires_at: null, generation: 2 },
+			created_at: '2026-08-11T00:10:00.000Z',
+		}, {}, config);
+		await broker.recordPrLinkage(opened);
+		await broker.recordPrLinkage(linkage('merged', packet, runReceipt(packet, {}, 'merged'), {
+			occurred_at: '2026-08-11T00:10:00.000Z',
+		}));
+
+		const trace = await broker.readTrace({ issue_id: 'issue-trace' });
+		expect(trace.pull_requests[0].iterations.map(iteration => iteration.gate_receipts)).toEqual([
+			[GATE_RECEIPT],
+			[renewedReceipt],
+		]);
+		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([{ n: 2 }]);
+	});
+
+	test('snapshots caller input before the first asynchronous driver boundary', async () => {
+		const input = linkage();
+		const resolvePrLinkage = driver.resolvePrLinkage;
+		driver.resolvePrLinkage = async (...args) => {
+			const result = await resolvePrLinkage(...args);
+			input.branch = 'codex/mutated-after-validation';
+			return result;
+		};
+
+		await broker.recordPrLinkage(input);
+
+		expect(await driver.queryAll('SELECT branch FROM kernel_pr;', config)).toEqual([{ branch }]);
+	});
+
 	test('requires the RunReceipt to attempt and authorize the exact linkage phase', async () => {
 		const packet = workPacket();
 		await expect(broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet, {
