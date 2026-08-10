@@ -7,7 +7,7 @@
  * Uses subprocess spawning to test the actual CLI entry point.
  */
 
-const { afterAll, describe, test, expect, setDefaultTimeout } = require('bun:test');
+const { afterAll, beforeAll, describe, test, expect, setDefaultTimeout } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -60,6 +60,16 @@ function parseAdditionalCommands(stdout) {
     .filter(Boolean)
     .map(match => match[1]);
 }
+
+let helpStdout;
+let helpNames;
+
+beforeAll(() => {
+  const result = runForge(['--help']);
+  expect(result.status).toBe(0);
+  helpStdout = result.stdout;
+  helpNames = parseAdditionalCommands(helpStdout);
+});
 
 // Bare issue passthroughs that duplicate `forge issue <sub>`. They stay routable
 // as undocumented back-compat aliases but must NOT appear in `forge --help`, so the
@@ -172,56 +182,44 @@ describe('CLI Registry Integration', () => {
 
   describe('help includes registry commands', () => {
     test('forge --help includes sync and worktree in output', () => {
-      const { stdout } = runForge(['--help']);
-      expect(stdout).toMatch(/sync/i);
-      expect(stdout).toMatch(/worktree/i);
+      expect(helpStdout).toMatch(/sync/i);
+      expect(helpStdout).toMatch(/worktree/i);
     });
 
     test('forge --help includes "Additional commands" section', () => {
-      const { stdout } = runForge(['--help']);
-      expect(stdout).toContain('Additional commands');
+      expect(helpStdout).toContain('Additional commands');
     });
 
     test('forge --help documents the canonical `issue` surface', () => {
-      const { stdout } = runForge(['--help']);
-      const names = parseAdditionalCommands(stdout);
-      expect(names).toContain('issue');
+      expect(helpNames).toContain('issue');
     });
 
     test('forge --help hides the plural `issues` back-compat alias', () => {
-      const { stdout } = runForge(['--help']);
-      const names = parseAdditionalCommands(stdout);
-      expect(names).not.toContain('issues');
+      expect(helpNames).not.toContain('issues');
     });
 
     test('forge --help hides the bare issue passthrough aliases', () => {
-      const { stdout } = runForge(['--help']);
-      const names = parseAdditionalCommands(stdout);
       for (const alias of HIDDEN_ISSUE_ALIASES) {
-        expect(names).not.toContain(alias);
+        expect(helpNames).not.toContain(alias);
       }
     });
   });
 
   describe('memory noun + visible shortcuts (P1, febf7690)', () => {
     test('forge --help lists the memory noun in Additional commands', () => {
-      const { stdout } = runForge(['--help']);
-      const names = parseAdditionalCommands(stdout);
-      expect(names).toContain('memory');
+      expect(helpNames).toContain('memory');
     });
 
     test('forge --help moves remember/recall/insights into a Shortcuts block, not Additional commands', () => {
-      const { stdout } = runForge(['--help']);
-      const names = parseAdditionalCommands(stdout);
       // The bare verbs are no longer enumerated as top-level commands...
       for (const alias of ['remember', 'recall', 'insights']) {
-        expect(names).not.toContain(alias);
+        expect(helpNames).not.toContain(alias);
       }
       // ...they surface in a Shortcuts block mapping to their canonical memory sub.
-      expect(stdout).toContain('Shortcuts');
-      expect(stdout).toMatch(/remember\s+-> forge memory add/);
-      expect(stdout).toMatch(/recall\s+-> forge memory recall/);
-      expect(stdout).toMatch(/insights\s+-> forge memory insights/);
+      expect(helpStdout).toContain('Shortcuts');
+      expect(helpStdout).toMatch(/remember\s+-> forge memory add/);
+      expect(helpStdout).toMatch(/recall\s+-> forge memory recall/);
+      expect(helpStdout).toMatch(/insights\s+-> forge memory insights/);
     });
 
     test('bare forge recall --help still prints recall usage (passthrough fix keeps --help parsed)', () => {

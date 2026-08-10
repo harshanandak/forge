@@ -1,7 +1,6 @@
 const { afterAll, describe, test, expect, setDefaultTimeout } = require('bun:test');
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
 const {
   CASE_TIMEOUT_MS,
   CLI_TIMEOUT_MS,
@@ -49,8 +48,7 @@ describe('CLI lifecycle commands', () => {
     });
 
     test('recognizes --soft flag', () => {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-reset-soft-'));
-      fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), '# Test', 'utf-8');
+      const tmpDir = sandboxes.makeSandbox();
       fs.mkdirSync(path.join(tmpDir, '.forge'), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, '.forge', 'setup-state.json'), '{}', 'utf-8');
 
@@ -61,13 +59,10 @@ describe('CLI lifecycle commands', () => {
       expect(output).not.toContain('Usage:');
       // .forge should be removed
       expect(fs.existsSync(path.join(tmpDir, '.forge'))).toBe(false);
-
-      fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
     test('recognizes --hard flag', () => {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-reset-hard-'));
-      fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), '# Test', 'utf-8');
+      const tmpDir = sandboxes.makeSandbox();
       fs.mkdirSync(path.join(tmpDir, '.forge'), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, '.forge', 'setup-state.json'), '{}', 'utf-8');
 
@@ -76,8 +71,6 @@ describe('CLI lifecycle commands', () => {
 
       expect(output).not.toContain('Usage:');
       expect(fs.existsSync(path.join(tmpDir, '.forge'))).toBe(false);
-
-      fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
     test('--soft without --force shows error', () => {
@@ -102,8 +95,7 @@ describe('CLI lifecycle commands', () => {
     });
 
     test('with --force performs reset', () => {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-reinstall-'));
-      fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), '# Test', 'utf-8');
+      const tmpDir = sandboxes.makeSandbox();
       fs.mkdirSync(path.join(tmpDir, '.forge'), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, '.forge', 'setup-state.json'), '{}', 'utf-8');
 
@@ -123,8 +115,6 @@ describe('CLI lifecycle commands', () => {
       const originalMarkerSurvived =
         fs.existsSync(stateFile) && fs.readFileSync(stateFile, 'utf-8').trim() === '{}';
       expect(originalMarkerSurvived).toBe(false);
-
-      fs.rmSync(tmpDir, { recursive: true, force: true });
     }, 60000);
   });
 });

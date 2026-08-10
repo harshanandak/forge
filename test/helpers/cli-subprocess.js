@@ -39,6 +39,7 @@ const CASE_TIMEOUT_MS = 45_000;
 // Sandbox setup shells out to git; bound it well under the spawn budget so a
 // wedged `git init` reports as itself rather than eating the CLI's time.
 const GIT_INIT_TIMEOUT_MS = 10_000;
+const MAX_DIAGNOSTIC_CHARS = 4_096;
 
 // The inner spawn limit is only meaningful if the case outlives it — otherwise
 // bun kills the case first and the diagnostic thrown below never runs. Suites
@@ -115,14 +116,39 @@ function mergeEnv(cwd, envOverrides) {
  * @param {string} prefix - mkdtemp prefix, so leaked dirs are attributable
  * @returns {{ makeSandbox: () => string, cleanup: () => void }}
  */
-function createCliSandboxes(prefix) {
+function createCliSandboxes(prefix, { execFileSync: runFile = execFileSync } = {}) {
   const dirs = [];
+  const templateDir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}template-`));
+
+  fs.writeFileSync(path.join(templateDir, 'AGENTS.md'), '# Test project\n', 'utf8');
+  try {
+    runFile('git', ['init', '-q'], {
+      cwd: templateDir,
+      encoding: 'utf8',
+      stdio: 'pipe',
+      timeout: GIT_INIT_TIMEOUT_MS,
+      windowsHide: true,
+    });
+  } catch (err) {
+    try {
+      rmrfWithRetry(templateDir);
+    } catch {
+      // Preserve the process failure; its diagnostics identify the root cause.
+    }
+    const stdout = String(err.stdout || '').slice(0, MAX_DIAGNOSTIC_CHARS);
+    const stderr = String(err.stderr || '').slice(0, MAX_DIAGNOSTIC_CHARS);
+    throw new Error(
+      `git init failed within ${GIT_INIT_TIMEOUT_MS}ms in ${templateDir}. `
+      + `stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`,
+      { cause: err }
+    );
+  }
 
   function makeSandbox() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
     dirs.push(dir);
-    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# Test project\n', 'utf8');
-    execFileSync('git', ['init', '-q'], { cwd: dir, timeout: GIT_INIT_TIMEOUT_MS });
+    fs.copyFileSync(path.join(templateDir, 'AGENTS.md'), path.join(dir, 'AGENTS.md'));
+    fs.cpSync(path.join(templateDir, '.git'), path.join(dir, '.git'), { recursive: true });
     return dir;
   }
 
@@ -130,6 +156,7 @@ function createCliSandboxes(prefix) {
     while (dirs.length > 0) {
       rmrfWithRetry(dirs.pop());
     }
+    rmrfWithRetry(templateDir);
   }
 
   return { makeSandbox, cleanup };
