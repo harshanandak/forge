@@ -262,8 +262,12 @@ function createProcessState(rawOptions, now = 0) {
   return createState(options, now);
 }
 
+function isResourceLimitOutcome(reason) {
+  return reason === "ATTEMPT_CAP" || reason === "ELAPSED_CAP";
+}
+
 function terminalStatus(state) {
-  if (state.terminalReason === "ELAPSED_CAP") return "INCOMPLETE";
+  if (isResourceLimitOutcome(state.terminalReason)) return "INCOMPLETE";
   if (state.cancellationRequested || state.forcedKill) return "CANCELLED";
   if (state.orphaned) return "INCOMPLETE";
   if (state.signal !== null) return "FAIL";
@@ -356,7 +360,7 @@ function reduceProcessLifecycle(rawState, rawEvent, rawOptions = {}) {
     case "cancel-acknowledged":
       if (state.phase !== "CANCEL_REQUESTED") invalidPhase("CANCEL_REQUESTED phase");
       next.phase = "TERMINATION_ACKNOWLEDGED";
-      next.status = next.terminalReason === "ELAPSED_CAP" ? "INCOMPLETE" : "CANCELLED";
+      next.status = isResourceLimitOutcome(next.terminalReason) ? "INCOMPLETE" : "CANCELLED";
       next.terminationAcknowledged = true;
       result = { state: next, effects: [{ type: "REAP_CHILD" }] };
       break;
