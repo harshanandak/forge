@@ -296,6 +296,64 @@ describe('Forge-owned npm publish workflow', () => {
 		}
 	});
 
+	test('preserves an existing workflow changed while pre-write authority is acquired', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-authority-race-existing-'));
+		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+		const previous = Buffer.from('previous workflow bytes\n', 'utf8');
+		const concurrent = Buffer.from('concurrent workflow bytes\n', 'utf8');
+		let auditCalls = 0;
+		try {
+			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+			fs.writeFileSync(workflowPath, previous);
+			const result = await generateNpmPublishWorkflow(root, generationOptions({
+				prepareNpmPublishWorkflowAuthorization: async () => {
+					fs.writeFileSync(workflowPath, concurrent);
+					return { success: true, capabilityId: 'prepared-existing-race' };
+				},
+				recordProtectedStateAuditEvent: () => {
+					auditCalls += 1;
+					return { success: true };
+				},
+				activateNpmPublishWorkflowAuthorization: async () => ({ success: true }),
+			}));
+
+			expect(result).toMatchObject({ success: false });
+			expect(result.error).toContain('concurrent');
+			expect(fs.readFileSync(workflowPath)).toEqual(concurrent);
+			expect(auditCalls).toBe(0);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('preserves a workflow created while pre-write authority is acquired', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-authority-race-created-'));
+		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+		const concurrent = Buffer.from('concurrently created workflow bytes\n', 'utf8');
+		let auditCalls = 0;
+		try {
+			const result = await generateNpmPublishWorkflow(root, generationOptions({
+				prepareNpmPublishWorkflowAuthorization: async () => {
+					fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+					fs.writeFileSync(workflowPath, concurrent);
+					return { success: true, capabilityId: 'prepared-created-race' };
+				},
+				recordProtectedStateAuditEvent: () => {
+					auditCalls += 1;
+					return { success: true };
+				},
+				activateNpmPublishWorkflowAuthorization: async () => ({ success: true }),
+			}));
+
+			expect(result).toMatchObject({ success: false });
+			expect(result.error).toContain('concurrent');
+			expect(fs.readFileSync(workflowPath)).toEqual(concurrent);
+			expect(auditCalls).toBe(0);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test('never overwrites a concurrent workflow update during audit-failure recovery', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-audit-failure-'));
 		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
