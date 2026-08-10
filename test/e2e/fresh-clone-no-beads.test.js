@@ -98,6 +98,21 @@ describe('fresh clone, no Beads — full Forge issue lifecycle on the builtin ke
         }
         expect(fs.existsSync(cloneNodeModules)).toBe(true);
 
+        // The shared node_modules link supplies external dependencies, while a
+        // real Bun workspace install also links local workspace packages beside
+        // their consumers. Reproduce that local link without mutating the
+        // shared node_modules tree used by the parent checkout.
+        const memoryWorkspaceModules = path.join(freshCloneDir, 'packages', 'memory', 'node_modules', '@forge');
+        const contractsWorkspace = path.join(freshCloneDir, 'packages', 'memory-contracts');
+        const contractsLink = path.join(memoryWorkspaceModules, 'memory-contracts');
+        fs.mkdirSync(memoryWorkspaceModules, { recursive: true });
+        try {
+          fs.symlinkSync(contractsWorkspace, contractsLink, 'junction');
+        } catch {
+          fs.symlinkSync(contractsWorkspace, contractsLink, 'dir');
+        }
+        expect(fs.existsSync(contractsLink)).toBe(true);
+
         // AGENTS.md bypasses the first-run setup gate in the fresh clone.
         fs.writeFileSync(path.join(freshCloneDir, 'AGENTS.md'), '# fresh clone acceptance\n');
 
