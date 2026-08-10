@@ -235,6 +235,25 @@ await (async () => {
 			.toMatchObject({ idempotent: false, monitor_id: 'monitor-1' });
 	});
 
+	test('keeps the final persisted event idempotent after its terminal receipt', async () => {
+		const { driver, store } = await makeStore();
+		const event = monitorEvent(0);
+		await store.appendEvent(event, ['terminal', 'archive']);
+		await store.recordTerminalReceipt(monitorReceipt({ last_sequence: 0 }));
+
+		expect(await store.appendEvent(event, ['archive', 'terminal', 'archive'])).toMatchObject({
+			idempotent: true,
+			event_id: 'event-1',
+		});
+		expect(await driver.queryAll('SELECT event_id FROM memory_monitor_events')).toEqual([
+			{ event_id: 'event-1' },
+		]);
+		expect(await driver.queryAll('SELECT event_id, target FROM memory_monitor_outbox ORDER BY target')).toEqual([
+			{ event_id: 'event-1', target: 'archive' },
+			{ event_id: 'event-1', target: 'terminal' },
+		]);
+	});
+
 	test('serializes event and terminal writers so either ordering rejects the stale second write', async () => {
 		const appendFirstPath = makeDatabasePath();
 		const appendFirstOwner = await makeStore(appendFirstPath);
