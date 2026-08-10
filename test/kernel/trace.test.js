@@ -196,6 +196,19 @@ describe('Kernel receipt-bound PR trace', () => {
 		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([{ n: 2 }]);
 	});
 
+	test('accepts producer-canonical hashes with mixed-case receipt keys', async () => {
+		const packet = workPacket({ constraints: { Z: 'upper', a: 'lower' } });
+		const receipt = runReceipt(packet);
+
+		await broker.recordPrLinkage(linkage('opened', packet, receipt));
+
+		const trace = await broker.readTrace({ issue_id: 'issue-trace' });
+		expect(trace.pull_requests[0].iterations[0]).toMatchObject({
+			work_packet_hash: packet.content_hash,
+			run_receipt_hash: receipt.content_hash,
+		});
+	});
+
 	test('fails closed on stale, non-PASS, mismatched, or inactive receipt authority before writes', async () => {
 		const stale = workPacket({ expected_issue_revision: 1, authority: { kind: 'kernel', issue_revision: 1 } });
 		await expect(broker.recordPrLinkage(linkage('opened', stale, runReceipt(stale)))).rejects.toMatchObject({ code: 'FORGE_TRACE_STALE_AUTHORITY' });
