@@ -76,7 +76,7 @@ function deliveryReceipt(event, overrides = {}) {
 }
 
 function terminalReceipt(events, overrides = {}) {
-  const hashes = events.map((event) => event.content_hash);
+  const hashes = events.slice(-128).map((event) => event.content_hash);
   return envelope(
     'forge.memory.monitor-receipt.v1',
     overrides.objectId ?? "30000000-0000-4000-8000-000000000001",
@@ -105,6 +105,7 @@ function createDurableDriver() {
     terminals: new Map(),
     staleTerminal: false,
     terminalWrites: 0,
+    listLimit: undefined,
     log: [],
   };
 
@@ -173,7 +174,7 @@ function createDurableDriver() {
     },
     listMonitorEvents(monitorId) {
       requireAvailable();
-      return [...state.events.values()]
+      const rows = [...state.events.values()]
         .map(({ event }) => event)
         .filter((event) => event.payload.monitor_id === monitorId)
         .sort((left, right) => left.payload.sequence - right.payload.sequence)
@@ -186,6 +187,7 @@ function createDurableDriver() {
           artifact_digest: event.payload.artifact_digest,
           created_at: event.created_at,
         }));
+      return state.listLimit === undefined ? rows : rows.slice(0, state.listLimit);
     },
   };
 }
@@ -413,6 +415,85 @@ describe('monitor durability bridge', () => {
     });
     expect(driver.state.terminals.size).toBe(0);
     expect(driver.state.terminalWrites).toBe(0);
+  });
+
+  test('accepts monotonic terminal evidence whose first sequence is one', async () => {
+    const driver = createDurableDriver();
+    const event = monitorEvent({ sequence: 1 });
+    await bridge(driver).persistEvent(event);
+
+    const result = await bridge(driver).recordTerminalReceipt(terminalReceipt([event]));
+
+    expect(result.persistence.idempotent).toBe(false);
+    expect(driver.state.terminals.size).toBe(1);
+  });
+
+  test('hashes only the bounded runtime evidence tail when history exceeds 128 events', async () => {
+    const driver = createDurableDriver();
+    const events = Array.from({ length: 129 }, (_, index) => monitorEvent({
+      sequence: index + 1,
+      observedAt: new Date(Date.UTC(2026, 7, 10, 0, 0, index)).toISOString(),
+    }));
+    const monitorBridge = bridge(driver);
+    for (const event of events) await monitorBridge.persistEvent(event);
+
+    const result = await monitorBridge.recordTerminalReceipt(terminalReceipt(events));
+
+    expect(result.persistence.idempotent).toBe(false);
+    expect(driver.state.terminals.size).toBe(1);
+  });
+
+  test('rejects a durable history truncated before the terminal sequence', async () => {
+    const driver = createDurableDriver();
+    const events = Array.from({ length: 129 }, (_, index) => monitorEvent({
+      sequence: index + 1,
+      observedAt: new Date(Date.UTC(2026, 7, 10, 0, 0, index)).toISOString(),
+    }));
+    const monitorBridge = bridge(driver);
+    for (const event of events) await monitorBridge.persistEvent(event);
+    driver.state.listLimit = 128;
+
+    await expect(monitorBridge.recordTerminalReceipt(terminalReceipt(events))).rejects.toMatchObject({
+      code: 'INCOMPLETE_TERMINAL_EVIDENCE',
+    });
+    expect(driver.state.terminals.size).toBe(0);
+    expect(driver.state.terminalWrites).toBe(0);
+  });
+
+  test('isolates immutable persistence and delivery snapshots from provider retention mutation', async () => {
+    const driver = createDurableDriver();
+    const originalAppend = driver.appendMonitorEvent;
+    let retained;
+    driver.appendMonitorEvent = (event, ...args) => {
+      retained = event;
+      const result = originalAppend.call(driver, event, ...args);
+      try {
+        event.payload.bounded_payload.state = 'retention-tampered';
+      } catch {
+        // The bridge owns an immutable provider snapshot.
+      }
+      return result;
+    };
+    let delivered;
+    const deliver = mock(async (event) => {
+      delivered = event;
+      try {
+        event.payload.bounded_payload.state = 'delivery-tampered';
+      } catch {
+        // The bridge owns an immutable delivery snapshot.
+      }
+    });
+
+    await bridge(driver, deliver).persistEvent(monitorEvent());
+
+    expect(retained).not.toBe(delivered);
+    expect(retained.payload.bounded_payload).not.toBe(delivered.payload.bounded_payload);
+    expect(Object.isFrozen(retained)).toBe(true);
+    expect(Object.isFrozen(retained.payload.bounded_payload)).toBe(true);
+    expect(Object.isFrozen(delivered)).toBe(true);
+    expect(Object.isFrozen(delivered.payload.bounded_payload)).toBe(true);
+    expect(retained.payload.bounded_payload.state).toBe('value-0');
+    expect(delivered.payload.bounded_payload.state).toBe('value-0');
   });
 
   test('rejects hostile accessor input without invoking it or reaching the provider', async () => {

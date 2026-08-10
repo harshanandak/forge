@@ -8,6 +8,7 @@ const {
 } = require("@forge/memory-contracts");
 
 const MAX_EVENTS_PER_RECEIPT = 4096;
+const MAX_EVIDENCE_HISTORY = 128;
 const MAX_INPUT_BYTES = 1_048_576;
 const MAX_MONITOR_ID_LENGTH = 128;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -55,6 +56,17 @@ function snapshotCanonical(value, label) {
   } catch {
     fail("INPUT_INVALID", `${label} must be bounded canonical data`);
   }
+}
+
+function immutableSnapshot(value, label) {
+  const snapshot = snapshotCanonical(value, label);
+  const freeze = (current) => {
+    if (!current || typeof current !== "object" || Object.isFrozen(current)) return current;
+    Object.freeze(current);
+    for (const child of Object.values(current)) freeze(child);
+    return current;
+  };
+  return freeze(snapshot);
 }
 
 function assertMonitorId(value) {
@@ -161,9 +173,9 @@ function assertRows(value, monitorId) {
     }
     return row;
   });
-  for (let index = 0; index < rows.length; index += 1) {
-    if (rows[index].sequence !== index) {
-      fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event history has a sequence gap");
+  for (let index = 1; index < rows.length; index += 1) {
+    if (rows[index].sequence <= rows[index - 1].sequence) {
+      fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event history is not monotonic");
     }
   }
   return rows;
@@ -172,7 +184,8 @@ function assertRows(value, monitorId) {
 function assertTerminalEvidence(receipt, rows) {
   const terminalState = receipt.payload.terminal_state;
   if (terminalState !== "PASS" && terminalState !== "FAIL") return;
-  const digest = computeContentHash({ evidence_hashes: rows.map((row) => row.content_hash) });
+  const evidenceRows = rows.slice(-MAX_EVIDENCE_HISTORY);
+  const digest = computeContentHash({ evidence_hashes: evidenceRows.map((row) => row.content_hash) });
   if (rows.length === 0) {
     if (terminalState === "FAIL" && receipt.payload.last_sequence === 0 && receipt.payload.evidence_digest === digest) {
       return;
@@ -201,16 +214,18 @@ function createMonitorDurabilityBridge(options) {
 
   return Object.freeze({
     async persistEvent(event, config = {}) {
-      const safeEvent = assertEnvelope(event, "forge.memory.monitor-event.v1");
-      const safeConfig = snapshotCanonical(config, "monitor persistence config");
-      const persistence = await providerCall(() => appendEvent(safeEvent, targets, safeConfig));
+      const validatedEvent = assertEnvelope(event, "forge.memory.monitor-event.v1");
+      const persistenceEvent = immutableSnapshot(validatedEvent, "monitor persistence event");
+      const deliveryEvent = immutableSnapshot(validatedEvent, "monitor delivery event");
+      const safeConfig = immutableSnapshot(config, "monitor persistence config");
+      const persistence = await providerCall(() => appendEvent(persistenceEvent, targets, safeConfig));
       try {
-        const delivery = await deliver(safeEvent, targets);
+        const delivery = await deliver(deliveryEvent, targets);
         return Object.freeze({ persistence, delivery });
       } catch {
         fail("DELIVERY_FAILED", "Monitor delivery failed after durable persistence", {
           persisted: true,
-          eventId: safeEvent.payload.event_id,
+          eventId: persistenceEvent.payload.event_id,
         });
       }
     },
