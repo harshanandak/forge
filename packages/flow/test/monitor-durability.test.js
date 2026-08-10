@@ -250,14 +250,18 @@ function createDurableDriver() {
   };
 }
 
-function bridge(driver, deliver = async () => undefined) {
-  const store = createMonitorStore(driver);
-  delete store.listEvents;
+function bridgeWithStore(store, deliver = async () => undefined) {
   return createMonitorDurabilityBridge({
     store,
     deliveryTargets: ['target-1'],
     deliver,
   });
+}
+
+function bridge(driver, deliver = async () => undefined) {
+  const store = createMonitorStore(driver);
+  delete store.listEvents;
+  return bridgeWithStore(store, deliver);
 }
 
 describe('monitor durability bridge', () => {
@@ -313,6 +317,31 @@ describe('monitor durability bridge', () => {
     await expect(bridge(driver).persistEvent(monitorEvent())).rejects.toMatchObject({
       code: 'PROVIDER_UNAVAILABLE',
     });
+  });
+
+  test('classifies revoked proxies and hostile code accessors without reflecting on them', async () => {
+    const driver = createDurableDriver();
+    const store = createMonitorStore(driver);
+    delete store.listEvents;
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    let getterCalls = 0;
+    const accessor = {};
+    Object.defineProperty(accessor, 'code', {
+      get() {
+        getterCalls += 1;
+        throw new Error('code accessor executed');
+      },
+    });
+
+    for (const thrown of [revoked.proxy, accessor]) {
+      store.appendEvent = () => { throw thrown; };
+      await expect(bridgeWithStore(store).persistEvent(monitorEvent())).rejects.toMatchObject({
+        name: 'MonitorDurabilityError',
+        code: 'PROVIDER_UNAVAILABLE',
+      });
+    }
+    expect(getterCalls).toBe(0);
   });
 
   test('rejects hash-consistent structurally invalid events and receipts before provider calls', async () => {

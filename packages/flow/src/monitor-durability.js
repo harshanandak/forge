@@ -127,8 +127,27 @@ function assertTargets(value) {
   return Object.freeze([...new Set(snapshot)]);
 }
 
+function readProviderCode(error) {
+  if (
+    (typeof error !== "object" && typeof error !== "function") ||
+    error === null ||
+    types.isProxy(error)
+  ) {
+    return "";
+  }
+  let descriptor;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(error, "code");
+  } catch {
+    return "";
+  }
+  return descriptor && Object.hasOwn(descriptor, "value") && typeof descriptor.value === "string"
+    ? descriptor.value
+    : "";
+}
+
 function mapProviderFailure(error) {
-  const code = typeof error?.code === "string" ? error.code : "";
+  const code = readProviderCode(error);
   if ([
     "MONITOR_EVENT_CONFLICT",
     "MONITOR_TARGET_SET_CONFLICT",
@@ -156,7 +175,6 @@ async function providerCall(operation) {
   try {
     return await operation();
   } catch (error) {
-    if (error instanceof MonitorDurabilityError) throw error;
     throw mapProviderFailure(error);
   }
 }
