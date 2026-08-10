@@ -235,4 +235,159 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
     const ctx = greenContext({ comments: [{ author: 'BoT', at: minAgo(2) }] });
     expect(evaluateMergeRules(ctx, [{ not_commented_by: ['bot'] }]).allowed).toBe(false);
   });
+
+  test('verdict_clean requires a complete MERGE_READY verdict bound to the exact current head', () => {
+    const head = '1'.repeat(40);
+    const ctx = greenContext({
+      headSha: head,
+      expectedHeadSha: head,
+      baseSha: 'a'.repeat(40),
+      expectedBaseSha: 'a'.repeat(40),
+      repository: 'owner/repo',
+      expectedRepository: 'owner/repo',
+      prNumber: 42,
+      expectedPrNumber: 42,
+      verdict: {
+        state: 'MERGE_READY', repository: 'owner/repo', prNumber: 42,
+        headSha: head, baseSha: 'a'.repeat(40), reasons: [],
+      },
+    });
+    expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
+
+    for (const [verdict, expectedReason] of [
+      [{ ...ctx.verdict, state: 'BLOCKED', reasons: [{ code: 'checks' }] }, /BLOCKED/],
+      [{ ...ctx.verdict, headSha: '2'.repeat(40) }, /caller head lease/],
+      [{ ...ctx.verdict, reasons: [{ code: 'contradiction' }] }, /contradictory reasons/],
+      [null, /missing or malformed/],
+    ]) {
+      const { allowed, unmet } = evaluateMergeRules({ ...ctx, verdict }, ['verdict_clean']);
+      expect(allowed).toBe(false);
+      expect(unmet[0].reason).toMatch(expectedReason);
+    }
+  });
+
+  test('verdict_clean fails closed when the caller head lease is absent or malformed', () => {
+    const head = '1'.repeat(40);
+    const base = 'a'.repeat(40);
+    const verdict = {
+      state: 'MERGE_READY', repository: 'owner/repo', prNumber: 42,
+      headSha: head, baseSha: base, reasons: [],
+    };
+    const ctx = greenContext({
+      headSha: head,
+      expectedHeadSha: head,
+      baseSha: base,
+      expectedBaseSha: base,
+      repository: 'owner/repo',
+      expectedRepository: 'owner/repo',
+      prNumber: 42,
+      expectedPrNumber: 42,
+      verdict,
+    });
+    expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
+    for (const mutation of [
+      { expectedHeadSha: undefined },
+      { headSha: undefined },
+      { headSha: 'short' },
+      { verdict: { ...ctx.verdict, baseSha: 'short' } },
+    ]) {
+      expect(evaluateMergeRules({ ...ctx, ...mutation }, ['verdict_clean']).allowed).toBe(false);
+    }
+  });
+
+  test('verdict_clean requires the observed, expected, and verdict base SHAs to match exactly', () => {
+    const head = '1'.repeat(40);
+    const base = 'a'.repeat(40);
+    const ctx = greenContext({
+      headSha: head,
+      expectedHeadSha: head,
+      baseSha: base,
+      expectedBaseSha: base,
+      repository: 'owner/repo',
+      expectedRepository: 'owner/repo',
+      prNumber: 42,
+      expectedPrNumber: 42,
+      verdict: {
+        state: 'MERGE_READY', repository: 'owner/repo', prNumber: 42,
+        headSha: head, baseSha: base, reasons: [],
+      },
+    });
+    expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
+    for (const mutation of [
+      { expectedBaseSha: undefined },
+      { baseSha: undefined },
+      { expectedBaseSha: 'b'.repeat(40) },
+      { verdict: { ...ctx.verdict, baseSha: 'b'.repeat(40) } },
+    ]) {
+      expect(evaluateMergeRules({ ...ctx, ...mutation }, ['verdict_clean']).allowed).toBe(false);
+    }
+  });
+
+  test('verdict_clean rejects cross-repository and cross-PR replay', () => {
+    const head = '1'.repeat(40);
+    const base = 'a'.repeat(40);
+    const ctx = greenContext({
+      repository: 'owner/repo',
+      expectedRepository: 'owner/repo',
+      prNumber: 42,
+      expectedPrNumber: 42,
+      headSha: head,
+      expectedHeadSha: head,
+      baseSha: base,
+      expectedBaseSha: base,
+      verdict: {
+        state: 'MERGE_READY', repository: 'owner/repo', prNumber: 42,
+        headSha: head, baseSha: base, reasons: [],
+      },
+    });
+    expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
+    for (const mutation of [
+      { expectedRepository: 'other/repo' },
+      { expectedPrNumber: 43 },
+      { verdict: { ...ctx.verdict, repository: 'other/repo' } },
+      { verdict: { ...ctx.verdict, prNumber: 43 } },
+    ]) {
+      expect(evaluateMergeRules({ ...ctx, ...mutation }, ['verdict_clean']).allowed).toBe(false);
+    }
+  });
+
+  test('verdict_clean is descriptor-safe for accessors and hostile or revoked proxies', () => {
+    let getterCalls = 0;
+    const head = '1'.repeat(40);
+    const base = 'a'.repeat(40);
+    const verdict = {
+      state: 'MERGE_READY', repository: 'owner/repo', prNumber: 42,
+      headSha: head, baseSha: base, reasons: [],
+    };
+    const context = greenContext({
+      repository: 'owner/repo', expectedRepository: 'owner/repo',
+      prNumber: 42, expectedPrNumber: 42,
+      headSha: head, expectedHeadSha: head, baseSha: base, expectedBaseSha: base,
+      verdict,
+    });
+
+    const accessor = { ...context };
+    Object.defineProperty(accessor, 'verdict', {
+      enumerable: true,
+      get() { getterCalls += 1; throw new Error('getter must not run'); },
+    });
+    expect(evaluateMergeRules(accessor, ['verdict_clean']).allowed).toBe(false);
+
+    const hostileContext = new Proxy(context, {
+      get() { getterCalls += 1; throw new Error('get trap must not run'); },
+      ownKeys() { getterCalls += 1; throw new Error('ownKeys trap must not run'); },
+    });
+    expect(evaluateMergeRules(hostileContext, ['verdict_clean']).allowed).toBe(false);
+
+    const hostileVerdict = new Proxy(verdict, {
+      get() { getterCalls += 1; throw new Error('nested get trap must not run'); },
+      ownKeys() { getterCalls += 1; throw new Error('nested ownKeys trap must not run'); },
+    });
+    expect(evaluateMergeRules({ ...context, verdict: hostileVerdict }, ['verdict_clean']).allowed).toBe(false);
+
+    const revoked = Proxy.revocable(context, {});
+    revoked.revoke();
+    expect(evaluateMergeRules(revoked.proxy, ['verdict_clean']).allowed).toBe(false);
+    expect(getterCalls).toBe(0);
+  });
 });

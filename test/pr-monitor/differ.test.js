@@ -2,7 +2,7 @@
 
 const { describe, test, expect } = require('bun:test');
 
-const { diffSnapshots } = require('../../lib/pr-monitor/differ');
+const { diffSnapshots, diffVerdictEvidence } = require('../../lib/pr-monitor/differ');
 const { EVENT_TYPES: T } = require('../../lib/pr-monitor/events');
 
 /** A green baseline snapshot; override any field per test. */
@@ -35,6 +35,118 @@ describe('diffSnapshots — baseline (first pass)', () => {
     expect(types(events)).toContain(T.PR_MERGED);
     expect(types(events)).toContain(T.MONITOR_DEGRADED);
     expect(types(events)).not.toContain(T.THREAD_OPENED);
+  });
+});
+
+describe('diffVerdictEvidence exact-current-head changes', () => {
+  const head1 = '1'.repeat(40);
+  const head2 = '2'.repeat(40);
+  const verdict = (state, headSha, codes = []) => ({
+    state,
+    repository: 'owner/repo',
+    prNumber: 42,
+    headSha,
+    baseSha: 'a'.repeat(40),
+    reasons: codes.map((code) => ({ code })),
+  });
+
+  test('reports deterministic state, head, and reason-code deltas', () => {
+    const change = diffVerdictEvidence(
+      verdict('BLOCKED', head1, ['required_check_not_successful']),
+      verdict('MERGE_READY', head2),
+    );
+    expect(change).toEqual({
+      changed: true,
+      headChanged: true,
+      stateChanged: true,
+      baseChanged: false,
+      repositoryChanged: false,
+      prChanged: false,
+      from: 'BLOCKED',
+      to: 'MERGE_READY',
+      repository: 'owner/repo',
+      prNumber: 42,
+      headSha: head2,
+      baseSha: 'a'.repeat(40),
+      addedReasons: [],
+      removedReasons: ['required_check_not_successful'],
+    });
+  });
+
+  test('normalizes reason ordering and does not mutate either verdict', () => {
+    const prev = verdict('BLOCKED', head1, ['z', 'a']);
+    const next = verdict('BLOCKED', head1, ['a', 'z']);
+    const before = JSON.stringify([prev, next]);
+    expect(diffVerdictEvidence(prev, next).changed).toBe(false);
+    expect(JSON.stringify([prev, next])).toBe(before);
+  });
+
+  test('fails closed for malformed verdicts instead of treating them as merge-ready', () => {
+    const change = diffVerdictEvidence(null, { state: 'MERGE_READY', headSha: 'short', reasons: [] });
+    expect(change.to).toBe('INCOMPLETE');
+    expect(change.addedReasons).toContain('malformed_verdict');
+  });
+
+  test('retains the exact base and treats a base-only advance as a material change', () => {
+    const previous = verdict('MERGE_READY', head1);
+    const next = { ...previous, baseSha: 'b'.repeat(40) };
+    expect(diffVerdictEvidence(previous, next)).toEqual({
+      changed: true,
+      headChanged: false,
+      stateChanged: false,
+      baseChanged: true,
+      repositoryChanged: false,
+      prChanged: false,
+      from: 'MERGE_READY',
+      to: 'MERGE_READY',
+      repository: 'owner/repo',
+      prNumber: 42,
+      headSha: head1,
+      baseSha: 'b'.repeat(40),
+      addedReasons: [],
+      removedReasons: [],
+    });
+  });
+
+  test('retains repository and PR identity and detects replay-only changes', () => {
+    const previous = verdict('MERGE_READY', head1);
+    const repositoryReplay = { ...previous, repository: 'other/repo' };
+    const prReplay = { ...previous, prNumber: 43 };
+    expect(diffVerdictEvidence(previous, repositoryReplay)).toMatchObject({
+      changed: true,
+      repositoryChanged: true,
+      prChanged: false,
+      repository: 'other/repo',
+      prNumber: 42,
+    });
+    expect(diffVerdictEvidence(previous, prReplay)).toMatchObject({
+      changed: true,
+      repositoryChanged: false,
+      prChanged: true,
+      repository: 'owner/repo',
+      prNumber: 43,
+    });
+  });
+
+  test('is descriptor-safe for root/nested accessors and hostile or revoked proxies', () => {
+    let getterCalls = 0;
+    const accessor = { ...verdict('MERGE_READY', head1) };
+    Object.defineProperty(accessor, 'state', {
+      enumerable: true,
+      get() { getterCalls += 1; throw new Error('getter must not run'); },
+    });
+    expect(diffVerdictEvidence(null, accessor).to).toBe('INCOMPLETE');
+
+    const hostile = new Proxy(verdict('MERGE_READY', head1), {
+      get() { getterCalls += 1; throw new Error('get trap must not run'); },
+      ownKeys() { getterCalls += 1; throw new Error('ownKeys trap must not run'); },
+    });
+    expect(diffVerdictEvidence(null, hostile).to).toBe('INCOMPLETE');
+
+    const revoked = Proxy.revocable(verdict('MERGE_READY', head1), {});
+    revoked.revoke();
+    expect(diffVerdictEvidence(null, revoked.proxy).to).toBe('INCOMPLETE');
+    expect(getterCalls).toBe(0);
   });
 });
 
