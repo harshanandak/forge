@@ -234,6 +234,54 @@ describe("MonitorSpec deterministic reducer", () => {
     expect(state.evidenceHashes).toHaveLength(2);
   });
 
+  test("isolates prior state and events from mutating MonitorSpec callbacks", () => {
+    const monitorSpec = spec({
+      filter: (payload, event) => {
+        payload.status = "FILTER-MUTATED";
+        event.payload.type = "filter.mutated";
+        return true;
+      },
+      reducer: (previous, payload, event) => {
+        if (previous) previous.label = "PREVIOUS-MUTATED";
+        event.payload.type = "reducer.mutated";
+        return { label: payload.status };
+      },
+      terminalPredicate: (value, event) => {
+        value.label = "TERMINAL-MUTATED";
+        event.payload.type = "terminal.mutated";
+        return false;
+      },
+    });
+    const firstEvent = observation(0, "ONE", { actionability: "advisory" });
+    const first = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
+      kind: "observation", event: firstEvent,
+    });
+    const priorSnapshot = structuredClone(first.state);
+    const secondEvent = observation(1, "TWO", { actionability: "advisory" });
+
+    const second = reduceMonitor(monitorSpec, first.state, { kind: "observation", event: secondEvent });
+
+    expect(firstEvent.payload).toMatchObject({ type: "check.changed", bounded_payload: { status: "ONE" } });
+    expect(secondEvent.payload).toMatchObject({ type: "check.changed", bounded_payload: { status: "TWO" } });
+    expect(first.state).toEqual(priorSnapshot);
+    expect(second.state.value).toEqual({ label: "TWO" });
+  });
+
+  test.each(["__proto__", "constructor"])('handles hostile event id "%s" as an own identity key', (eventId) => {
+    const monitorSpec = spec({ terminalPredicate: () => false });
+    const hostile = observation(0, "PENDING", { event_id: eventId, actionability: "advisory" });
+    hostile.content_hash = computeContentHash(hostile);
+
+    const first = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
+      kind: "observation", event: hostile,
+    });
+    const duplicate = reduceMonitor(monitorSpec, first.state, { kind: "observation", event: hostile });
+
+    expect(Object.hasOwn(first.state.seenEvents, eventId)).toBe(true);
+    expect(duplicate.effects).toEqual([]);
+    expect(duplicate.modelTurns).toBe(0);
+  });
+
   test("rejects every event after terminal cleanup", () => {
     const monitorSpec = spec({ terminalPredicate: () => false });
     const terminating = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {

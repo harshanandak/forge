@@ -8,6 +8,8 @@ const {
 } = require("@forge/memory-contracts");
 
 const TERMINAL_STATUSES = new Set(["PASS", "FAIL", "INCOMPLETE"]);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 
 class FlowExecutionError extends Error {
   constructor(code, message, details = []) {
@@ -34,6 +36,28 @@ function assertPacket(workPacket, expected) {
   const validation = validateContract(workPacket, { expected });
   if (workPacket?.schema_id !== "forge.memory.work-packet.v1" || !validation.ok) {
     throw new FlowExecutionError("INPUT_INVALID", "WorkPacket validation failed", validation.errors);
+  }
+}
+
+function validateExecutionContext(executionContext) {
+  try {
+    for (const field of ["objectId", "runId", "attemptId", "startedAt", "endedAt", "producerInstanceId"]) {
+      requiredString(executionContext[field], field);
+    }
+    if (!UUID.test(executionContext.objectId)) throw new TypeError("objectId is invalid");
+    for (const field of ["startedAt", "endedAt"]) {
+      const value = executionContext[field];
+      if (!RFC3339_UTC.test(value) || Number.isNaN(Date.parse(value))) throw new TypeError(`${field} is invalid`);
+    }
+    if (Date.parse(executionContext.endedAt) < Date.parse(executionContext.startedAt)) {
+      throw new TypeError("endedAt precedes startedAt");
+    }
+    const leaseEpoch = executionContext.expected?.leaseEpoch;
+    if (leaseEpoch !== undefined && (!Number.isInteger(leaseEpoch) || leaseEpoch < 1)) {
+      throw new TypeError("leaseEpoch is invalid");
+    }
+  } catch (error) {
+    throw new FlowExecutionError("INVALID_EXECUTION_CONTEXT", `Invalid execution context: ${error.message}`);
   }
 }
 
@@ -195,6 +219,7 @@ function createWorkPacketExecutor({ run, onReceipt = () => {} } = {}) {
   return Object.freeze({
     execute(workPacket, executionContext = {}) {
       assertPacket(workPacket, executionContext.expected);
+      validateExecutionContext(executionContext);
       const identity = semanticIdentity(workPacket);
       const accepted = acceptedPackets.get(identity);
       if (accepted) {

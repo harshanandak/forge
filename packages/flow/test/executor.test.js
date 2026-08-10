@@ -140,6 +140,25 @@ describe("WorkPacket executor", () => {
     expect(runs).toBe(0);
   });
 
+  test.each([
+    ["invalid receipt object id", { objectId: "not-a-uuid" }],
+    ["invalid start timestamp", { startedAt: "tomorrow" }],
+    ["end before start", { endedAt: "2026-08-09T12:00:00.000Z" }],
+    ["invalid lease epoch", { expected: {
+      issueRevision: 3,
+      workflowConfigRevision: "config-1",
+      capabilityManifestDigest: "c".repeat(64),
+      exactHead: "a".repeat(40),
+      leaseEpoch: 0,
+    } }],
+  ])("prevalidates the full execution context before provider side effects: %s", (_label, override) => {
+    let runs = 0;
+    const executor = createWorkPacketExecutor({ run: () => { runs += 1; return successfulResult(); } });
+
+    expect(() => executor.execute(packet(), context(override))).toThrow("execution context");
+    expect(runs).toBe(0);
+  });
+
   test("fails closed in a validated receipt when a provider attempts an unauthorized mutation", () => {
     const executor = createWorkPacketExecutor({
       run: () => successfulResult({ mutationsAttempted: ["git.push"] }),

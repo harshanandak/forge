@@ -57,7 +57,7 @@ function createMonitorState(spec) {
     valueDigest: undefined,
     lastSequence: -1,
     acknowledgementCursor: -1,
-    seenEvents: {},
+    seenEvents: Object.create(null),
     evidenceHashes: [],
     pending: [],
     deferred: [],
@@ -104,11 +104,41 @@ function validateObservation(spec, event) {
   }
 }
 
+function callbackClone(spec, value) {
+  if (value === undefined) return undefined;
+  try {
+    const clone = structuredClone(value);
+    canonicalize(clone, {
+      maxBytes: spec.securityPolicy?.maxPayloadBytes ?? 16_384,
+      maxDepth: 8,
+      maxNodes: 128,
+    });
+    return clone;
+  } catch {
+    throw new MonitorRuntimeError("INVALID_CALLBACK_VALUE", "Monitor callback value exceeds bounds");
+  }
+}
+
+function cloneIdentityMap(source) {
+  const clone = Object.create(null);
+  for (const key of Object.keys(source)) {
+    Object.defineProperty(clone, key, {
+      value: structuredClone(source[key]),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return clone;
+}
+
 function reduceObservation(spec, state, event) {
   validateObservation(spec, event);
   const payload = event.payload;
-  const seen = state.seenEvents[payload.event_id];
-  if (seen) {
+  const seen = Object.hasOwn(state.seenEvents, payload.event_id)
+    ? state.seenEvents[payload.event_id]
+    : undefined;
+  if (seen !== undefined) {
     if (seen.sequence !== payload.sequence || seen.contentHash !== event.content_hash) {
       throw new MonitorRuntimeError("IDENTITY_CONFLICT", "MonitorEvent identity conflict");
     }
@@ -119,7 +149,13 @@ function reduceObservation(spec, state, event) {
   }
 
   const next = structuredClone(state);
-  next.seenEvents[payload.event_id] = { sequence: payload.sequence, contentHash: event.content_hash };
+  next.seenEvents = cloneIdentityMap(state.seenEvents);
+  Object.defineProperty(next.seenEvents, payload.event_id, {
+    value: { sequence: payload.sequence, contentHash: event.content_hash },
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
   next.evidenceHashes.push(event.content_hash);
   const maxHistory = spec.maxHistory ?? MAX_HISTORY;
   while (Object.keys(next.seenEvents).length > maxHistory) {
@@ -129,16 +165,26 @@ function reduceObservation(spec, state, event) {
     next.evidenceHashes.splice(0, next.evidenceHashes.length - maxHistory);
   }
   next.lastSequence = payload.sequence;
-  if (spec.filter && !spec.filter(payload.bounded_payload ?? {}, event)) return result(next);
+  if (spec.filter && !spec.filter(
+    callbackClone(spec, payload.bounded_payload ?? {}),
+    callbackClone(spec, event),
+  )) return result(next);
 
-  const nextValue = spec.reducer(state.value, payload.bounded_payload ?? {}, event);
+  const nextValue = callbackClone(spec, spec.reducer(
+    callbackClone(spec, state.value),
+    callbackClone(spec, payload.bounded_payload ?? {}),
+    callbackClone(spec, event),
+  ));
   const nextDigest = computeContentHash({ value: nextValue });
   const changed = nextDigest !== state.valueDigest;
   next.value = structuredClone(nextValue);
   next.valueDigest = nextDigest;
   if (!changed) return result(next);
 
-  const terminal = spec.terminalPredicate(nextValue, event);
+  const terminal = spec.terminalPredicate(
+    callbackClone(spec, nextValue),
+    callbackClone(spec, event),
+  );
   if (terminal) {
     const terminalState = terminal === "FAIL" || nextValue === "FAIL" ? "FAIL" : "PASS";
     return terminating(next, terminalState, "terminal predicate satisfied");
