@@ -110,6 +110,40 @@ describe("MonitorSpec deterministic reducer", () => {
     expect(rejectionConsumed).toBe(true);
   });
 
+  test("classifies a synchronous reducer failure", () => {
+    const monitorSpec = spec({ reducer: () => { throw new Error("reducer unavailable"); } });
+
+    try {
+      reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
+        kind: "observation",
+        event: observation(0, "PENDING"),
+      });
+      throw new Error("expected reducer failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonitorRuntimeError);
+      expect(error.code).toBe("CALLBACK_FAILURE");
+    }
+  });
+
+  test("consumes and classifies a rejected asynchronous reducer", async () => {
+    let rejectionConsumed = false;
+    const rejection = {
+      then(_resolve, reject) {
+        rejectionConsumed = true;
+        reject(new Error("reducer unavailable"));
+      },
+    };
+    const monitorSpec = spec({ reducer: () => rejection });
+
+    expect(() => reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
+      kind: "observation",
+      event: observation(0, "PENDING"),
+    })).toThrow("reducer must be synchronous");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(rejectionConsumed).toBe(true);
+  });
+
   test.each([
     ["source adapter item", { sourceAdapters: [42] }],
     ["delivery target item", { deliveryTargets: [""] }],

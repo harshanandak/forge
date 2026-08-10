@@ -273,4 +273,23 @@ describe("WorkPacket executor", () => {
     expect(validateContractStructure(receipt).ok).toBe(true);
     expect(emitted).toEqual([receipt]);
   });
+
+  test("normalizes oversized shape-valid provider output into one classified receipt", () => {
+    const emitted = [];
+    const executor = createWorkPacketExecutor({
+      run: () => successfulResult({
+        executor: { product_id: "forge-flow", mode: "x".repeat(20_000) },
+      }),
+      onReceipt: (receipt) => emitted.push(receipt),
+    });
+
+    const receipt = executor.execute(packet(), context());
+
+    expect(receipt.payload).toMatchObject({
+      status: "INCOMPLETE",
+      validation: { code: "INVALID_PROVIDER_RESULT" },
+    });
+    expect(validateContractStructure(receipt).ok).toBe(true);
+    expect(emitted).toEqual([receipt]);
+  });
 });

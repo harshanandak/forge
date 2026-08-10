@@ -1,6 +1,7 @@
 "use strict";
 
 const {
+  canonicalize,
   computeContentHash,
   semanticIdentity,
   validateContract,
@@ -89,6 +90,7 @@ function normalizeProviderResult(result, failure) {
   if (failure) return incompleteProviderResult("PROVIDER_FAILURE");
   try {
     const cloned = structuredClone(result);
+    canonicalize(cloned, { maxBytes: 16_384, maxDepth: 8, maxNodes: 128 });
     const valid = isRecord(cloned)
       && TERMINAL_STATUSES.has(cloned.status)
       && isRecord(cloned.executor)

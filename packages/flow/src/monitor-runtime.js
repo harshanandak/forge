@@ -164,6 +164,28 @@ function callbackBoolean(name, callback, ...args) {
   return decision;
 }
 
+function callbackValue(spec, name, callback, ...args) {
+  let value;
+  try {
+    value = callback(...args);
+  } catch {
+    throw new MonitorRuntimeError("CALLBACK_FAILURE", `${name} failed`);
+  }
+  let thenable;
+  try {
+    thenable = value !== null
+      && (typeof value === "object" || typeof value === "function")
+      && typeof value.then === "function";
+    if (thenable) Promise.resolve(value).catch(() => {});
+  } catch {
+    throw new MonitorRuntimeError("CALLBACK_FAILURE", `${name} failed`);
+  }
+  if (thenable) {
+    throw new MonitorRuntimeError("INVALID_CALLBACK_VALUE", `${name} must be synchronous`);
+  }
+  return callbackClone(spec, value);
+}
+
 function cloneIdentityMap(source) {
   const clone = Object.create(null);
   for (const key of Object.keys(source)) {
@@ -215,11 +237,11 @@ function reduceObservation(spec, state, event) {
     callbackClone(spec, event),
   )) return result(next);
 
-  const nextValue = callbackClone(spec, spec.reducer(
+  const nextValue = callbackValue(spec, "reducer", spec.reducer,
     callbackClone(spec, state.value),
     callbackClone(spec, payload.bounded_payload ?? {}),
     callbackClone(spec, event),
-  ));
+  );
   const nextDigest = computeContentHash({ value: nextValue });
   const changed = nextDigest !== state.valueDigest;
   next.value = structuredClone(nextValue);

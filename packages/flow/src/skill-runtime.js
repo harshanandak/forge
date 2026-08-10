@@ -125,6 +125,23 @@ class SkillRuntime {
       return this._failure("BOUNDED_INPUT_EXCEEDED", {}, skipped);
     }
 
+    const preflightInvoked = resolution.ordered.map((node) => ({
+      nodeId: node.id,
+      status: "INCOMPLETE",
+      evidence: [],
+    }));
+    try {
+      boundedClone({
+        status: "INCOMPLETE",
+        invoked: preflightInvoked,
+        skipped,
+        evidence: preflightInvoked,
+        error: { code: "BOUNDED_OUTPUT_EXCEEDED" },
+      }, this.limits);
+    } catch {
+      return this._failure("BOUNDED_OUTPUT_EXCEEDED");
+    }
+
     this.active = true;
     const invoked = [];
     const evidenceByNode = new Map();
@@ -205,6 +222,24 @@ class SkillRuntime {
       return output;
     } catch {
       if (invoked.length === 0 && error?.code) return safeFailure(error.code);
+      const compactInvoked = invoked.map(({ nodeId, status: invokedStatus }) => ({
+        nodeId,
+        status: invokedStatus,
+        evidence: [],
+      }));
+      const compactFailure = {
+        status: "INCOMPLETE",
+        invoked: compactInvoked,
+        skipped,
+        evidence: compactInvoked,
+        error: { code: "BOUNDED_OUTPUT_EXCEEDED" },
+      };
+      try {
+        boundedClone(compactFailure, this.limits);
+        return compactFailure;
+      } catch {
+        // Preflight normally makes this unreachable; retain a bounded fail-closed fallback.
+      }
       return safeFailure("BOUNDED_OUTPUT_EXCEEDED");
     }
   }

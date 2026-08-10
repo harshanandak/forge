@@ -268,11 +268,12 @@ describe("SkillRuntime", () => {
 
   test("fails closed when aggregate returned evidence exceeds maxNodes", async () => {
     const nodes = Array.from({ length: 129 }, (_value, index) => ({ id: `node-${index}` }));
+    let calls = 0;
     const runtime = new SkillRuntime({
       metadata: metadata(nodes),
       handlers: Object.fromEntries(nodes.map((node) => [
         node.id,
-        async () => ({ status: "PASS", evidence: [] }),
+        async () => { calls += 1; return { status: "PASS", evidence: [] }; },
       ])),
     });
 
@@ -283,16 +284,18 @@ describe("SkillRuntime", () => {
       error: { code: "BOUNDED_OUTPUT_EXCEEDED" },
     });
     expect(result.invoked).toEqual([]);
+    expect(calls).toBe(0);
   });
 
   test("fails closed when aggregate returned evidence exceeds maxBytes", async () => {
     const nodes = [{ id: "one" }, { id: "two" }];
+    let calls = 0;
     const runtime = new SkillRuntime({
       metadata: metadata(nodes),
       limits: { maxBytes: 1_000 },
       handlers: Object.fromEntries(nodes.map((node) => [
         node.id,
-        async () => ({ status: "PASS", evidence: [{ summary: "x".repeat(300) }] }),
+        async () => { calls += 1; return { status: "PASS", evidence: [{ summary: "x".repeat(300) }] }; },
       ])),
     });
 
@@ -303,5 +306,7 @@ describe("SkillRuntime", () => {
       error: { code: "BOUNDED_OUTPUT_EXCEEDED" },
     });
     expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBeLessThanOrEqual(1_000);
+    expect(result.invoked.length).toBeGreaterThan(0);
+    expect(result.invoked).toHaveLength(calls);
   });
 });
