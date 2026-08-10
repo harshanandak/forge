@@ -118,6 +118,7 @@ function createFeedbackReport(input = {}, options = {}) {
     producer: {
       product_id: 'forge-memory',
       product_version: productVersion,
+      // A per-report nonce prevents anonymous reports from becoming a cross-report tracking key.
       instance_id: reportId,
     },
     capabilities_used: [],
@@ -147,12 +148,15 @@ function assertConsent(report, consent) {
   return true;
 }
 
-function createFeedbackIntake({ acceptFeedback, deliverFeedback } = {}) {
+function createFeedbackIntake({ acceptFeedback, deliverFeedback, deliveryTimeoutMs = 10_000 } = {}) {
   if (typeof acceptFeedback !== 'function') {
     throw new TypeError('acceptFeedback must be an atomic durable acceptance function');
   }
   if (deliverFeedback !== undefined && typeof deliverFeedback !== 'function') {
     throw new TypeError('deliverFeedback must be a function when provided');
+  }
+  if (!Number.isInteger(deliveryTimeoutMs) || deliveryTimeoutMs < 1) {
+    throw new TypeError('deliveryTimeoutMs must be a positive integer');
   }
 
   function preview(report) {
@@ -191,17 +195,39 @@ function createFeedbackIntake({ acceptFeedback, deliverFeedback } = {}) {
     if (!deliverFeedback) {
       return { status: 'accepted-local', accepted: true, delivered: false, receipt: result.receipt };
     }
+    const controller = new AbortController();
+    let timeoutId;
+    const timeout = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        controller.abort();
+        reject(new FeedbackIntakeError('FEEDBACK_DELIVERY_TIMEOUT', 'Feedback delivery timed out'));
+      }, deliveryTimeoutMs);
+    });
     try {
-      const delivery = await deliverFeedback(structuredClone(report), { receipt: result.receipt });
+      const delivery = await Promise.race([
+        Promise.resolve().then(() => deliverFeedback(structuredClone(report), {
+          receipt: result.receipt,
+          signal: controller.signal,
+        })),
+        timeout,
+      ]);
       return { status: 'accepted', accepted: true, delivered: true, receipt: result.receipt, delivery };
-    } catch {
+    } catch (error) {
+      const code = error?.code === 'FEEDBACK_DELIVERY_TIMEOUT'
+        ? 'FEEDBACK_DELIVERY_TIMEOUT'
+        : 'FEEDBACK_DELIVERY_FAILED';
       return {
         status: 'accepted-local',
         accepted: true,
         delivered: false,
         receipt: result.receipt,
-        delivery_error: { code: 'FEEDBACK_DELIVERY_FAILED' },
+        delivery_error: {
+          code,
+          reason: redactString(String(error?.message || 'unknown delivery failure')).slice(0, 200),
+        },
       };
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 

@@ -18,7 +18,6 @@ const IDS = [
 function report(overrides = {}, id = IDS[0]) {
   return createFeedbackReport({
     productVersion: '0.1.0-beta.7',
-    instanceId: 'local-test',
     stableErrorCode: 'FORGE_TEST_FAILED',
     affectedCapability: 'memory.recall',
     reproductionSteps: ['Run C:\\Users\\alice\\forge with token=ghp_123456789012345678901234567890'],
@@ -152,11 +151,13 @@ describe('structured feedback intake', () => {
     expect(delivered).toHaveLength(1);
   });
 
-  test('keeps an accepted local report when optional delivery fails', async () => {
+  test('keeps an accepted local report and redacts the bounded delivery failure reason', async () => {
     const store = atomicFeedbackStore();
     const intake = createFeedbackIntake({
       acceptFeedback: store.acceptFeedback,
-      deliverFeedback: async () => { throw new Error('offline'); },
+      deliverFeedback: async () => {
+        throw new Error('offline token=ghp_123456789012345678901234567890 at C:\\Users\\alice\\forge');
+      },
     });
 
     const value = report();
@@ -164,7 +165,36 @@ describe('structured feedback intake', () => {
       status: 'accepted-local',
       accepted: true,
       delivered: false,
-      delivery_error: { code: 'FEEDBACK_DELIVERY_FAILED' },
+      delivery_error: {
+        code: 'FEEDBACK_DELIVERY_FAILED',
+        reason: 'offline [REDACTED] at <user-path>/forge',
+      },
+    });
+  });
+
+  test('bounds optional delivery even when the transport ignores cancellation', async () => {
+    const store = atomicFeedbackStore();
+    let signal;
+    const intake = createFeedbackIntake({
+      acceptFeedback: store.acceptFeedback,
+      deliveryTimeoutMs: 5,
+      deliverFeedback: async (_value, context) => {
+        signal = context.signal;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      },
+    });
+
+    const value = report();
+    const started = Date.now();
+    const result = await intake.submit(value, consentFor(value));
+
+    expect(Date.now() - started).toBeLessThan(50);
+    expect(signal.aborted).toBe(true);
+    expect(result).toMatchObject({
+      status: 'accepted-local',
+      accepted: true,
+      delivered: false,
+      delivery_error: { code: 'FEEDBACK_DELIVERY_TIMEOUT' },
     });
   });
 });

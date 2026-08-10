@@ -19,6 +19,16 @@ describe('memory hygiene review', () => {
     expect(first.findings[0].review_id).toBe(second.findings[0].review_id);
   });
 
+  test('uses locale-independent code-unit ordering for deterministic Unicode review ids', () => {
+    const first = ['z', 'ä'];
+    const second = ['ä', 'z'];
+
+    const review = reviewMemories([{ value: first }, { value: second }]);
+
+    expect(review.findings).toHaveLength(1);
+    expect(review.findings[0].review_id).toBe('memory-duplicate-e3cb5a300bbc3b85');
+  });
+
   test('explicit positive and negative claims produce a stable contradiction id', () => {
     const first = reviewMemories([{ note: 'Use Bun for installs' }, { note: 'Do not use Bun for installs' }]);
     const second = reviewMemories([{ timestamp: 'volatile', note: 'do NOT use bun for installs.' }, { note: 'use bun for installs' }]);

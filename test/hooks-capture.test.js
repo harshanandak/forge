@@ -85,6 +85,20 @@ describe('forge hooks capture (context hook — capture on exit)', () => {
     expect(store.writes).toHaveLength(1);
   });
 
+  test('orders Unicode issue identities by locale-independent code units', async () => {
+    const store = recordingStore();
+    await run(['capture', '--harness', 'claude', '--trigger', 'stop'], {
+      append: store.append,
+      fetchNotes: store.fetchNotes,
+      fetchIssues: () => [
+        { id: 'ä', title: 'Aether' },
+        { id: 'z', title: 'Zulu' },
+      ],
+    });
+
+    expect(store.writes[0].note.indexOf('Zulu')).toBeLessThan(store.writes[0].note.indexOf('Aether'));
+  });
+
   test('a changed in-progress set DOES write a fresh capture (not deduped)', async () => {
     const store = recordingStore();
     const base = { append: store.append, fetchNotes: store.fetchNotes };
