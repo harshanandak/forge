@@ -168,6 +168,25 @@ describe('deriveReadiness — derived facts, never stored', () => {
 		expect(result.state).not.toBe('claimed');
 	});
 
+	test('a finite active lease stays claimed when the caller clock is unusable', () => {
+		const result = deriveReadiness(
+			{ id: 'a', status: 'open' },
+			{
+				now: 'not-a-clock',
+				claims: [{
+					issue_id: 'a',
+					actor: 'other',
+					state: 'active',
+					expires_at: '2026-06-18T00:00:00.000Z',
+				}],
+				actor: 'me',
+			},
+		);
+		expect(result.ready).toBe(false);
+		expect(result.state).toBe('claimed');
+		expect(result.reasons.map(reason => reason.code)).toContain('claimed');
+	});
+
 	test('an issue claimed by the requesting actor is still ready for that actor', () => {
 		const result = deriveReadiness(
 			{ id: 'a', status: 'open' },

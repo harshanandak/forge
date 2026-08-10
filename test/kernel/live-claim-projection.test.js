@@ -7,6 +7,20 @@ const path = require('node:path');
 
 const { createLocalBroker } = require('../../lib/kernel/broker');
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+const { isLiveClaim } = require('../../lib/kernel/live-claim-projection');
+
+test('live claim expiry normalizes valid clocks and fails closed on an unusable clock', () => {
+	const issue = { id: 'clocked', status: 'open' };
+	const claim = {
+		issue_id: 'clocked',
+		state: 'active',
+		expires_at: '2026-06-17T00:00:00.000Z',
+	};
+
+	expect(isLiveClaim(claim, issue, 'not-a-clock')).toBe(true);
+	expect(isLiveClaim(claim, issue, '2026-06-16T20:00:00-04:00')).toBe(false);
+	expect(isLiveClaim({ ...claim, expires_at: null }, issue, 'not-a-clock')).toBe(true);
+});
 
 async function removeDirWithRetry(dir, attempts = 10) {
 	for (let attempt = 0; attempt < attempts; attempt += 1) {

@@ -47,6 +47,17 @@ describe('lease-enforcer isLeaseExpired', () => {
 		expect(isLeaseExpired({ expires_at: '2026-06-18T00:00:01.000Z' }, NOW)).toBe(false);
 	});
 
+	test('normalizes a parseable clock and fails closed when the clock is unusable', () => {
+		expect(isLeaseExpired(
+			{ expires_at: NOW },
+			'2026-06-17T20:00:00-04:00',
+		)).toBe(true);
+		expect(isLeaseExpired(
+			{ expires_at: '2026-06-17T23:59:59.000Z' },
+			'not-a-clock',
+		)).toBe(false);
+	});
+
 	test('treats a null/absent expires_at as never expiring', () => {
 		expect(isLeaseExpired({ expires_at: null }, NOW)).toBe(false);
 		expect(isLeaseExpired({}, NOW)).toBe(false);
