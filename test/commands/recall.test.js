@@ -7,6 +7,8 @@ const remember = require('../../lib/commands/remember');
 const projectMemory = require('../../lib/project-memory');
 const { OPEN, CLOSE } = require('../../lib/untrusted-content');
 const { createKernelProjectRoots } = require('../helpers/kernel-project-root');
+const { seedRecallMemories } = require('../helpers/recall-memory-fixture');
+const { createRecallPhaseWatchdog } = require('../helpers/recall-phase-watchdog');
 
 // recall reads the kernel store, whose default path resolves from the git common dir — so
 // each temp project is a throwaway git repo. Notes are seeded through the real remember path.
@@ -23,31 +25,43 @@ afterEach(() => {
 
 describe('forge recall command', () => {
   test('labels trust/source/update, separates suggestions, and skips an oversized note', async () => {
-    const projectRoot = makeProjectRoot();
-    projectMemory.write(projectRoot, {
-      key: 'small-confirmed',
-      value: 'small confirmed memory',
-      sourceAgent: 'forge remember',
-      tags: [],
-      timestamp: '2026-07-30T00:00:00.000Z',
-    });
-    projectMemory.write(projectRoot, {
-      key: 'small-suggested',
-      value: 'small suggested memory',
-      sourceAgent: 'forge remember (imported)',
-      tags: ['trust:suggested'],
-      timestamp: '2026-07-29T00:00:00.000Z',
-    });
-    projectMemory.write(projectRoot, {
-      key: 'oversized',
-      value: `oversized ${'x'.repeat(6000)}`,
-      sourceAgent: 'forge remember',
-      tags: [],
-      timestamp: '2026-07-31T00:00:00.000Z',
-    });
-
+    const watchdog = createRecallPhaseWatchdog();
+    let result;
     const observations = [];
-    const result = await recall.handler([], {}, projectRoot, { onUsageEvidence: observation => observations.push(observation) });
+    try {
+      watchdog.enter('project setup');
+      const projectRoot = makeProjectRoot();
+      watchdog.enter('fixture seeding');
+      await seedRecallMemories(projectRoot, [
+        {
+          key: 'small-confirmed',
+          value: 'small confirmed memory',
+          sourceAgent: 'forge remember',
+          tags: [],
+          timestamp: '2026-07-30T00:00:00.000Z',
+        },
+        {
+          key: 'small-suggested',
+          value: 'small suggested memory',
+          sourceAgent: 'forge remember (imported)',
+          tags: ['trust:suggested'],
+          timestamp: '2026-07-29T00:00:00.000Z',
+        },
+        {
+          key: 'oversized',
+          value: `oversized ${'x'.repeat(6000)}`,
+          sourceAgent: 'forge remember',
+          tags: [],
+          timestamp: '2026-07-31T00:00:00.000Z',
+        },
+      ]);
+      watchdog.enter('recall');
+      result = await recall.handler([], {}, projectRoot, {
+        onUsageEvidence: observation => observations.push(observation),
+      });
+    } finally {
+      watchdog.stop();
+    }
 
     expect(result.output).toContain('Confirmed memory');
     expect(result.output).toContain('Suggested memory — verify before relying');
@@ -59,6 +73,54 @@ describe('forge recall command', () => {
     expect(result.output).not.toContain('oversized ');
     expect(Math.ceil(result.output.length / 4)).toBeLessThanOrEqual(1200);
     expect(observations).toEqual([{ attempted: 2, appended: 2, failed: 0 }]);
+  });
+
+  test('recall fixture watchdog reports only a threshold breach with the active phase', () => {
+    let now = 0;
+    let callback;
+    const diagnostics = [];
+    const cleared = [];
+    const watchdog = createRecallPhaseWatchdog({
+      thresholdMs: 10,
+      now: () => now,
+      emit: message => diagnostics.push(message),
+      setTimeoutImpl: scheduled => {
+        callback = scheduled;
+        return 1;
+      },
+      clearTimeoutImpl: handle => cleared.push(handle),
+    });
+
+    watchdog.enter('project setup');
+    now = 2;
+    watchdog.enter('fixture seeding');
+    now = 12;
+    callback();
+
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toContain('active phase: fixture seeding');
+    expect(diagnostics[0]).toContain('project setup=2.0ms');
+    expect(diagnostics[0]).toContain('fixture seeding=10.0ms');
+    watchdog.stop();
+    expect(cleared).toHaveLength(0);
+
+    const quietDiagnostics = [];
+    const quietCleared = [];
+    let quietCallback;
+    const quiet = createRecallPhaseWatchdog({
+      thresholdMs: 10,
+      emit: message => quietDiagnostics.push(message),
+      setTimeoutImpl: scheduled => {
+        quietCallback = scheduled;
+        return 2;
+      },
+      clearTimeoutImpl: handle => quietCleared.push(handle),
+    });
+    quiet.enter('recall');
+    quiet.stop();
+    quietCallback();
+    expect(quietDiagnostics).toEqual([]);
+    expect(quietCleared).toEqual([2]);
   });
 
   test('exports the registry command contract', () => {
