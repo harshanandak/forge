@@ -4,10 +4,12 @@ const { types } = require("node:util");
 const {
   canonicalize,
   computeContentHash,
+  validateContractStructure,
 } = require("@forge/memory-contracts");
 
 const MAX_EVENTS_PER_RECEIPT = 4096;
 const MAX_INPUT_BYTES = 1_048_576;
+const MAX_MONITOR_ID_LENGTH = 128;
 const SHA256 = /^[0-9a-f]{64}$/;
 const TARGET = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 
@@ -55,11 +57,28 @@ function snapshotCanonical(value, label) {
   }
 }
 
+function assertMonitorId(value) {
+  const snapshot = snapshotCanonical(value, "monitorId");
+  if (typeof snapshot !== "string" || snapshot.length === 0 || snapshot.length > MAX_MONITOR_ID_LENGTH) {
+    fail("INPUT_INVALID", "monitorId must be a bounded canonical string");
+  }
+  return snapshot;
+}
+
 function assertEnvelope(value, schemaId) {
   const snapshot = snapshotCanonical(value, schemaId);
-  const computedHash = snapshot && typeof snapshot === "object"
-    ? computeContentHash(snapshot)
-    : undefined;
+  let validation;
+  try {
+    validation = validateContractStructure(snapshot);
+  } catch {
+    fail("INPUT_INVALID", `${schemaId} structure validation failed`);
+  }
+  if (!validation?.ok) {
+    fail("INPUT_INVALID", `${schemaId} structure validation failed`, {
+      errors: validation?.errors,
+    });
+  }
+  const computedHash = computeContentHash(snapshot);
   if (
     !snapshot ||
     typeof snapshot !== "object" ||
@@ -72,6 +91,9 @@ function assertEnvelope(value, schemaId) {
       actualHash: snapshot?.content_hash,
       computedHash,
     });
+  }
+  if (schemaId === "forge.memory.monitor-event.v1" || schemaId === "forge.memory.monitor-receipt.v1") {
+    assertMonitorId(snapshot.payload.monitor_id);
   }
   return snapshot;
 }
@@ -181,15 +203,13 @@ function createMonitorDurabilityBridge(options) {
     },
 
     async acknowledgeDelivery(monitorId, receipt, config = {}) {
-      if (typeof monitorId !== "string" || monitorId.length === 0) {
-        fail("INPUT_INVALID", "monitorId is required for delivery acknowledgement");
-      }
+      const safeMonitorId = assertMonitorId(monitorId);
       const safeReceipt = assertEnvelope(receipt, "forge.memory.delivery-receipt.v1");
       const safeConfig = snapshotCanonical(config, "monitor acknowledgement config");
       if (!targets.includes(safeReceipt.payload.target)) {
         fail("INPUT_INVALID", "Delivery receipt target is outside the monitor targets");
       }
-      const rows = assertRows(await providerCall(() => listEvents(monitorId, safeConfig)), monitorId);
+      const rows = assertRows(await providerCall(() => listEvents(safeMonitorId, safeConfig)), safeMonitorId);
       const event = rows.find((row) => row.event_id === safeReceipt.payload.event_id);
       if (!event) fail("INPUT_INVALID", "Delivery receipt references an unknown monitor event");
       const persistence = await providerCall(() => recordDeliveryReceipt(safeReceipt, safeConfig));

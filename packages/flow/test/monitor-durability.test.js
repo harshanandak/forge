@@ -236,6 +236,73 @@ describe('monitor durability bridge', () => {
     expect(driver.state.events.size).toBe(0);
   });
 
+  test('rejects hash-consistent structurally invalid events and receipts before provider calls', async () => {
+    const driver = createDurableDriver();
+    const deliver = mock(async () => undefined);
+    const validEvent = monitorEvent();
+    const invalidEventPayload = { ...validEvent.payload };
+    delete invalidEventPayload.actionability;
+    const invalidEvent = envelope(validEvent.schema_id, validEvent.object_id, invalidEventPayload);
+
+    await expect(bridge(driver, deliver).persistEvent(invalidEvent)).rejects.toMatchObject({
+      code: 'INPUT_INVALID',
+    });
+    expect(driver.state.events.size).toBe(0);
+    expect(deliver).not.toHaveBeenCalled();
+
+    await bridge(driver).persistEvent(validEvent);
+    let listCalls = 0;
+    const originalList = driver.listMonitorEvents;
+    driver.listMonitorEvents = (...args) => {
+      listCalls += 1;
+      return originalList.call(driver, ...args);
+    };
+
+    const validDelivery = deliveryReceipt(validEvent);
+    const invalidDeliveryPayload = { ...validDelivery.payload };
+    delete invalidDeliveryPayload.event_id;
+    const invalidDelivery = envelope(validDelivery.schema_id, validDelivery.object_id, invalidDeliveryPayload);
+    await expect(bridge(driver).acknowledgeDelivery('monitor-1', invalidDelivery)).rejects.toMatchObject({
+      code: 'INPUT_INVALID',
+    });
+
+    const validTerminal = terminalReceipt([validEvent]);
+    const invalidTerminalPayload = { ...validTerminal.payload };
+    delete invalidTerminalPayload.owner_run_id;
+    const invalidTerminal = envelope(validTerminal.schema_id, validTerminal.object_id, invalidTerminalPayload);
+    await expect(bridge(driver).recordTerminalReceipt(invalidTerminal)).rejects.toMatchObject({
+      code: 'INPUT_INVALID',
+    });
+
+    expect(listCalls).toBe(0);
+    expect(driver.state.deliveryReceipts.size).toBe(0);
+    expect(driver.state.terminals.size).toBe(0);
+  });
+
+  test('rejects monitor IDs that are not bounded before append or list provider calls', async () => {
+    const driver = createDurableDriver();
+    const longMonitorId = 'm'.repeat(129);
+    const deliver = mock(async () => undefined);
+    await expect(bridge(driver, deliver).persistEvent(monitorEvent({ monitorId: longMonitorId })))
+      .rejects.toMatchObject({ code: 'INPUT_INVALID' });
+    expect(driver.state.events.size).toBe(0);
+    expect(deliver).not.toHaveBeenCalled();
+
+    const validEvent = monitorEvent();
+    await bridge(driver).persistEvent(validEvent);
+    let listCalls = 0;
+    const originalList = driver.listMonitorEvents;
+    driver.listMonitorEvents = (...args) => {
+      listCalls += 1;
+      return originalList.call(driver, ...args);
+    };
+    await expect(bridge(driver).acknowledgeDelivery(longMonitorId, deliveryReceipt(validEvent)))
+      .rejects.toMatchObject({ code: 'INPUT_INVALID' });
+    await expect(bridge(driver).recordTerminalReceipt(terminalReceipt([validEvent], { monitorId: longMonitorId })))
+      .rejects.toMatchObject({ code: 'INPUT_INVALID' });
+    expect(listCalls).toBe(0);
+  });
+
   test('reports delivery failure without hiding that the event is already durable', async () => {
     const driver = createDurableDriver();
     const deliver = mock(async () => {
