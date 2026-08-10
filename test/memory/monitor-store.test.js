@@ -460,6 +460,10 @@ await (async () => {
 		const event = await store.getEvent('event-1');
 		expect(event).toMatchObject({ event_id: 'event-1', monitor_id: 'monitor-1', sequence: 1 });
 		expect(JSON.parse(event.envelope_json).payload.event_id).toBe('event-1');
+		expect((await store.listEvents('monitor-1', { monitorReadLimit: 2 }))
+			.map(row => [row.sequence, row.event_id])).toEqual([
+				[0, 'event-0'], [1, 'event-1'], [2, 'event-2'],
+			]);
 
 		expect(await store.readEventTail('monitor-1', { limit: 2 })).toMatchObject({
 			events: [{ sequence: 1 }, { sequence: 2 }],
