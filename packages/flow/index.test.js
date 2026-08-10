@@ -54,6 +54,8 @@ describe("Flow contract boundary", () => {
       createBoundedLoopState: expect.any(Function),
       createWorkPacketExecutor: expect.any(Function),
       MonitorRuntimeError: expect.any(Function),
+      MonitorDurabilityError: expect.any(Function),
+      createMonitorDurabilityBridge: expect.any(Function),
       createMonitorReceipt: expect.any(Function),
       createMonitorState: expect.any(Function),
       createProcessLifecycle: expect.any(Function),

@@ -22,6 +22,10 @@ const {
   createProcessState,
   reduceProcessLifecycle,
 } = require("./src/process-lifecycle");
+const {
+  MonitorDurabilityError,
+  createMonitorDurabilityBridge,
+} = require("./src/monitor-durability");
 
 function requiredString(options, name) {
   const value = options[name];
@@ -89,12 +93,14 @@ module.exports = {
   BoundedLoopError,
   EfficiencySupervisor,
   FlowExecutionError,
+  MonitorDurabilityError,
   MonitorRuntimeError,
   ProcessLifecycleError,
   SkillRuntime,
   createBoundedLoop,
   createBoundedLoopState,
   createMonitorReceipt,
+  createMonitorDurabilityBridge,
   createMonitorState,
   createProcessLifecycle,
   createProcessState,
