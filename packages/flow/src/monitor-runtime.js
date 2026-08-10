@@ -81,6 +81,7 @@ function createMonitorState(spec) {
     lastSequence: -1,
     acknowledgementCursor: -1,
     seenEvents: Object.create(null),
+    seenEventOrder: [],
     evidenceHashes: [],
     pending: [],
     deferred: [],
@@ -223,10 +224,11 @@ function reduceObservation(spec, state, event) {
     configurable: true,
     writable: true,
   });
+  next.seenEventOrder.push(payload.event_id);
   next.evidenceHashes.push(event.content_hash);
   const maxHistory = spec.maxHistory ?? MAX_HISTORY;
-  while (Object.keys(next.seenEvents).length > maxHistory) {
-    delete next.seenEvents[Object.keys(next.seenEvents)[0]];
+  while (next.seenEventOrder.length > maxHistory) {
+    delete next.seenEvents[next.seenEventOrder.shift()];
   }
   if (next.evidenceHashes.length > maxHistory) {
     next.evidenceHashes.splice(0, next.evidenceHashes.length - maxHistory);
@@ -259,9 +261,16 @@ function reduceObservation(spec, state, event) {
   if (payload.actionability === "advisory") return result(next);
   if (next.pending.length >= spec.maxPending) {
     const deferred = { sequence: payload.sequence, eventId: payload.event_id };
-    if (next.deferred.length < spec.maxPending) next.deferred.push(deferred);
-    else next.deferred[next.deferred.length - 1] = deferred;
-    return result(next, [{ type: "BACKPRESSURE", decision: "DEFER", sequence: payload.sequence }]);
+    if (next.deferred.length < spec.maxPending) {
+      next.deferred.push(deferred);
+      return result(next, [{ type: "BACKPRESSURE", decision: "DEFER", sequence: payload.sequence }]);
+    }
+    const dropped = next.deferred[next.deferred.length - 1];
+    next.deferred[next.deferred.length - 1] = deferred;
+    return result(next, [
+      { type: "BACKPRESSURE", decision: "DROP", sequence: dropped.sequence, eventId: dropped.eventId },
+      { type: "BACKPRESSURE", decision: "DEFER", sequence: payload.sequence },
+    ]);
   }
   next.pending.push({ sequence: payload.sequence, eventId: payload.event_id });
   return result(next, [{

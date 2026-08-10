@@ -316,6 +316,45 @@ describe("MonitorSpec deterministic reducer", () => {
     expect(state.evidenceHashes).toHaveLength(2);
   });
 
+  test("evicts numeric event ids in insertion order", () => {
+    const monitorSpec = spec({ maxHistory: 2, terminalPredicate: () => false });
+    let state = createMonitorState(monitorSpec);
+    for (const [sequence, eventId] of [[0, "10"], [1, "2"], [2, "1"]]) {
+      state = reduceMonitor(monitorSpec, state, {
+        kind: "observation",
+        event: observation(sequence, `STATE-${sequence}`, {
+          actionability: "advisory",
+          event_id: eventId,
+        }),
+      }).state;
+    }
+
+    expect(state.seenEventOrder).toEqual(["2", "1"]);
+    expect(Object.hasOwn(state.seenEvents, "10")).toBe(false);
+    expect(Object.hasOwn(state.seenEvents, "2")).toBe(true);
+    expect(Object.hasOwn(state.seenEvents, "1")).toBe(true);
+  });
+
+  test("reports the deferred transition replaced under full backpressure", () => {
+    const monitorSpec = spec({ maxPending: 1, terminalPredicate: () => false });
+    const first = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
+      kind: "observation", event: observation(0, "ONE"),
+    });
+    const second = reduceMonitor(monitorSpec, first.state, {
+      kind: "observation", event: observation(1, "TWO"),
+    });
+
+    const third = reduceMonitor(monitorSpec, second.state, {
+      kind: "observation", event: observation(2, "THREE"),
+    });
+
+    expect(third.state.deferred).toEqual([{ sequence: 2, eventId: "event-2" }]);
+    expect(third.effects).toEqual([
+      { type: "BACKPRESSURE", decision: "DROP", sequence: 1, eventId: "event-1" },
+      { type: "BACKPRESSURE", decision: "DEFER", sequence: 2 },
+    ]);
+  });
+
   test("isolates prior state and events from mutating MonitorSpec callbacks", () => {
     const monitorSpec = spec({
       filter: (payload, event) => {

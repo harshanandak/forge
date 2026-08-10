@@ -113,6 +113,35 @@ describe("WorkPacket executor", () => {
     expect(emissions).toBe(1);
   });
 
+  test("fails closed at bounded idempotency capacity without evicting accepted packets", () => {
+    let runs = 0;
+    const executor = createWorkPacketExecutor({
+      maxAcceptedPackets: 1,
+      run: () => { runs += 1; return successfulResult(); },
+    });
+    const firstPacket = packet();
+    const firstReceipt = executor.execute(firstPacket, context());
+    const secondPacket = packet();
+    secondPacket.object_id = "00000000-0000-4000-8000-000000000002";
+    secondPacket.payload.packet_id = "packet-2";
+    secondPacket.content_hash = computeContentHash(secondPacket);
+
+    expect(() => executor.execute(secondPacket, context())).toThrow("capacity");
+    expect(executor.execute(firstPacket, context())).toEqual(firstReceipt);
+    expect(runs).toBe(1);
+  });
+
+  test("classifies a falsy provider throw as PROVIDER_FAILURE", () => {
+    const executor = createWorkPacketExecutor({ run: () => { throw undefined; } });
+
+    const receipt = executor.execute(packet(), context());
+
+    expect(receipt.payload).toMatchObject({
+      status: "INCOMPLETE",
+      validation: { code: "PROVIDER_FAILURE" },
+    });
+  });
+
   test("isolates deterministic execution from a failing receipt observer", () => {
     let runs = 0;
     let emissions = 0;

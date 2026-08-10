@@ -62,7 +62,7 @@ class SkillRuntime {
     const optionsValid = isPlainObject(options);
     if (!optionsValid) options = {};
     this.metadata = options.metadata;
-    this.handlers = options.handlers || {};
+    this.handlers = Object.assign(Object.create(null), options.handlers || {});
     this.capabilities = new Set(options.capabilities || []);
     this.limits = { ...DEFAULT_LIMITS, ...(options.limits || {}) };
     this.active = false;
@@ -111,7 +111,7 @@ class SkillRuntime {
           );
         }
       }
-      if (typeof this.handlers[node.id] !== "function") {
+      if (!Object.hasOwn(this.handlers, node.id) || typeof this.handlers[node.id] !== "function") {
         return this._failure("MISSING_HANDLER", { nodeId: node.id }, skipped);
       }
     }
@@ -148,21 +148,44 @@ class SkillRuntime {
     try {
       for (const node of resolution.ordered) {
         const dependencyEvidence = (node.dependsOn || []).map((nodeId) => evidenceByNode.get(nodeId));
-        let result;
+        let handlerArguments;
         try {
-          result = await this.handlers[node.id]({
+          handlerArguments = {
             nodeId: node.id,
             inputs: boundedClone(selectKeys(inputs, node.inputKeys || []), this.limits),
             context: boundedClone(selectKeys(context, node.contextKeys || []), this.limits),
             dependencyEvidence: boundedClone(dependencyEvidence, this.limits),
-          });
-          result = boundedClone(result, this.limits);
+          };
         } catch {
           return this._boundedResult(
             "INCOMPLETE",
             invoked,
             skipped,
-            { code: result === undefined ? "HANDLER_FAILED" : "INVALID_EVIDENCE", nodeId: node.id },
+            { code: "INVALID_ARGUMENTS", nodeId: node.id },
+          );
+        }
+
+        let handlerResult;
+        try {
+          handlerResult = await this.handlers[node.id](handlerArguments);
+        } catch {
+          return this._boundedResult(
+            "INCOMPLETE",
+            invoked,
+            skipped,
+            { code: "HANDLER_FAILED", nodeId: node.id },
+          );
+        }
+
+        let result;
+        try {
+          result = boundedClone(handlerResult, this.limits);
+        } catch {
+          return this._boundedResult(
+            "INCOMPLETE",
+            invoked,
+            skipped,
+            { code: "INVALID_EVIDENCE", nodeId: node.id },
           );
         }
 

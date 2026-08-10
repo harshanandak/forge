@@ -9,6 +9,7 @@ const {
 } = require("@forge/memory-contracts");
 
 const TERMINAL_STATUSES = new Set(["PASS", "FAIL", "INCOMPLETE"]);
+const MAX_ACCEPTED_PACKETS = 128;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 
@@ -86,8 +87,8 @@ function isOptionalNonNegativeInteger(value) {
   return value === undefined || (Number.isInteger(value) && value >= 0);
 }
 
-function normalizeProviderResult(result, failure) {
-  if (failure) return incompleteProviderResult("PROVIDER_FAILURE");
+function normalizeProviderResult(result, providerFailed) {
+  if (providerFailed) return incompleteProviderResult("PROVIDER_FAILURE");
   try {
     const cloned = structuredClone(result);
     canonicalize(cloned, { maxBytes: 16_384, maxDepth: 8, maxNodes: 128 });
@@ -213,9 +214,14 @@ function buildReceipt(workPacket, executionContext, result) {
   return receipt;
 }
 
-function createWorkPacketExecutor({ run, onReceipt = () => {} } = {}) {
+function createWorkPacketExecutor({ run, onReceipt = () => {}, maxAcceptedPackets = MAX_ACCEPTED_PACKETS } = {}) {
   if (typeof run !== "function") throw new TypeError("run must be a function");
   if (typeof onReceipt !== "function") throw new TypeError("onReceipt must be a function");
+  if (!Number.isSafeInteger(maxAcceptedPackets)
+    || maxAcceptedPackets < 1
+    || maxAcceptedPackets > MAX_ACCEPTED_PACKETS) {
+    throw new TypeError(`maxAcceptedPackets must be an integer from 1 to ${MAX_ACCEPTED_PACKETS}`);
+  }
   const acceptedPackets = new Map();
 
   return Object.freeze({
@@ -230,18 +236,21 @@ function createWorkPacketExecutor({ run, onReceipt = () => {} } = {}) {
         }
         return structuredClone(accepted.receipt);
       }
+      if (acceptedPackets.size >= maxAcceptedPackets) {
+        throw new FlowExecutionError("CAPACITY_EXCEEDED", "WorkPacket idempotency capacity exceeded");
+      }
 
       let providerResult;
-      let providerFailure;
+      let providerFailed = false;
       try {
         providerResult = run(structuredClone(workPacket));
         if (providerResult && typeof providerResult.then === "function") {
           throw new TypeError("run must be synchronous");
         }
-      } catch (error) {
-        providerFailure = error;
+      } catch {
+        providerFailed = true;
       }
-      let result = normalizeProviderResult(providerResult, providerFailure);
+      let result = normalizeProviderResult(providerResult, providerFailed);
       authorizeAndClassify(result, workPacket.payload.allowed_mutations);
       let receipt;
       try {

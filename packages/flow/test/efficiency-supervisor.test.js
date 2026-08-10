@@ -54,6 +54,13 @@ describe("EfficiencySupervisor", () => {
     expect(supervisor.observe({ totalTokens: 391 }).actions).toEqual([]);
   });
 
+  test("preserves a terminal COMPLETE result when later input is malformed", () => {
+    const supervisor = new EfficiencySupervisor({ tokenBudget: 1_000 });
+    const terminal = supervisor.observe({ totalTokens: 390, outcomeComplete: true });
+
+    expect(supervisor.observe(null)).toEqual({ ...terminal, actions: [] });
+  });
+
   test.each([
     [true, false, "COMPLETE", "COMPLETE"],
     [false, true, "HANDOFF", "INCOMPLETE"],

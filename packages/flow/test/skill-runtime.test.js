@@ -142,6 +142,19 @@ describe("SkillRuntime", () => {
     expect(calls).toEqual([]);
   });
 
+  test("requires handlers to be own properties", async () => {
+    const runtime = new SkillRuntime({
+      metadata: metadata([{ id: "constructor" }]),
+      handlers: {},
+    });
+
+    expect(await runtime.invoke({ nodes: ["constructor"] })).toMatchObject({
+      status: "INCOMPLETE",
+      invoked: [],
+      error: { code: "MISSING_HANDLER", nodeId: "constructor" },
+    });
+  });
+
   test("fails safely for an unknown requested node", async () => {
     const runtime = new SkillRuntime({ metadata: metadata([{ id: "intent" }]), handlers: {} });
 
@@ -245,6 +258,39 @@ describe("SkillRuntime", () => {
       status: "INCOMPLETE",
       invoked: [],
       error: { code: "INVALID_EVIDENCE", nodeId: "intent" },
+    });
+  });
+
+  test("distinguishes argument, handler, and result failures", async () => {
+    const argumentNode = { id: "argument" };
+    const argumentCalls = [];
+    const argumentRuntime = new SkillRuntime({
+      metadata: metadata([argumentNode]),
+      handlers: { argument: passingHandler("argument", argumentCalls) },
+    });
+    Object.defineProperty(argumentNode, "inputKeys", {
+      get() { throw new Error("hostile metadata"); },
+    });
+
+    expect(await argumentRuntime.invoke({ nodes: ["argument"] })).toMatchObject({
+      error: { code: "INVALID_ARGUMENTS", nodeId: "argument" },
+    });
+    expect(argumentCalls).toEqual([]);
+
+    const thrownRuntime = new SkillRuntime({
+      metadata: metadata([{ id: "thrown" }]),
+      handlers: { thrown: async () => { throw new Error("handler failed"); } },
+    });
+    expect(await thrownRuntime.invoke({ nodes: ["thrown"] })).toMatchObject({
+      error: { code: "HANDLER_FAILED", nodeId: "thrown" },
+    });
+
+    const undefinedRuntime = new SkillRuntime({
+      metadata: metadata([{ id: "undefined" }]),
+      handlers: { undefined: async () => undefined },
+    });
+    expect(await undefinedRuntime.invoke({ nodes: ["undefined"] })).toMatchObject({
+      error: { code: "INVALID_EVIDENCE", nodeId: "undefined" },
     });
   });
 
