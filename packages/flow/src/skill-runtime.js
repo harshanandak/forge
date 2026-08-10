@@ -1,6 +1,7 @@
 "use strict";
 
 const DEFAULT_LIMITS = Object.freeze({ maxBytes: 8_192, maxDepth: 8, maxNodes: 128 });
+const LIMIT_CEILINGS = DEFAULT_LIMITS;
 const NODE_STATUSES = new Set(["PASS", "FAIL", "INCOMPLETE"]);
 
 function isPlainObject(value) {
@@ -64,11 +65,14 @@ class SkillRuntime {
     this.limits = { ...DEFAULT_LIMITS, ...(options.limits || {}) };
     this.active = false;
     this.nodes = new Map();
+    this.limitError = this._validateLimits(options.limits);
     this.metadataError = this._indexMetadata();
   }
 
   async invoke(request = {}) {
     if (this.active) return safeFailure("RECURSIVE_INVOCATION");
+    if (!isPlainObject(request)) return safeFailure("INVALID_REQUEST");
+    if (this.limitError) return safeFailure("INVALID_LIMITS", this.limitError);
     if (this.metadataError) return safeFailure(this.metadataError.code, this.metadataError.details);
 
     const requestedNodes = request.nodes;
@@ -188,6 +192,19 @@ class SkillRuntime {
     }
 
     return { status: "PASS", invoked, skipped, evidence: invoked };
+  }
+
+  _validateLimits(overrides) {
+    if (overrides !== undefined && !isPlainObject(overrides)) {
+      return { limit: "limits" };
+    }
+    for (const [name, ceiling] of Object.entries(LIMIT_CEILINGS)) {
+      const value = this.limits[name];
+      if (!Number.isSafeInteger(value) || value <= 0 || value > ceiling) {
+        return { limit: name };
+      }
+    }
+    return null;
   }
 
   _indexMetadata() {

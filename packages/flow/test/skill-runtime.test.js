@@ -15,6 +15,42 @@ function passingHandler(id, calls) {
 }
 
 describe("SkillRuntime", () => {
+  test.each([null, "not-a-request", 42, []])(
+    "fails safely for a non-object invocation request (%j)",
+    async (request) => {
+      const runtime = new SkillRuntime({
+        metadata: metadata([{ id: "intent" }]),
+        handlers: {},
+      });
+
+      expect(await runtime.invoke(request)).toMatchObject({
+        status: "INCOMPLETE",
+        invoked: [],
+        error: { code: "INVALID_REQUEST" },
+      });
+    },
+  );
+
+  test.each([
+    ["infinite", Infinity],
+    ["NaN", Number.NaN],
+    ["zero", 0],
+    ["negative", -1],
+    ["oversized", Number.MAX_SAFE_INTEGER],
+  ])("fails safely for an %s limit override", async (_label, maxBytes) => {
+    const runtime = new SkillRuntime({
+      metadata: metadata([{ id: "intent" }]),
+      handlers: {},
+      limits: { maxBytes },
+    });
+
+    expect(await runtime.invoke({ nodes: ["intent"] })).toMatchObject({
+      status: "INCOMPLETE",
+      invoked: [],
+      error: { code: "INVALID_LIMITS", limit: "maxBytes" },
+    });
+  });
+
   test("invokes only required nodes in dependency order and records skipped nodes", async () => {
     const calls = [];
     const runtime = new SkillRuntime({

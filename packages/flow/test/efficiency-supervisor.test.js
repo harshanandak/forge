@@ -55,6 +55,10 @@ describe("EfficiencySupervisor", () => {
   });
 
   test.each([
+    ["null", null],
+    ["string", "not-a-sample"],
+    ["number", 10],
+    ["array", []],
     ["missing", {}],
     ["negative", { totalTokens: -1 }],
     ["fractional", { totalTokens: 10.5 }],

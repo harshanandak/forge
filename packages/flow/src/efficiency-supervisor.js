@@ -23,6 +23,9 @@ class EfficiencySupervisor {
   }
 
   observe(sample = {}) {
+    if (sample === null || typeof sample !== "object" || Array.isArray(sample)) {
+      return this._failClosed("INVALID_USAGE");
+    }
     if (this.terminal) {
       return this._result([]);
     }
