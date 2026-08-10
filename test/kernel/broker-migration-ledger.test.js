@@ -197,11 +197,13 @@ describe('Kernel broker — migration ledger', () => {
 			payload: { monitor_id: 'monitor-upgrade', event_id: 'event-upgrade', sequence: 0 },
 		}, ['terminal'], config);
 		for (const statement of migrations.buildMonitorDurabilityMigration().rollback) await driver.exec(statement, config);
-
-		for (const table of tableNames) {
-			const rows = await driver.queryAll(`SELECT COUNT(*) AS n FROM ${table}`, config);
-			expect(Number(rows[0].n)).toBeGreaterThanOrEqual(0);
-		}
+		expect(await driver.queryAll('SELECT enabled FROM memory_monitor_writer_state WHERE singleton = 1', config))
+			.toEqual([{ enabled: 0 }]);
+		const retainedTables = await driver.queryAll(
+			"SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'memory_monitor_%'",
+			config,
+		);
+		expect(retainedTables.map(row => row.name).sort()).toEqual([...tableNames].sort());
 		expect(Number((await driver.queryAll('SELECT COUNT(*) AS n FROM memory_monitor_events', config))[0].n)).toBe(1);
 		await expect(driver.appendMonitorEvent({
 			schema_id: 'forge.memory.monitor-event.v1', content_hash: 'b'.repeat(64), created_at: '2026-08-10T00:00:00.000Z',
