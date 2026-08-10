@@ -218,6 +218,21 @@ describe('Kernel receipt-bound PR trace', () => {
 		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
 	});
 
+	test('binds hash-valid WorkPacket repository authority to the normalized linkage repository', async () => {
+		const crossRepoPacket = workPacket({ repository_id: 'owner/repository-a' });
+		await expect(broker.recordPrLinkage(linkage('opened', crossRepoPacket, runReceipt(crossRepoPacket), {
+			repo: 'owner/repository-b',
+		}))).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
+		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
+
+		const packet = workPacket();
+		await broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet), {
+			repo: ' Owner/Forge ',
+		}));
+		expect(await driver.queryAll('SELECT repo FROM kernel_pr;', config)).toEqual([{ repo: 'owner/forge' }]);
+	});
+
 	test('resolves gate authority historically at the linkage occurrence time', async () => {
 		await driver.insertKernelEvent({
 			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.rejected',
