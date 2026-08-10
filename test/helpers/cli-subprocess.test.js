@@ -6,6 +6,8 @@
  * spawn timeout rather than a generic dead test case.
  */
 
+const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 const { describe, test, expect } = require('bun:test');
 
 const {
@@ -13,6 +15,7 @@ const {
   CLI_TIMEOUT_MS,
   GIT_INIT_TIMEOUT_MS,
   baseEnv,
+  createCliSandboxes,
   mergeEnv,
 } = require('./cli-subprocess');
 
@@ -85,5 +88,51 @@ describe('cli-subprocess mergeEnv', () => {
     const merged = mergeEnv('/sandbox', {});
     expect(pathKeysOf(merged)).toHaveLength(1);
     expect(merged[pathKeysOf(merged)[0]]).toBe(process.env.PATH);
+  });
+});
+
+describe('cli-subprocess sandbox template', () => {
+  test('initializes git once and copies isolated repository state per sandbox', () => {
+    const gitCalls = [];
+    const sandboxes = createCliSandboxes('cli-subprocess-template-', {
+      execFileSync: (command, args, options) => {
+        gitCalls.push({ command, args, options });
+        return execFileSync(command, args, options);
+      },
+    });
+
+    const first = sandboxes.makeSandbox();
+    const second = sandboxes.makeSandbox();
+
+    try {
+      expect(gitCalls).toHaveLength(1);
+      expect(gitCalls[0]).toMatchObject({
+        command: 'git',
+        args: ['init', '-q'],
+        options: { timeout: GIT_INIT_TIMEOUT_MS },
+      });
+      expect(fs.existsSync(`${first}/.git`)).toBe(true);
+      expect(fs.existsSync(`${second}/.git`)).toBe(true);
+
+      fs.writeFileSync(`${first}/.git/fixture-isolation-probe`, 'first-only');
+      expect(fs.existsSync(`${second}/.git/fixture-isolation-probe`)).toBe(false);
+    } finally {
+      sandboxes.cleanup();
+    }
+
+    expect(fs.existsSync(first)).toBe(false);
+    expect(fs.existsSync(second)).toBe(false);
+  });
+
+  test('reports bounded git template bootstrap diagnostics only on failure', () => {
+    const failure = Object.assign(new Error('spawn failed'), {
+      status: 128,
+      stdout: 'git stdout',
+      stderr: 'git stderr',
+    });
+
+    expect(() => createCliSandboxes('cli-subprocess-template-fail-', {
+      execFileSync: () => { throw failure; },
+    })).toThrow(/git init.*10000ms.*git stdout.*git stderr/s);
   });
 });
