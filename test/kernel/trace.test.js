@@ -231,6 +231,35 @@ describe('Kernel receipt-bound PR trace', () => {
 		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
 	});
 
+	test('rejects omitted or invalid WorkPacket bindings before writes', async () => {
+		function omitMatchingBinding(packetField, receiptField) {
+			let packet = workPacket();
+			delete packet.payload[packetField];
+			packet = rehash(packet);
+			let receipt = runReceipt(workPacket());
+			receipt.payload.packet_hash = packet.content_hash;
+			delete receipt.payload[receiptField];
+			return { packet, receipt: rehash(receipt) };
+		}
+
+		const invalid = [
+			(() => { const packet = workPacket({ packet_revision: -1 }); return { packet, receipt: runReceipt(packet) }; })(),
+			(() => { const packet = workPacket({ packet_revision: Number.MAX_SAFE_INTEGER + 1 }); return { packet, receipt: runReceipt(packet) }; })(),
+			(() => { const packet = workPacket({ capability_manifest_digest: 'not-a-sha256' }); return { packet, receipt: runReceipt(packet) }; })(),
+			(() => { const packet = workPacket({ workflow_config_revision: '' }); return { packet, receipt: runReceipt(packet) }; })(),
+			omitMatchingBinding('packet_revision', 'packet_revision'),
+			omitMatchingBinding('capability_manifest_digest', 'manifest_digest'),
+			omitMatchingBinding('workflow_config_revision', 'workflow_config_revision'),
+		];
+
+		for (const { packet, receipt } of invalid) {
+			await expect(broker.recordPrLinkage(linkage('opened', packet, receipt)))
+				.rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
+		}
+		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
+		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
+	});
+
 	test('binds hash-valid WorkPacket repository authority to the normalized linkage repository', async () => {
 		const crossRepoPacket = workPacket({ repository_id: 'owner/repository-a' });
 		await expect(broker.recordPrLinkage(linkage('opened', crossRepoPacket, runReceipt(crossRepoPacket), {
@@ -260,6 +289,50 @@ describe('Kernel receipt-bound PR trace', () => {
 		expect(trace.pull_requests[0].iterations[0].gate_receipts).toEqual([GATE_RECEIPT]);
 	});
 
+	test('selects the newest eligible gate event independent of returned row order', async () => {
+		const renewedReceipt = 'gate.approved:issue-trace:gate.merge:newest';
+		await driver.insertKernelEvent({
+			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.rejected',
+			idempotency_key: 'gate.rejected:issue-trace:gate.merge:older', expected_revision: 0,
+			actor: 'maintainer', origin: 'test', payload: { gate: GATE_ID, expires_at: null, generation: 1 },
+			created_at: '2026-08-11T00:05:00.000Z',
+		}, {}, config);
+		await driver.insertKernelEvent({
+			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.approved',
+			idempotency_key: renewedReceipt, expected_revision: 0,
+			actor: 'maintainer', origin: 'test', payload: { gate: GATE_ID, expires_at: null, generation: 2 },
+			created_at: '2026-08-11T00:05:30.000Z',
+		}, {}, config);
+		const listKernelEvents = driver.listKernelEvents.bind(driver);
+		driver.listKernelEvents = async (...args) => (await listKernelEvents(...args)).reverse();
+
+		await broker.recordPrLinkage(linkage());
+
+		const trace = await broker.readTrace({ issue_id: 'issue-trace' });
+		expect(trace.pull_requests[0].iterations[0].gate_receipts).toEqual([renewedReceipt]);
+	});
+
+	test('uses stable driver order to break equal-time gate event ties', async () => {
+		const renewedReceipt = 'gate.approved:issue-trace:gate.merge:equal-time';
+		await driver.insertKernelEvent({
+			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.rejected',
+			idempotency_key: 'gate.rejected:issue-trace:gate.merge:equal-time', expected_revision: 0,
+			actor: 'maintainer', origin: 'test', payload: { gate: GATE_ID, expires_at: null, generation: 1 },
+			created_at: '2026-08-11T00:05:00.000Z',
+		}, {}, config);
+		await driver.insertKernelEvent({
+			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.approved',
+			idempotency_key: renewedReceipt, expected_revision: 0,
+			actor: 'maintainer', origin: 'test', payload: { gate: GATE_ID, expires_at: null, generation: 2 },
+			created_at: '2026-08-11T00:05:00.000Z',
+		}, {}, config);
+
+		await broker.recordPrLinkage(linkage());
+
+		const trace = await broker.readTrace({ issue_id: 'issue-trace' });
+		expect(trace.pull_requests[0].iterations[0].gate_receipts).toEqual([renewedReceipt]);
+	});
+
 	test('keeps an exact T1 replay idempotent after T2 rejection and renewed approval', async () => {
 		const packet = workPacket();
 		const opened = linkage('opened', packet, runReceipt(packet));
@@ -278,11 +351,11 @@ describe('Kernel receipt-bound PR trace', () => {
 			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.approved',
 			idempotency_key: renewedReceipt, expected_revision: 0,
 			actor: 'maintainer', origin: 'test', payload: { gate: GATE_ID, expires_at: null, generation: 2 },
-			created_at: '2026-08-11T00:10:00.000Z',
+			created_at: '2026-08-11T00:10:01.000Z',
 		}, {}, config);
 		await broker.recordPrLinkage(opened);
 		await broker.recordPrLinkage(linkage('merged', packet, runReceipt(packet, {}, 'merged'), {
-			occurred_at: '2026-08-11T00:10:00.000Z',
+			occurred_at: '2026-08-11T00:10:02.000Z',
 		}));
 
 		const trace = await broker.readTrace({ issue_id: 'issue-trace' });
@@ -397,6 +470,33 @@ describe('Kernel receipt-bound PR trace', () => {
 			pull_requests: [],
 			gaps: ['worktree', 'work_folder', 'plan', 'tasks', 'decisions', 'pull_requests'],
 		});
+	});
+
+	test('preserves issue PRs when a selected PR is unlinked and reports the gap', async () => {
+		await driver.upsertPr({
+			id: 'pr-linked', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 600,
+			issue_id: 'issue-trace', worktree_id: 'worktree-trace', branch, head_sha: HEAD_SHA,
+		}, {}, config);
+		await driver.upsertPr({
+			id: 'pr-unlinked', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 601,
+			issue_id: null, worktree_id: 'worktree-trace', branch, head_sha: HEAD_SHA,
+		}, {}, config);
+
+		const trace = await broker.readTrace({
+			issue_id: 'issue-trace', pr_number: 601, repo: 'owner/forge', git_common_dir: gitCommonDir,
+		});
+		expect(trace.pull_requests.map(pr => pr.id)).toEqual(['pr-linked', 'pr-unlinked']);
+		expect(trace.gaps).toContain('pull_requests:pr-unlinked:unlinked_issue');
+	});
+
+	test('fails immediately when an upsert read-back finds no persisted PR row', async () => {
+		await driver.exec(`CREATE TRIGGER remove_pr_after_insert AFTER INSERT ON kernel_pr
+			BEGIN DELETE FROM kernel_pr WHERE id = NEW.id; END;`, config);
+
+		await expect(driver.upsertPr({
+			id: 'pr-removed', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 602,
+			issue_id: 'issue-trace', worktree_id: 'worktree-trace', branch, head_sha: HEAD_SHA,
+		}, {}, config)).rejects.toThrow('no kernel_pr row after upsert for owner/forge#602');
 	});
 
 	test('reports interrupted PR upserts and incomplete iterations as explicit trace gaps', async () => {

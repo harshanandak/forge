@@ -18,7 +18,7 @@ const MAX_PRIVATE_SCAN_LENGTH = 16_384;
 
 class MonitorStoreError extends Error {
   constructor(code, message, options = {}) {
-    super(message, options.cause ? { cause: options.cause } : undefined);
+    super(message, Object.hasOwn(options, 'cause') ? { cause: options.cause } : undefined);
     this.name = 'MonitorStoreError';
     this.code = code;
   }

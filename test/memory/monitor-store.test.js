@@ -476,19 +476,35 @@ await (async () => {
 	test('exposes typed and coded public stale, conflict, terminal, and unavailable failures', async () => {
 		const { driver, store } = await makeStore();
 		await store.appendEvent(monitorEvent(0), ['terminal']);
-		await expect(store.appendEvent(monitorEvent(0, { type: 'changed' }), ['terminal']))
-			.rejects.toMatchObject({ name: 'MonitorConflictError', code: 'MONITOR_EVENT_CONFLICT' });
+		const conflict = await store.appendEvent(monitorEvent(0, { type: 'changed' }), ['terminal']).catch(error => error);
+		expect(conflict).toBeInstanceOf(MonitorConflictError);
+		expect(conflict.code).toBe('MONITOR_EVENT_CONFLICT');
 		await store.appendEvent(monitorEvent(1, { event_id: 'event-2' }), ['terminal']);
 		await store.recordDeliveryReceipt(deliveryReceipt({ event_id: 'event-2', attempt: 2 }));
-		await expect(store.recordDeliveryReceipt(deliveryReceipt()))
-			.rejects.toBeInstanceOf(MonitorStaleError);
+		const stale = await store.recordDeliveryReceipt(deliveryReceipt()).catch(error => error);
+		expect(stale).toBeInstanceOf(MonitorStaleError);
+		expect(stale.code).toBe('MONITOR_STALE_CURSOR');
 		await store.recordTerminalReceipt(monitorReceipt({ last_sequence: 1 }));
-		await expect(store.appendEvent(monitorEvent(2, { event_id: 'event-3' }), ['terminal']))
-			.rejects.toBeInstanceOf(MonitorTerminalError);
+		const terminal = await store.appendEvent(monitorEvent(2, { event_id: 'event-3' }), ['terminal']).catch(error => error);
+		expect(terminal).toBeInstanceOf(MonitorTerminalError);
+		expect(terminal.code).toBe('MONITOR_TERMINAL');
 
 		await driver.exec('UPDATE memory_monitor_writer_state SET enabled = 0 WHERE singleton = 1;');
-		await expect(store.recordTerminalReceipt(monitorReceipt({ last_sequence: 1 })))
-			.rejects.toBeInstanceOf(MonitorUnavailableError);
-		expect(MonitorConflictError).toBeInstanceOf(Function);
+		const unavailable = await store.recordTerminalReceipt(monitorReceipt({ last_sequence: 1 })).catch(error => error);
+		expect(unavailable).toBeInstanceOf(MonitorUnavailableError);
+		expect(unavailable.code).toBe('MONITOR_UNAVAILABLE');
+	});
+
+	test('preserves falsy public driver rejection causes', async () => {
+		for (const cause of [undefined, null, false, 0, '']) {
+			const store = createMonitorStore({
+				async appendMonitorEvent() { throw cause; },
+			});
+			const error = await store.appendEvent(monitorEvent(), ['terminal']).catch(rejection => rejection);
+			expect(error).toBeInstanceOf(MonitorUnavailableError);
+			expect(error.code).toBe('MONITOR_UNAVAILABLE');
+			expect(Object.hasOwn(error, 'cause')).toBe(true);
+			expect(error.cause).toBe(cause);
+		}
 	});
 });
