@@ -287,4 +287,32 @@ describe('decideBoundedAutoActions - idempotency and retry bounds', () => {
       failures: [{ name: 'one', conclusion: 'CANCELLED', jobUrl: 'https://github.com/o/r/actions/runs/11/job/1' }],
     }))).toMatchObject({ status: AUTO_ACTION_STATUS.CONFLICT, actions: [] });
   });
+
+  test('missing evidence or draft authority is incomplete and consumes no action', () => {
+    for (const payload of [
+      flakyPayload({ evidence: undefined }),
+      flakyPayload({ draft: undefined }),
+      flakyPayload({ draft: true }),
+    ]) {
+      expect(decideBoundedAutoActions(payload)).toMatchObject({
+        status: AUTO_ACTION_STATUS.INCOMPLETE,
+        actions: [],
+      });
+    }
+  });
+
+  test('conflicting duplicate required-check evidence conflicts instead of first-wins rerun', () => {
+    const payload = flakyPayload({
+      requiredChecks: { failing: ['one'] },
+      failures: [
+        { name: 'one', conclusion: 'CANCELLED', jobUrl: 'https://github.com/o/r/actions/runs/11/job/1' },
+        { name: 'one', conclusion: 'TIMED_OUT', jobUrl: 'https://github.com/o/r/actions/runs/22/job/2' },
+      ],
+    });
+
+    expect(decideBoundedAutoActions(payload)).toMatchObject({
+      status: AUTO_ACTION_STATUS.CONFLICT,
+      actions: [],
+    });
+  });
 });

@@ -235,4 +235,18 @@ describe('decideLifecycle() - fail-closed lifecycle authority', () => {
 			actions: [],
 		});
 	});
+
+	test('a present lease without watchers or missing lease evidence fails closed before adoption', () => {
+		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5')] };
+		for (const observed of [
+			{ lease: {}, leaseFresh: true, prRows: [], liveWatcherPids: [] },
+			{ leaseFresh: true, prRows: [], liveWatcherPids: [] },
+		]) {
+			expect(decideLifecycle(desired, observed, NOW)).toMatchObject({
+				status: LIFECYCLE_STATUS.INCOMPLETE,
+				actions: [],
+			});
+			expect(reconcile(desired, observed, NOW)).toEqual({ actions: [] });
+		}
+	});
 });

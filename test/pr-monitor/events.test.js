@@ -87,4 +87,16 @@ describe('events - deterministic transition authority', () => {
       reason: 'newer complete transition',
     });
   });
+
+  test('cyclic or otherwise noncanonical initial transitions fail closed', () => {
+    const cyclic = state(0);
+    cyclic.self = cyclic;
+
+    for (const next of [cyclic, { ...state(0), value: 1n }]) {
+      expect(decideTransition(null, next)).toMatchObject({
+        status: TRANSITION_STATUS.INCOMPLETE,
+        changed: false,
+      });
+    }
+  });
 });
