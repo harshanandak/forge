@@ -2,7 +2,7 @@
 
 const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
-const { reconcile } = require('../../lib/pr-monitor/reconcile');
+const { reconcile, decideLifecycle, LIFECYCLE_STATUS } = require('../../lib/pr-monitor/reconcile');
 
 // W-S4a §1/§6: the reconciler is a PURE diff of desired (GitHub ∩ kernel) vs
 // observed (kernel rows + lease watchers + live pids). Zero I/O — every case here
@@ -171,5 +171,82 @@ describe('reconcile() — pure diff rules', () => {
 		expect(src).not.toMatch(/require\(\s*['"]fs['"]/);
 		expect(src).not.toMatch(/require\(\s*['"](node:)?child_process['"]/);
 		expect(src).not.toMatch(/require\(/); // pure module: no requires at all
+	});
+});
+
+describe('decideLifecycle() - fail-closed lifecycle authority', () => {
+	test('adopts a desired PR once when its recorded watcher is not live', () => {
+		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5')] };
+		const observed = {
+			lease: { watchers: [{ pr: 5, pid: 100, startedAt: 'old' }] },
+			leaseFresh: true,
+			prRows: [kRow(5, 'sha5')],
+			liveWatcherPids: [],
+		};
+
+		expect(decideLifecycle(desired, observed, NOW)).toEqual({
+			status: LIFECYCLE_STATUS.PASS,
+			reason: 'lifecycle evidence accepted',
+			actions: [{ type: 'startWatcher', pr: { repo: 'owner/r', number: 5, branch: 'feat/5', headSha: 'sha5' } }],
+		});
+	});
+
+	test('identical duplicate desired rows and watcher rows never duplicate actions', () => {
+		const item = pr(5, 'sha5');
+		const watcher = { pr: 9, pid: 99, startedAt: 't9' };
+		const desired = { gitCommonDir: '/r/.git', openPrs: [item, { ...item }] };
+		const observed = {
+			lease: { watchers: [watcher, { ...watcher }] },
+			leaseFresh: true,
+			prRows: [],
+			liveWatcherPids: [{ pid: 99, startedAt: 't9' }],
+		};
+
+		const decision = decideLifecycle(desired, observed, NOW);
+		expect(decision.status).toBe(LIFECYCLE_STATUS.PASS);
+		expect(decision.actions.filter(action => action.type === 'upsertPrRow')).toHaveLength(1);
+		expect(decision.actions.filter(action => action.type === 'startWatcher')).toHaveLength(1);
+		expect(decision.actions.filter(action => action.type === 'stopWatcher')).toHaveLength(1);
+		expect(decision.actions.filter(action => action.type === 'reapOrphan')).toHaveLength(1);
+	});
+
+	test('conflicting duplicate PR authority fails closed with zero actions', () => {
+		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha-a'), pr(5, 'sha-b')] };
+		const observed = { lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] };
+
+		expect(decideLifecycle(desired, observed, NOW)).toMatchObject({
+			status: LIFECYCLE_STATUS.CONFLICT,
+			actions: [],
+		});
+	});
+
+	test('incomplete enumeration and a stale existing lease both fail closed', () => {
+		const observed = { lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] };
+		expect(decideLifecycle({ gitCommonDir: '/r/.git', openPrs: [], listingOk: false }, observed, NOW)).toMatchObject({
+			status: LIFECYCLE_STATUS.INCOMPLETE,
+			actions: [],
+		});
+		expect(decideLifecycle({ gitCommonDir: '/r/.git', openPrs: [] }, {
+			...observed,
+			lease: { watchers: [] },
+			leaseFresh: false,
+		}, NOW)).toMatchObject({
+			status: LIFECYCLE_STATUS.STALE,
+			actions: [],
+		});
+	});
+
+	test('a present lease without watchers or missing lease evidence fails closed before adoption', () => {
+		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5')] };
+		for (const observed of [
+			{ lease: {}, leaseFresh: true, prRows: [], liveWatcherPids: [] },
+			{ leaseFresh: true, prRows: [], liveWatcherPids: [] },
+		]) {
+			expect(decideLifecycle(desired, observed, NOW)).toMatchObject({
+				status: LIFECYCLE_STATUS.INCOMPLETE,
+				actions: [],
+			});
+			expect(reconcile(desired, observed, NOW)).toEqual({ actions: [] });
+		}
 	});
 });
