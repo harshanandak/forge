@@ -24,7 +24,7 @@ function packet(overrides = {}) {
     target_head: HEAD,
     objective: 'merge a ready PR',
     authority: { kind: 'kernel', issue_revision: 7 },
-    allowed_mutations: ['pr.merge'],
+    allowed_mutations: ['pr.merged'],
     workflow_config_revision: CONFIG_REVISION,
     capability_manifest_digest: DIGEST,
     risk: { status: 'approved', revision: 'risk-1' },
@@ -71,8 +71,8 @@ function receipt(workPacket, overrides = {}) {
     evidence_refs: [{ kind: 'terminal', status: 'PASS' }],
     validation: { status: 'PASS', terminal: true },
     cleanup: { status: 'PASS', terminal: true },
-    mutations_attempted: ['pr.merge'],
-    mutations_authorized: ['pr.merge'],
+    mutations_attempted: ['pr.merged'],
+    mutations_authorized: ['pr.merged'],
   };
   const value = {
     schema_id: 'forge.memory.run-receipt.v1',
@@ -343,6 +343,34 @@ describe('public PR lifecycle authority', () => {
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
   });
 
+  test('uses only broker-compatible opened or merged linkage phases', async () => {
+    const phases = [];
+    let linkageWrite;
+    const workPacket = packet({ payload: { allowed_mutations: ['pr.merged'] } });
+    const authority = createPrLifecycleAuthority({
+      provider: provider({
+        recordPrLinkage: async (value) => {
+          phases.push(value.phase);
+          if (!['opened', 'merged'].includes(value.phase)) throw new Error('unsupported lifecycle phase');
+          linkageWrite = value;
+          return { ok: true };
+        },
+        readTrace: async () => linkageWrite ? {
+          pull_requests: [{ number: 514, repo: REPOSITORY_ID, head_sha: HEAD, issue_id: ISSUE_ID, iterations: [{
+            work_packet_hash: linkageWrite.work_packet.content_hash,
+            run_receipt_hash: linkageWrite.run_receipt.content_hash,
+          }] }],
+        } : { pull_requests: [] },
+      }),
+    });
+    const result = await authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket, { payload: {
+      mutations_attempted: ['pr.merged'],
+      mutations_authorized: ['pr.merged'],
+    } }) });
+    expect(result.accepted).toBe(true);
+    expect(phases).toEqual(['merged']);
+  });
+
   test('returns provider ready order without reranking', async () => {
     const ready = [{ id: 'z', rank: 10 }, { id: 'a', rank: 1 }];
     const authority = createPrLifecycleAuthority({ provider: provider({ ready: async () => ready }) });
@@ -421,14 +449,14 @@ describe('public PR lifecycle authority', () => {
       allowed_mutations: ['pr.merge', 'pr.merged'],
     } });
     const runReceipt = receipt(workPacket, { payload: {
-      mutations_attempted: ['pr.merge'],
-      mutations_authorized: ['pr.merge'],
+      mutations_attempted: ['pr.merged'],
+      mutations_authorized: ['pr.merged'],
     } });
     const authority = createPrLifecycleAuthority({ provider: base });
     await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt });
     await authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt });
     expect(calls).toHaveLength(2);
-    expect(calls[0]).toMatchObject({ phase: 'accepted', repo: REPOSITORY_ID, number: 514 });
+    expect(calls[0]).toMatchObject({ phase: 'merged', repo: REPOSITORY_ID, number: 514 });
     expect(calls[1]).toMatchObject({ phase: 'merged', repo: REPOSITORY_ID, number: 514 });
     expect(calls[1].work_packet).toEqual(workPacket);
     expect(calls[1].run_receipt).toEqual(runReceipt);

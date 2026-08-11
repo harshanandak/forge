@@ -468,8 +468,9 @@ function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
     if (durable) {
       assertTraceLinkage(trace, linkage, packet, receipt);
     } else {
+      const phase = receipt.payload.mutations_attempted.includes('pr.opened') ? 'opened' : 'merged';
       await callMethod(provider, 'recordPrLinkage', [{
-        phase: 'accepted',
+        phase,
         git_common_dir: target.git_common_dir,
         repo: linkage.repository_id,
         number: linkage.pr_number,
