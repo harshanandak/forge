@@ -62,4 +62,26 @@ describe('Memory authority provider', () => {
 
     await expect(provider.initialize()).rejects.toThrow('must return an object');
   });
+
+  test('forwards the optional PR lifecycle trace pair without widening legacy providers', async () => {
+    const calls = [];
+    const broker = brokerStub(calls);
+    broker.recordPrLinkage = async (...args) => { calls.push({ method: 'recordPrLinkage', args }); return { ok: true }; };
+    broker.readTrace = async (...args) => { calls.push({ method: 'readTrace', args }); return { ok: true }; };
+    const provider = createMemoryAuthorityProvider({ broker });
+
+    expect(Object.keys(provider)).toEqual([...MEMORY_AUTHORITY_METHODS, 'recordPrLinkage', 'readTrace']);
+    await provider.recordPrLinkage({ phase: 'opened' }, { actor: 'agent-1' });
+    await provider.readTrace({ issue_id: 'issue-1' }, { actor: 'agent-1' });
+    expect(calls.slice(-2)).toEqual([
+      { method: 'recordPrLinkage', args: [{ phase: 'opened' }, { actor: 'agent-1' }] },
+      { method: 'readTrace', args: [{ issue_id: 'issue-1' }, { actor: 'agent-1' }] },
+    ]);
+  });
+
+  test('fails closed when only one optional PR lifecycle operation is present', () => {
+    const broker = brokerStub([]);
+    broker.recordPrLinkage = async () => ({ ok: true });
+    expect(() => createMemoryAuthorityProvider({ broker })).toThrow('recordPrLinkage() and readTrace()');
+  });
 });
