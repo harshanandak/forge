@@ -27,7 +27,6 @@ const PR_LIFECYCLE_PROVIDER_METHODS = Object.freeze([
   'readCapability',
   'readRisk',
   'readGates',
-  'recordRunReceipt',
   'mergePr',
   'listReadyWork',
 ]);
@@ -275,7 +274,6 @@ function buildPacket(input, live) {
     capabilities_used: Array.isArray(input.capabilities_used) ? input.capabilities_used : [],
     provenance: {
       source_kind: 'kernel', actor_class: 'agent', actor_id: live.ownership.actor_id,
-      ...(typeof live.ownership.session_id === 'string' ? { session_id: live.ownership.session_id } : {}),
     },
     payload: {
       issue_id: issueId,
@@ -306,9 +304,15 @@ function assertReceiptEvidence(packet, receipt) {
   if (receipt.payload.status !== 'PASS') fail('PR_LIFECYCLE_TERMINAL_INVALID', 'RunReceipt is not terminal PASS');
   const attempted = receipt.payload.mutations_attempted ?? [];
   const authorized = receipt.payload.mutations_authorized ?? [];
-  const mutation = packet.payload.allowed_mutations.includes('pr.merged') && attempted.includes('pr.merged')
-    ? 'pr.merged' : packet.payload.allowed_mutations.includes('pr.merge') ? 'pr.merge' : null;
-  if (!mutation || !authorized.includes(mutation)) fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'RunReceipt mutation evidence is incomplete');
+  const allowed = packet.payload.allowed_mutations ?? [];
+  const sameMutations = attempted.length === authorized.length
+    && attempted.every((mutation, index) => mutation === authorized[index]);
+  const mutation = ['pr.opened', 'pr.merged', 'pr.merge'].find((candidate) => (
+    allowed.includes(candidate) && attempted.includes(candidate) && authorized.includes(candidate)
+  ));
+  if (!mutation || !sameMutations || attempted.some((entry) => !allowed.includes(entry))) {
+    fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'RunReceipt mutation evidence is incomplete or incompatible');
+  }
   if (receipt.payload.lease_epoch !== undefined) fail('PR_LIFECYCLE_AUTHORITY_UNSUPPORTED', 'lease_epoch is deferred for 0.1');
   if (receipt.payload.validation?.status !== 'PASS' || receipt.payload.cleanup?.status !== 'PASS') fail('PR_LIFECYCLE_TERMINAL_INVALID', 'RunReceipt terminal validation or cleanup is incomplete');
   if (!Array.isArray(receipt.payload.evidence_refs) || receipt.payload.evidence_refs.length === 0) fail('PR_LIFECYCLE_TERMINAL_INVALID', 'RunReceipt terminal evidence is missing');
@@ -319,7 +323,7 @@ function assertPacketLiveBindings(packet, live) {
   if (!Array.isArray(requiredGateIds) || requiredGateIds.length === 0 || requiredGateIds.some((id) => typeof id !== 'string' || id.length === 0) || new Set(requiredGateIds).size !== requiredGateIds.length) fail('PR_LIFECYCLE_GATE_INVALID', 'WorkPacket gate requirements are incomplete');
   if (requiredGateIds.length !== live.gates.ids.length || requiredGateIds.some((id) => !live.gates.ids.includes(id))) fail('PR_LIFECYCLE_GATE_INVALID', 'WorkPacket gate requirements do not match live gates');
   if (!HASH_PATTERN.test(packet.payload.risk_manifest_digest || '') || packet.payload.risk_manifest_digest !== live.risk.digest) fail('PR_LIFECYCLE_RISK_INVALID', 'WorkPacket risk digest does not match live risk');
-  if (!packet.payload.allowed_mutations.includes('pr.merge') && !packet.payload.allowed_mutations.includes('pr.merged')) fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'WorkPacket does not authorize a PR merge mutation');
+  if (!packet.payload.allowed_mutations.some((mutation) => ['pr.opened', 'pr.merge', 'pr.merged'].includes(mutation))) fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'WorkPacket does not authorize a PR lifecycle mutation');
 }
 
 function deriveLinkage(packet, receipt, gates) {
@@ -395,12 +399,16 @@ function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
     const issueId = requiredString(input.issue_id ?? input.issueId ?? packet?.payload.issue_id, 'issue_id');
     const repositoryId = input.repository_id ?? input.repositoryId ?? packet?.payload.repository_id;
     const expectedActor = packet?.provenance?.actor_id;
-    const expectedSession = packet?.provenance?.session_id;
+    if (packet?.provenance && Object.hasOwn(packet.provenance, 'session_id')) {
+      fail('PR_LIFECYCLE_CONTRACT_INVALID', 'WorkPacket provenance cannot contain session_id');
+    }
+    const requestedActor = packet ? expectedActor : requiredString(input.actor_id ?? input.actorId, 'actor_id');
+    const requestedSession = packet ? undefined : input.session_id ?? input.sessionId;
     const issue = await callProbe(provider, liveProbes, ['readIssue', 'getIssue'], [issueId], 'issue', 'show');
     const issueRevision = assertLiveIssue(issue, issueId);
-    const ownershipArgs = { issue_id: issueId, ...(expectedActor ? { actor_id: expectedActor } : {}), ...(expectedSession ? { session_id: expectedSession } : {}) };
+    const ownershipArgs = { issue_id: issueId, ...(requestedActor ? { actor_id: requestedActor } : {}), ...(requestedSession ? { session_id: requestedSession } : {}) };
     const ownership = await callProbe(provider, liveProbes, ['readOwnership', 'getOwnership', 'ownsIssue'], [ownershipArgs], 'ownership', 'owns');
-    assertOwnership(ownership, { actor_id: expectedActor, session_id: expectedSession });
+    assertOwnership(ownership, { actor_id: requestedActor });
     const head = await callProbe(provider, liveProbes, ['readHead', 'getHead'], [{ issue_id: issueId, repository_id: repositoryId }], 'head');
     const normalizedHead = providerHead(head, repositoryId);
     const capability = await callProbe(provider, liveProbes, ['readCapability', 'getCapability', 'readCapabilityManifest'], [{ issue_id: issueId, repository_id: normalizedHead.repository_id }], 'capability');
@@ -417,12 +425,12 @@ function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
   function assertCallerBinding(input, packet) {
     if (input.actor_id && input.actor_id !== packet.provenance.actor_id) fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'caller actor does not match packet provenance');
     if (input.actorId && input.actorId !== packet.provenance.actor_id) fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'caller actor does not match packet provenance');
-    if (input.session_id && input.session_id !== packet.provenance.session_id) fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'caller session does not match packet provenance');
-    if (input.sessionId && input.sessionId !== packet.provenance.session_id) fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'caller session does not match packet provenance');
+    if (input.session_id || input.sessionId) fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'caller session cannot assert packet authority');
   }
 
   async function issueWorkPacket(rawInput = {}) {
     const input = snapshot(rawInput, 'issue input');
+    requiredString(input.actor_id ?? input.actorId, 'actor_id');
     const live = await readLive(input);
     const packet = buildPacket(input, live);
     assertContract(packet, WORK_PACKET_SCHEMA, { issueRevision: live.issueRevision, workflowConfigRevision: live.workflowConfigRevision, capabilityManifestDigest: live.capabilityDigest, exactHead: live.head.head });
@@ -442,11 +450,34 @@ function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
     assertPacketLiveBindings(packet, live);
     assertContract(receipt, RUN_RECEIPT_SCHEMA, { packetHash: packet.content_hash, workflowConfigRevision: packet.payload.workflow_config_revision, capabilityManifestDigest: packet.payload.capability_manifest_digest, exactHead: packet.payload.target_head });
     assertReceiptEvidence(packet, receipt);
+    if (receipt.provenance.actor_id !== packet.provenance.actor_id || receipt.provenance.actor_id !== live.ownership.actor_id) {
+      fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'RunReceipt provenance actor does not match live ownership');
+    }
     const linkage = deriveLinkage(packet, receipt, live.gates);
-    const trace = await callMethod(provider, 'readTrace', [{ issue_id: packet.payload.issue_id, repository_id: packet.payload.repository_id, ...(linkage.pr_number ? { pr_number: linkage.pr_number } : {}) }], 'trace');
+    const target = packet.payload.target;
+    if (!target || !Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0
+      || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string' || typeof target.url !== 'string') {
+      fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'receipt acceptance requires authoritative PR linkage fields');
+    }
+    const traceTarget = { pr_number: linkage.pr_number, repo: linkage.repository_id, issue_id: linkage.issue_id };
+    const trace = await callMethod(provider, 'readTrace', [traceTarget], 'trace');
     const durable = durableAcceptance(trace, packet, receipt);
-    if (!durable && ['recordRunReceipt', 'recordReceipt', 'acceptRunReceipt'].some((method) => typeof provider[method] === 'function')) {
-      await callMethod(provider, ['recordRunReceipt', 'recordReceipt', 'acceptRunReceipt'].find((method) => typeof provider[method] === 'function'), [{ packet, receipt, linkage }], 'receipt', { sanitize: true });
+    if (durable) {
+      assertTraceLinkage(trace, linkage, packet, receipt);
+    } else {
+      await callMethod(provider, 'recordPrLinkage', [{
+        phase: 'accepted',
+        git_common_dir: target.git_common_dir,
+        repo: linkage.repository_id,
+        number: linkage.pr_number,
+        branch: target.branch,
+        url: target.url,
+        occurred_at: receipt.payload.ended_at ?? receipt.created_at,
+        work_packet: packet,
+        run_receipt: receipt,
+      }], 'PR linkage', { sanitize: true });
+      const persistedTrace = await callMethod(provider, 'readTrace', [traceTarget], 'trace');
+      assertTraceLinkage(persistedTrace, linkage, packet, receipt);
     }
     return stableResult('accepted', packet, receipt, linkage);
   }
