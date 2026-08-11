@@ -234,6 +234,39 @@ describe('protected state surfaces', () => {
 		}
 	});
 
+	test('blocks an injected parent-boundary swap before atomic replacement', () => {
+		const root = createTempDir();
+		const outside = createTempDir();
+		const parent = path.join(root, '.forge');
+		const movedParent = path.join(root, '.forge-original');
+		let swapped = false;
+		try {
+			fs.mkdirSync(parent, { recursive: true });
+			const result = writeProtectedFile(root, '.forge/config.yaml', 'version: 2\n', {
+				actor: 'forge',
+				surface: 'forge_config',
+				viaForgeApi: true,
+				beforeAtomicCommit: () => {
+					fs.renameSync(parent, movedParent);
+					fs.symlinkSync(outside, parent, process.platform === 'win32' ? 'junction' : 'dir');
+					swapped = true;
+				},
+			});
+
+			expect(swapped).toBe(true);
+			expect(result).toMatchObject({ allowed: false, decision: 'blocked' });
+			expect(result.reason).toContain('boundary changed');
+			expect(fs.existsSync(path.join(outside, 'config.yaml'))).toBe(false);
+			expect(fs.existsSync(path.join(movedParent, 'config.yaml'))).toBe(false);
+		} finally {
+			try {
+				if (fs.lstatSync(parent).isSymbolicLink()) fs.unlinkSync(parent);
+			} catch {}
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
 	test('builds complete audit payloads for protected edit attempts', () => {
 		const decision = assertProtectedWriteAllowed('.forge/log.jsonl', {
 			actor: 'codex',
