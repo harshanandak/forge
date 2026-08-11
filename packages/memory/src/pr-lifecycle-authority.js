@@ -458,7 +458,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
     }
     const linkage = deriveLinkage(packet, receipt, live.gates);
     const target = packet.payload.target;
-    if (!target || !Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0
+    if (!target || !Number.isInteger(target.pr_number) || target.pr_number <= 0
       || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string' || typeof target.url !== 'string') {
       fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'receipt acceptance requires authoritative PR linkage fields');
     }
