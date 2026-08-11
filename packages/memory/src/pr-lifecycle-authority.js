@@ -179,14 +179,15 @@ function assertOwnership(ownership, expected = {}) {
   if (!ownership || ownership.owned !== true || ownership.active === false) {
     fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'live ownership is not held');
   }
-  if (expected.actor_id && ownership.actor_id !== expected.actor_id) {
+  const actorId = ownership.actor_id ?? ownership.claimed_by;
+  if (expected.actor_id && actorId !== expected.actor_id) {
     fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'live ownership actor mismatch');
   }
   if (expected.session_id && ownership.session_id !== expected.session_id) {
     fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'live ownership session mismatch');
   }
-  requiredString(ownership.actor_id, 'live ownership actor_id');
-  return ownership;
+  requiredString(actorId, 'live ownership actor_id');
+  return { ...ownership, actor_id: actorId };
 }
 
 function capabilityDigest(capability) {
@@ -407,8 +408,10 @@ function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
     const issue = await callProbe(provider, liveProbes, ['readIssue', 'getIssue'], [issueId], 'issue', 'show');
     const issueRevision = assertLiveIssue(issue, issueId);
     const ownershipArgs = { issue_id: issueId, ...(requestedActor ? { actor_id: requestedActor } : {}), ...(requestedSession ? { session_id: requestedSession } : {}) };
-    const ownership = await callProbe(provider, liveProbes, ['readOwnership', 'getOwnership', 'ownsIssue'], [ownershipArgs], 'ownership', 'owns');
-    assertOwnership(ownership, { actor_id: requestedActor });
+    const ownership = assertOwnership(
+      await callProbe(provider, liveProbes, ['readOwnership', 'getOwnership', 'ownsIssue'], [ownershipArgs], 'ownership', 'owns'),
+      { actor_id: requestedActor },
+    );
     const head = await callProbe(provider, liveProbes, ['readHead', 'getHead'], [{ issue_id: issueId, repository_id: repositoryId }], 'head');
     const normalizedHead = providerHead(head, repositoryId);
     const capability = await callProbe(provider, liveProbes, ['readCapability', 'getCapability', 'readCapabilityManifest'], [{ issue_id: issueId, repository_id: normalizedHead.repository_id }], 'capability');
