@@ -341,10 +341,11 @@ function createMonitorDurabilityBridge(options) {
       try {
         const delivery = await deliver(deliveryEvent, targets);
         return Object.freeze({ persistence, delivery });
-      } catch {
+      } catch (error) {
         fail("DELIVERY_FAILED", "Monitor delivery failed after durable persistence", {
           persisted: true,
           eventId: persistenceEvent.payload.event_id,
+          cause: error,
         });
       }
     },

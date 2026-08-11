@@ -127,6 +127,7 @@ function createDurableDriver() {
     eventReads: 0,
     tailReads: 0,
     deliveryStateReads: 0,
+    configCalls: [],
     log: [],
   };
 
@@ -136,8 +137,9 @@ function createDurableDriver() {
 
   return {
     state,
-    appendMonitorEvent(event, targets) {
+    appendMonitorEvent(event, targets, config = {}) {
       requireAvailable();
+      state.configCalls.push(['appendMonitorEvent', config]);
       if (state.terminals.has(event.payload.monitor_id)) {
         throw monitorProviderError('MONITOR_TERMINAL', 'monitor already has a terminal receipt');
       }
@@ -161,8 +163,9 @@ function createDurableDriver() {
       state.log.push(`persist:${event.payload.event_id}`);
       return { eventId: event.payload.event_id, idempotent: false };
     },
-    recordMonitorDeliveryReceipt(receipt) {
+    recordMonitorDeliveryReceipt(receipt, config = {}) {
       requireAvailable();
+      state.configCalls.push(['recordMonitorDeliveryReceipt', config]);
       const event = state.events.get(receipt.payload.event_id)?.event;
       if (!event) throw new Error('delivery receipt references unknown event');
       const priorReceipt = state.deliveryReceipts.get(receipt.object_id);
@@ -182,8 +185,9 @@ function createDurableDriver() {
       state.cursors.set(cursorKey, Math.max(cursor, event.payload.sequence));
       return { receiptId: receipt.object_id, idempotent: false };
     },
-    recordMonitorTerminalReceipt(receipt) {
+    recordMonitorTerminalReceipt(receipt, config = {}) {
       requireAvailable();
+      state.configCalls.push(['recordMonitorTerminalReceipt', config]);
       if (state.staleTerminal) {
         throw monitorProviderError(
           'MONITOR_STALE_TERMINAL',
@@ -201,14 +205,16 @@ function createDurableDriver() {
       state.terminalWrites += 1;
       return { monitorId: receipt.payload.monitor_id, idempotent: false };
     },
-    getMonitorEvent(eventId) {
+    getMonitorEvent(eventId, config = {}) {
       requireAvailable();
+      state.configCalls.push(['getMonitorEvent', config]);
       state.eventReads += 1;
       const event = state.events.get(eventId)?.event;
       return event ? eventRow(event) : null;
     },
-    readMonitorEventTail(monitorId, options = {}) {
+    readMonitorEventTail(monitorId, options = {}, config = {}) {
       requireAvailable();
+      state.configCalls.push(['readMonitorEventTail', config]);
       state.tailReads += 1;
       if (state.tailResultOverride !== undefined) return state.tailResultOverride;
       const rows = [...state.events.values()]
@@ -224,8 +230,9 @@ function createDurableDriver() {
         truncated_before_sequence: rows.length > limit ? events[0].sequence : null,
       };
     },
-    readMonitorDeliveryState(monitorId) {
+    readMonitorDeliveryState(monitorId, _options = {}, config = {}) {
       requireAvailable();
+      state.configCalls.push(['readMonitorDeliveryState', config]);
       state.deliveryStateReads += 1;
       const cursors = [...state.cursors.entries()]
         .filter(([key]) => key.startsWith(`${monitorId}:`))
@@ -260,6 +267,7 @@ function bridgeWithStore(store, deliver = async () => undefined) {
 
 function bridge(driver, deliver = async () => undefined) {
   const store = createMonitorStore(driver);
+  // Remove listEvents to prove the bridge depends only on its narrower store contract.
   delete store.listEvents;
   return bridgeWithStore(store, deliver);
 }
@@ -280,6 +288,29 @@ describe('monitor durability bridge', () => {
     expect(restarted.persistence.idempotent).toBe(true);
     expect(driver.state.log).toEqual(['persist:event-0', 'deliver:event-0', 'deliver:event-0']);
     expect(deliver).toHaveBeenCalledTimes(2);
+  });
+
+  test('forwards immutable config snapshots to every monitor provider operation', async () => {
+    const driver = createDurableDriver();
+    const event = monitorEvent();
+    const durability = bridge(driver);
+    const persistConfig = { requestId: 'persist-request' };
+    const acknowledgementConfig = { requestId: 'acknowledgement-request' };
+    const terminalConfig = { maxHistory: 128, requestId: 'terminal-request' };
+
+    await durability.persistEvent(event, persistConfig);
+    await durability.acknowledgeDelivery('monitor-1', deliveryReceipt(event), acknowledgementConfig);
+    await durability.recordTerminalReceipt(terminalReceipt([event]), terminalConfig);
+
+    expect(driver.state.configCalls).toEqual([
+      ['appendMonitorEvent', persistConfig],
+      ['getMonitorEvent', acknowledgementConfig],
+      ['readMonitorDeliveryState', acknowledgementConfig],
+      ['recordMonitorDeliveryReceipt', acknowledgementConfig],
+      ['readMonitorDeliveryState', terminalConfig],
+      ['readMonitorEventTail', terminalConfig],
+      ['recordMonitorTerminalReceipt', terminalConfig],
+    ]);
   });
 
   test('rejects event identity/content conflicts without delivering the conflicting event', async () => {
@@ -403,14 +434,16 @@ describe('monitor durability bridge', () => {
 
   test('reports delivery failure without hiding that the event is already durable', async () => {
     const driver = createDurableDriver();
+    const deliveryError = new Error("delivery provider lost");
     const deliver = mock(async () => {
-      throw new Error("delivery provider lost");
+      throw deliveryError;
     });
 
     await expect(bridge(driver, deliver).persistEvent(monitorEvent())).rejects.toMatchObject({
       code: "DELIVERY_FAILED",
       persisted: true,
       eventId: "event-0",
+      cause: deliveryError,
     });
     expect(driver.state.events.has("event-0")).toBe(true);
   });
