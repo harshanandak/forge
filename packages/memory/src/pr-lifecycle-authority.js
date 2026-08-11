@@ -15,7 +15,11 @@ const HASH_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_SNAPSHOT_DEPTH = 10;
 const MAX_SNAPSHOT_NODES = 2_000;
 const MAX_SNAPSHOT_BYTES = 65_536;
+const SECRET_PATTERN = /(?:gh[pousr]_[A-Za-z0-9]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,})/i;
+const USER_PATH_PATTERN = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+\/)/i;
 
+// This list describes optional provider capabilities; the mandatory provider surface remains
+// runIssueOperation, recordPrLinkage, and readTrace (see authority-provider.js).
 const PR_LIFECYCLE_PROVIDER_METHODS = Object.freeze([
   'readIssue',
   'readOwnership',
@@ -40,15 +44,36 @@ function fail(code, message, options) {
   throw new PrLifecycleAuthorityError(code, message, options);
 }
 
-function snapshot(value, label) {
+function containsForbidden(value) {
+  if (typeof value === 'string') return SECRET_PATTERN.test(value) || USER_PATH_PATTERN.test(value);
+  if (Array.isArray(value)) return value.some(containsForbidden);
+  if (value && typeof value === 'object') return Object.values(value).some(containsForbidden);
+  return false;
+}
+
+function redactForbidden(value) {
+  if (typeof value === 'string') return containsForbidden(value) ? '[redacted]' : value;
+  if (Array.isArray(value)) return value.map(redactForbidden);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactForbidden(item)]));
+  }
+  return value;
+}
+
+function snapshot(value, label, options = {}) {
   try {
     const serialized = canonicalize(value, {
       maxDepth: MAX_SNAPSHOT_DEPTH,
       maxNodes: MAX_SNAPSHOT_NODES,
       maxBytes: MAX_SNAPSHOT_BYTES,
     });
-    return JSON.parse(serialized);
+    const bounded = JSON.parse(serialized);
+    if (options.privacy !== 'sanitize' && containsForbidden(bounded)) {
+      fail('PR_LIFECYCLE_PRIVACY_REJECTED', `${label} contains a secret or absolute user path`);
+    }
+    return options.privacy === 'sanitize' ? redactForbidden(bounded) : bounded;
   } catch (error) {
+    if (error instanceof PrLifecycleAuthorityError) throw error;
     fail('PR_LIFECYCLE_INVALID_INPUT', `${label} must be bounded plain JSON`, { cause: error });
   }
 }
@@ -80,36 +105,43 @@ function requiredHash(value, label) {
   return value;
 }
 
-function callProvider(provider, names, args, label, fallbackName = names[0]) {
-  const name = names.find((candidate) => typeof provider[candidate] === 'function');
-  const operation = name || (typeof provider.runIssueOperation === 'function' ? 'runIssueOperation' : null);
-  if (!operation) fail('PR_LIFECYCLE_UNAVAILABLE', `${label} provider operation is unavailable`);
+async function callMethod(target, method, args, label, options = {}) {
   let result;
   try {
-    if (operation === 'runIssueOperation') {
-      let operationArgs = args;
-      let context = {};
-      if (fallbackName === 'owns' && args[0] && typeof args[0] === 'object') {
-        operationArgs = [args[0].issue_id];
-        context = { actor: args[0].actor_id, sessionId: args[0].session_id };
-      }
-      result = provider.runIssueOperation(fallbackName, operationArgs, context);
-    } else {
-      result = provider[operation](...args);
-    }
+    result = target[method](...args);
   } catch (error) {
     fail('PR_LIFECYCLE_UNAVAILABLE', `${label} provider operation failed`, { cause: error });
   }
-  return Promise.resolve(result).then((value) => {
-    const bounded = snapshot(value, `${label} provider response`);
-    if (operation === 'runIssueOperation' && bounded?.ok === true && bounded.data !== undefined) {
-      return bounded.data;
-    }
+  try {
+    const bounded = snapshot(await Promise.resolve(result), `${label} provider response`, {
+      privacy: options.sanitize ? 'sanitize' : undefined,
+    });
+    if (options.unwrap && bounded?.ok === true && bounded.data !== undefined) return bounded.data;
+    if (options.unwrap && bounded?.ok === false) fail('PR_LIFECYCLE_UNAVAILABLE', `${label} provider rejected operation`);
     return bounded;
-  }, (error) => {
+  } catch (error) {
     if (error instanceof PrLifecycleAuthorityError) throw error;
     fail('PR_LIFECYCLE_UNAVAILABLE', `${label} provider operation failed`, { cause: error });
-  });
+  }
+}
+
+async function callProbe(provider, probes, names, args, label, fallbackName) {
+  const injected = names.find((name) => typeof probes?.[name] === 'function');
+  if (injected) return snapshot(await Promise.resolve(probes[injected](...args)), `${label} live probe response`);
+  const direct = names.find((name) => typeof provider[name] === 'function');
+  if (direct) return callMethod(provider, direct, args, label);
+  // Issue read/ownership may use the public operation broker. No invented live-state
+  // operation names are permitted for head, capability, risk, or gate evidence.
+  if (fallbackName && typeof provider.runIssueOperation === 'function') {
+    let operationArgs = args;
+    let context = {};
+    if (fallbackName === 'owns' && args[0] && typeof args[0] === 'object') {
+      operationArgs = [args[0].issue_id];
+      context = { actor: args[0].actor_id, sessionId: args[0].session_id };
+    }
+    return callMethod(provider, 'runIssueOperation', [fallbackName, operationArgs, context], label, { unwrap: true });
+  }
+  fail('PR_LIFECYCLE_UNAVAILABLE', `${label} live probe is unavailable`);
 }
 
 function providerIssueRevision(issue) {
@@ -141,22 +173,32 @@ function assertLiveIssue(issue, expectedIssueId) {
   return revision;
 }
 
-function assertOwnership(ownership, input = {}) {
+// 0.1 limitation: LeaseReceipt/lease_epoch is deferred. Same actor/session release and
+// reacquire is ABA-indistinguishable, so every operation re-probes ownership and receipts
+// never confer continuing authority.
+function assertOwnership(ownership, expected = {}) {
   if (!ownership || ownership.owned !== true || ownership.active === false) {
     fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'live ownership is not held');
   }
-  const actor = input.actor_id ?? input.actorId;
-  const session = input.session_id ?? input.sessionId;
-  if (actor && ownership.actor_id !== actor) fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'live ownership actor mismatch');
-  if (session && ownership.session_id !== session) fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'live ownership session mismatch');
+  if (expected.actor_id && ownership.actor_id !== expected.actor_id) {
+    fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'live ownership actor mismatch');
+  }
+  if (expected.session_id && ownership.session_id !== expected.session_id) {
+    fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'live ownership session mismatch');
+  }
+  requiredString(ownership.actor_id, 'live ownership actor_id');
   return ownership;
 }
 
 function capabilityDigest(capability) {
   const digest = capability?.manifest_digest ?? capability?.digest ?? capability?.capability_manifest_digest;
   requiredHash(digest, 'live capability manifest digest');
-  if (capability.approved === false || capability.available === false || capability.status === 'unavailable') {
-    fail('PR_LIFECYCLE_CAPABILITY_INVALID', 'live capability is unavailable');
+  if (capability.approved !== true || capability.available !== true || capability.probed !== true) {
+    fail('PR_LIFECYCLE_CAPABILITY_INVALID', 'live capability must be approved, available, and positively probed');
+  }
+  const expiresAt = capability.expires_at ?? capability.expiresAt;
+  if (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()) {
+    fail('PR_LIFECYCLE_CAPABILITY_INVALID', 'live capability is expired or missing expiry evidence');
   }
   return digest;
 }
@@ -166,10 +208,8 @@ function assertRisk(risk, expectedDigest) {
   if (!approved) fail('PR_LIFECYCLE_RISK_INVALID', 'live risk evidence is incomplete or unapproved');
   const digest = risk?.risk_manifest_digest ?? risk?.digest;
   requiredHash(digest, 'live risk manifest digest');
-  if (expectedDigest && digest && digest !== expectedDigest) {
-    fail('PR_LIFECYCLE_RISK_INVALID', 'live risk digest does not match packet');
-  }
-  return { approved: true, ...(digest ? { digest } : {}) };
+  if (expectedDigest && digest !== expectedDigest) fail('PR_LIFECYCLE_RISK_INVALID', 'live risk digest does not match packet');
+  return { approved: true, digest };
 }
 
 function assertGates(gates) {
@@ -180,7 +220,7 @@ function assertGates(gates) {
     fail('PR_LIFECYCLE_GATE_INVALID', 'live gates are incomplete, stale, or conflicting');
   }
   const ids = Array.isArray(value.ids) ? value.ids : Array.isArray(value.gate_ids) ? value.gate_ids : [];
-  if (ids.some((id) => typeof id !== 'string' || id.length === 0)) {
+  if (ids.length === 0 || ids.some((id) => typeof id !== 'string' || id.length === 0)) {
     fail('PR_LIFECYCLE_GATE_INVALID', 'live gate ids are malformed');
   }
   return { approved: true, complete: true, ids: [...ids] };
@@ -188,12 +228,8 @@ function assertGates(gates) {
 
 function assertContract(value, schema, expected) {
   const structural = validateContractStructure(value);
-  if (!structural.ok || value?.schema_id !== schema) {
-    fail('PR_LIFECYCLE_CONTRACT_INVALID', `${schema} contract is malformed`);
-  }
-  const result = expected === undefined
-    ? validateContractStructure(value)
-    : validateContract(value, { expected });
+  if (!structural.ok || value?.schema_id !== schema) fail('PR_LIFECYCLE_CONTRACT_INVALID', `${schema} contract is malformed`);
+  const result = expected === undefined ? structural : validateContract(value, { expected });
   if (!result.ok) {
     const codes = new Set(result.errors.map(item => item.code));
     const liveCode = codes.has('STALE_EXACT_HEAD')
@@ -204,10 +240,7 @@ function assertContract(value, schema, expected) {
           ? 'PR_LIFECYCLE_CAPABILITY_INVALID'
           : codes.has('STALE_WORKFLOW_CONFIG') ? 'PR_LIFECYCLE_REVISION_STALE' : null;
     if (liveCode) fail(liveCode, `${schema} live binding is stale`);
-    const error = new PrLifecycleAuthorityError(
-      'PR_LIFECYCLE_CONTRACT_INVALID',
-      `${schema} contract failed live validation`,
-    );
+    const error = new PrLifecycleAuthorityError('PR_LIFECYCLE_CONTRACT_INVALID', `${schema} contract failed live validation`);
     error.errors = result.errors;
     throw error;
   }
@@ -221,22 +254,14 @@ function uuidFromSeed(seed) {
 
 function buildPacket(input, live) {
   const issueId = requiredString(input.issue_id ?? input.issueId, 'issue_id');
-  const repositoryId = requiredString(
-    input.repository_id ?? input.repositoryId ?? live.head.repository_id,
-    'repository_id',
-  );
-  const packetId = requiredString(
-    input.packet_id ?? input.packetId ?? `packet-${issueId}-${live.issueRevision}-${live.head.head}`,
-    'packet_id',
-  );
+  const repositoryId = requiredString(input.repository_id ?? input.repositoryId ?? live.head.repository_id, 'repository_id');
+  const packetId = requiredString(input.packet_id ?? input.packetId ?? `packet-${issueId}-${live.issueRevision}-${live.head.head}`, 'packet_id');
   const createdAt = input.created_at ?? input.createdAt ?? new Date().toISOString();
   const objective = requiredString(input.objective ?? live.issue.objective ?? 'PR lifecycle operation', 'objective');
   const allowedMutations = input.allowed_mutations ?? input.allowedMutations ?? ['pr.merged'];
-  if (!Array.isArray(allowedMutations) || allowedMutations.length === 0
-    || allowedMutations.some((mutation) => typeof mutation !== 'string' || mutation.length === 0)) {
+  if (!Array.isArray(allowedMutations) || allowedMutations.length === 0 || allowedMutations.some((item) => typeof item !== 'string' || item.length === 0)) {
     fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'allowed mutations are malformed');
   }
-  const actorId = requiredString(input.actor_id ?? input.actorId ?? live.ownership.actor_id ?? 'unknown', 'actor_id');
   const packet = {
     schema_id: WORK_PACKET_SCHEMA,
     schema_version: 1,
@@ -248,33 +273,28 @@ function buildPacket(input, live) {
       instance_id: input.instance_id ?? input.instanceId ?? randomUUID(),
     },
     capabilities_used: Array.isArray(input.capabilities_used) ? input.capabilities_used : [],
-    provenance: { source_kind: 'kernel', actor_class: 'agent', actor_id: actorId },
+    provenance: {
+      source_kind: 'kernel', actor_class: 'agent', actor_id: live.ownership.actor_id,
+      ...(typeof live.ownership.session_id === 'string' ? { session_id: live.ownership.session_id } : {}),
+    },
     payload: {
       issue_id: issueId,
       expected_issue_revision: live.issueRevision,
       packet_id: packetId,
-      packet_revision: Number.isInteger(input.packet_revision ?? input.packetRevision)
-        ? input.packet_revision ?? input.packetRevision : 1,
+      packet_revision: Number.isInteger(input.packet_revision ?? input.packetRevision) ? input.packet_revision ?? input.packetRevision : 1,
       repository_id: repositoryId,
       target_head: live.head.head,
       objective,
       authority: { kind: 'kernel', issue_revision: live.issueRevision },
       allowed_mutations: [...allowedMutations],
-      workflow_config_revision: requiredString(
-        input.workflow_config_revision ?? input.workflowConfigRevision ?? live.workflowConfigRevision,
-        'workflow_config_revision',
-      ),
+      workflow_config_revision: live.workflowConfigRevision,
       capability_manifest_digest: live.capabilityDigest,
       ...(input.acceptance_criteria ? { acceptance_criteria: [...input.acceptance_criteria] } : {}),
       ...(input.prohibited_actions ? { prohibited_actions: [...input.prohibited_actions] } : {}),
       ...(input.risk ?? live.risk ? { risk: input.risk ?? live.risk } : {}),
       ...(live.risk.digest ? { risk_manifest_digest: live.risk.digest } : {}),
       ...(input.target ? { target: input.target } : {}),
-      receipt_requirements: {
-        terminal: true,
-        gate_ids: [...live.gates.ids],
-        ...(input.receipt_requirements ?? {}),
-      },
+      receipt_requirements: { terminal: true, gate_ids: [...live.gates.ids], ...(input.receipt_requirements ?? {}) },
     },
     extensions: {},
   };
@@ -282,162 +302,132 @@ function buildPacket(input, live) {
   return packet;
 }
 
-function runIdentity(packet, receipt) {
-  return `${packet.payload.issue_id}:${packet.content_hash}:${receipt.payload.run_id}:${receipt.payload.exact_head}`;
-}
-
 function assertReceiptEvidence(packet, receipt) {
   if (receipt.payload.status !== 'PASS') fail('PR_LIFECYCLE_TERMINAL_INVALID', 'RunReceipt is not terminal PASS');
   const attempted = receipt.payload.mutations_attempted ?? [];
   const authorized = receipt.payload.mutations_authorized ?? [];
-  const mutation = packet.payload.allowed_mutations.includes('pr.merged')
-    && attempted.includes('pr.merged')
-    ? 'pr.merged'
-    : packet.payload.allowed_mutations.includes('pr.merge') ? 'pr.merge' : null;
-  if (!mutation) fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'RunReceipt mutation phase is not authorized');
-  if (!attempted.includes(mutation) || !authorized.includes(mutation)) {
-    fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'RunReceipt mutation evidence is incomplete');
-  }
-  if (receipt.payload.lease_epoch !== undefined) {
-    fail('PR_LIFECYCLE_AUTHORITY_UNSUPPORTED', 'lease_epoch is deferred for 0.1');
-  }
-  if (receipt.payload.validation?.status !== 'PASS' || receipt.payload.cleanup?.status !== 'PASS') {
-    fail('PR_LIFECYCLE_TERMINAL_INVALID', 'RunReceipt terminal validation or cleanup is incomplete');
-  }
-  if (!Array.isArray(receipt.payload.evidence_refs) || receipt.payload.evidence_refs.length === 0) {
-    fail('PR_LIFECYCLE_TERMINAL_INVALID', 'RunReceipt terminal evidence is missing');
-  }
+  const mutation = packet.payload.allowed_mutations.includes('pr.merged') && attempted.includes('pr.merged')
+    ? 'pr.merged' : packet.payload.allowed_mutations.includes('pr.merge') ? 'pr.merge' : null;
+  if (!mutation || !authorized.includes(mutation)) fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'RunReceipt mutation evidence is incomplete');
+  if (receipt.payload.lease_epoch !== undefined) fail('PR_LIFECYCLE_AUTHORITY_UNSUPPORTED', 'lease_epoch is deferred for 0.1');
+  if (receipt.payload.validation?.status !== 'PASS' || receipt.payload.cleanup?.status !== 'PASS') fail('PR_LIFECYCLE_TERMINAL_INVALID', 'RunReceipt terminal validation or cleanup is incomplete');
+  if (!Array.isArray(receipt.payload.evidence_refs) || receipt.payload.evidence_refs.length === 0) fail('PR_LIFECYCLE_TERMINAL_INVALID', 'RunReceipt terminal evidence is missing');
 }
 
 function assertPacketLiveBindings(packet, live) {
   const requiredGateIds = packet.payload.receipt_requirements?.gate_ids;
-  if (!Array.isArray(requiredGateIds) || requiredGateIds.length === 0
-    || requiredGateIds.some((id) => typeof id !== 'string' || id.length === 0)
-    || new Set(requiredGateIds).size !== requiredGateIds.length) {
-    fail('PR_LIFECYCLE_GATE_INVALID', 'WorkPacket gate requirements are incomplete');
-  }
-  const liveIds = [...live.gates.ids];
-  if (requiredGateIds.length !== liveIds.length
-    || requiredGateIds.some((id) => !liveIds.includes(id))) {
-    fail('PR_LIFECYCLE_GATE_INVALID', 'WorkPacket gate requirements do not match live gates');
-  }
-  if (!HASH_PATTERN.test(packet.payload.risk_manifest_digest || '') || !live.risk.digest
-    || packet.payload.risk_manifest_digest !== live.risk.digest) {
-    fail('PR_LIFECYCLE_RISK_INVALID', 'WorkPacket risk digest does not match live risk');
-  }
-  if (!packet.payload.allowed_mutations.includes('pr.merge')
-    && !packet.payload.allowed_mutations.includes('pr.merged')) {
-    fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'WorkPacket does not authorize a PR merge mutation');
-  }
+  if (!Array.isArray(requiredGateIds) || requiredGateIds.length === 0 || requiredGateIds.some((id) => typeof id !== 'string' || id.length === 0) || new Set(requiredGateIds).size !== requiredGateIds.length) fail('PR_LIFECYCLE_GATE_INVALID', 'WorkPacket gate requirements are incomplete');
+  if (requiredGateIds.length !== live.gates.ids.length || requiredGateIds.some((id) => !live.gates.ids.includes(id))) fail('PR_LIFECYCLE_GATE_INVALID', 'WorkPacket gate requirements do not match live gates');
+  if (!HASH_PATTERN.test(packet.payload.risk_manifest_digest || '') || packet.payload.risk_manifest_digest !== live.risk.digest) fail('PR_LIFECYCLE_RISK_INVALID', 'WorkPacket risk digest does not match live risk');
+  if (!packet.payload.allowed_mutations.includes('pr.merge') && !packet.payload.allowed_mutations.includes('pr.merged')) fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'WorkPacket does not authorize a PR merge mutation');
 }
 
 function deriveLinkage(packet, receipt, gates) {
   const target = packet.payload.target ?? {};
   let prNumber = Number.isInteger(target.pr_number) ? target.pr_number : undefined;
-  if (prNumber === undefined) {
-    const evidence = receipt.payload.evidence_refs.find((entry) => Number.isInteger(entry?.pr_number));
-    prNumber = evidence?.pr_number;
-  }
+  if (prNumber === undefined) prNumber = receipt.payload.evidence_refs.find((entry) => Number.isInteger(entry?.pr_number))?.pr_number;
   return {
     issue_id: packet.payload.issue_id,
     repository_id: packet.payload.repository_id,
     head: packet.payload.target_head,
     ...(prNumber === undefined ? {} : { pr_number: prNumber }),
-    gate_ids: gates.ids,
+    gate_ids: [...gates.ids],
   };
 }
 
-function assertTraceLinkage(trace, linkage) {
-  if (!trace || typeof trace !== 'object' || Array.isArray(trace)) {
-    fail('PR_LIFECYCLE_UNAVAILABLE', 'public PR trace is unavailable');
+function traceItems(trace) {
+  const items = [];
+  const requests = Array.isArray(trace?.pull_requests) ? trace.pull_requests : [];
+  for (const request of requests) {
+    const iterations = Array.isArray(request.iterations) ? request.iterations : [];
+    items.push(...iterations.map((iteration) => ({ ...iteration, request })));
   }
-  if (!Array.isArray(trace.pull_requests) || linkage.pr_number === undefined) return;
-  const candidates = trace.pull_requests.filter((entry) => Number(entry?.number) === linkage.pr_number);
-  if (candidates.length === 0) {
-    fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'public PR trace does not contain the accepted PR');
+  for (const list of [trace?.iterations, trace?.accepted, trace?.accepted_receipts]) {
+    if (Array.isArray(list)) items.push(...list);
   }
-  const match = candidates[0];
-  if ((match.head_sha && match.head_sha !== linkage.head)
-    || (match.repo && match.repo !== linkage.repository_id)) {
-    fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'public PR trace conflicts with accepted linkage');
-  }
+  return items;
 }
 
-function createPrLifecycleAuthority({ provider } = {}) {
-  if (!provider || typeof provider !== 'object' || Array.isArray(provider)) {
-    throw new TypeError('PR lifecycle authority requires a public provider object');
-  }
+function itemPacketHash(item) {
+  return item.work_packet_hash ?? item.packet_hash ?? item.packet?.content_hash;
+}
+
+function itemReceiptHash(item) {
+  return item.run_receipt_hash ?? item.receipt_hash ?? item.receipt?.content_hash;
+}
+
+function durableAcceptance(trace, packet, receipt) {
+  const items = traceItems(trace);
+  const exact = items.find((item) => itemPacketHash(item) === packet.content_hash && itemReceiptHash(item) === receipt.content_hash);
+  if (exact) return exact;
+  const conflict = items.find((item) => itemPacketHash(item) === packet.content_hash
+    || item.receipt?.payload?.run_id === receipt.payload.run_id
+    || item.run_id === receipt.payload.run_id);
+  if (conflict) fail('PR_LIFECYCLE_REPLAY_CONFLICT', 'durable trace conflicts with accepted content');
+  return null;
+}
+
+function assertTraceLinkage(trace, linkage, packet, receipt) {
+  if (!trace || typeof trace !== 'object' || Array.isArray(trace)) fail('PR_LIFECYCLE_UNAVAILABLE', 'public PR trace is unavailable');
+  if (!Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage');
+  if (!Array.isArray(trace.pull_requests)) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'public PR trace has no durable pull-request linkage');
+  const candidates = trace.pull_requests.filter((entry) => Number(entry?.number) === linkage.pr_number);
+  if (candidates.length === 0) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'public PR trace does not contain the accepted PR');
+  const match = candidates[0];
+  if (match.repo !== linkage.repository_id || match.head_sha !== linkage.head || match.issue_id !== linkage.issue_id) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'public PR trace conflicts with accepted linkage');
+  if (!durableAcceptance(trace, packet, receipt)) fail('PR_LIFECYCLE_NOT_ACCEPTED', 'public PR trace lacks accepted packet and receipt evidence');
+}
+
+function stableResult(kind, packet, receipt, linkage) {
+  return kind === 'accepted'
+    ? { accepted: true, packet_hash: packet.content_hash, receipt_hash: receipt.content_hash, run_id: receipt.payload.run_id, attempt_id: receipt.payload.attempt_id, linkage }
+    : { merged: true, packet_hash: packet.content_hash, receipt_hash: receipt.content_hash, run_id: receipt.payload.run_id, linkage };
+}
+
+function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
+  if (!provider || typeof provider !== 'object' || Array.isArray(provider)) throw new TypeError('PR lifecycle authority requires a public provider object');
   for (const method of ['runIssueOperation', 'recordPrLinkage', 'readTrace']) {
-    if (typeof provider[method] !== 'function') {
-      throw new TypeError(`PR lifecycle provider must implement ${method}()`);
-    }
+    if (typeof provider[method] !== 'function') throw new TypeError(`PR lifecycle provider must implement ${method}()`);
   }
-  const accepted = new Map();
-  const merged = new Map();
+  if (!liveProbes || typeof liveProbes !== 'object' || Array.isArray(liveProbes)) throw new TypeError('liveProbes must be an object');
 
   async function readLive(input, packet = null) {
     const issueId = requiredString(input.issue_id ?? input.issueId ?? packet?.payload.issue_id, 'issue_id');
     const repositoryId = input.repository_id ?? input.repositoryId ?? packet?.payload.repository_id;
-    const issue = await callProvider(provider, ['readIssue', 'getIssue'], [issueId], 'issue', 'show');
+    const expectedActor = packet?.provenance?.actor_id;
+    const expectedSession = packet?.provenance?.session_id;
+    const issue = await callProbe(provider, liveProbes, ['readIssue', 'getIssue'], [issueId], 'issue', 'show');
     const issueRevision = assertLiveIssue(issue, issueId);
-    const ownership = await callProvider(
-      provider,
-      ['readOwnership', 'getOwnership', 'ownsIssue'],
-      [{ issue_id: issueId, actor_id: input.actor_id ?? input.actorId, session_id: input.session_id ?? input.sessionId }],
-      'ownership',
-      'owns',
-    );
-    assertOwnership(ownership, input);
-    const head = await callProvider(
-      provider,
-      ['readHead', 'getHead'],
-      [{ issue_id: issueId, repository_id: repositoryId }],
-      'head',
-    );
+    const ownershipArgs = { issue_id: issueId, ...(expectedActor ? { actor_id: expectedActor } : {}), ...(expectedSession ? { session_id: expectedSession } : {}) };
+    const ownership = await callProbe(provider, liveProbes, ['readOwnership', 'getOwnership', 'ownsIssue'], [ownershipArgs], 'ownership', 'owns');
+    assertOwnership(ownership, { actor_id: expectedActor, session_id: expectedSession });
+    const head = await callProbe(provider, liveProbes, ['readHead', 'getHead'], [{ issue_id: issueId, repository_id: repositoryId }], 'head');
     const normalizedHead = providerHead(head, repositoryId);
-    const capability = await callProvider(
-      provider,
-      ['readCapability', 'getCapability', 'readCapabilityManifest'],
-      [{ issue_id: issueId, repository_id: normalizedHead.repository_id }],
-      'capability',
-    );
+    const capability = await callProbe(provider, liveProbes, ['readCapability', 'getCapability', 'readCapabilityManifest'], [{ issue_id: issueId, repository_id: normalizedHead.repository_id }], 'capability');
     const capabilityDigestValue = capabilityDigest(capability);
-    const risk = await callProvider(provider, ['readRisk', 'getRisk'], [{ issue_id: issueId }], 'risk');
+    const workflowConfigRevision = requiredString(capability.workflow_config_revision ?? capability.config_revision, 'workflow_config_revision');
+    if (input.workflow_config_revision && input.workflow_config_revision !== workflowConfigRevision) fail('PR_LIFECYCLE_REVISION_STALE', 'requested workflow config revision is stale');
+    const risk = await callProbe(provider, liveProbes, ['readRisk', 'getRisk'], [{ issue_id: issueId }], 'risk');
     const normalizedRisk = assertRisk(risk, packet?.payload.risk_manifest_digest);
-    const gates = await callProvider(provider, ['readGates', 'getGates'], [{ issue_id: issueId }], 'gates');
+    const gates = await callProbe(provider, liveProbes, ['readGates', 'getGates'], [{ issue_id: issueId }], 'gates');
     const normalizedGates = assertGates(gates);
-    const workflowConfigRevision = requiredString(
-      input.workflow_config_revision ?? input.workflowConfigRevision
-        ?? packet?.payload.workflow_config_revision ?? capability.workflow_config_revision ?? capability.config_revision,
-      'workflow_config_revision',
-    );
-    return {
-      issue,
-      issueRevision,
-      ownership,
-      head: normalizedHead,
-      capability,
-      capabilityDigest: capabilityDigestValue,
-      risk: normalizedRisk,
-      gates: normalizedGates,
-      workflowConfigRevision,
-    };
+    return { issue, issueRevision, ownership, head: normalizedHead, capability, capabilityDigest: capabilityDigestValue, risk: normalizedRisk, gates: normalizedGates, workflowConfigRevision };
+  }
+
+  function assertCallerBinding(input, packet) {
+    if (input.actor_id && input.actor_id !== packet.provenance.actor_id) fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'caller actor does not match packet provenance');
+    if (input.actorId && input.actorId !== packet.provenance.actor_id) fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'caller actor does not match packet provenance');
+    if (input.session_id && input.session_id !== packet.provenance.session_id) fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'caller session does not match packet provenance');
+    if (input.sessionId && input.sessionId !== packet.provenance.session_id) fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'caller session does not match packet provenance');
   }
 
   async function issueWorkPacket(rawInput = {}) {
     const input = snapshot(rawInput, 'issue input');
     const live = await readLive(input);
     const packet = buildPacket(input, live);
-    assertContract(packet, WORK_PACKET_SCHEMA, {
-      issueRevision: live.issueRevision,
-      workflowConfigRevision: live.workflowConfigRevision,
-      capabilityManifestDigest: live.capabilityDigest,
-      exactHead: live.head.head,
-    });
+    assertContract(packet, WORK_PACKET_SCHEMA, { issueRevision: live.issueRevision, workflowConfigRevision: live.workflowConfigRevision, capabilityManifestDigest: live.capabilityDigest, exactHead: live.head.head });
     assertPacketLiveBindings(packet, live);
-    return { packet: snapshot(packet, 'WorkPacket'), linkage: deriveLinkage(packet, {
-      payload: { evidence_refs: [] },
-    }, live.gates) };
+    return { packet: snapshot(packet, 'WorkPacket'), linkage: deriveLinkage(packet, { payload: { evidence_refs: [] } }, live.gates) };
   }
 
   async function acceptRunReceipt(rawInput = {}) {
@@ -446,113 +436,60 @@ function createPrLifecycleAuthority({ provider } = {}) {
     const receipt = snapshot(input.receipt, 'RunReceipt');
     assertContract(packet, WORK_PACKET_SCHEMA);
     assertContract(receipt, RUN_RECEIPT_SCHEMA);
+    assertCallerBinding(input, packet);
     const live = await readLive({ ...input, issue_id: packet.payload.issue_id }, packet);
-    assertContract(packet, WORK_PACKET_SCHEMA, {
-      issueRevision: live.issueRevision,
-      workflowConfigRevision: live.workflowConfigRevision,
-      capabilityManifestDigest: live.capabilityDigest,
-      exactHead: live.head.head,
-    });
+    assertContract(packet, WORK_PACKET_SCHEMA, { issueRevision: live.issueRevision, workflowConfigRevision: live.workflowConfigRevision, capabilityManifestDigest: live.capabilityDigest, exactHead: live.head.head });
     assertPacketLiveBindings(packet, live);
-    assertContract(receipt, RUN_RECEIPT_SCHEMA, {
-      packetHash: packet.content_hash,
-      workflowConfigRevision: packet.payload.workflow_config_revision,
-      capabilityManifestDigest: packet.payload.capability_manifest_digest,
-      exactHead: packet.payload.target_head,
-    });
+    assertContract(receipt, RUN_RECEIPT_SCHEMA, { packetHash: packet.content_hash, workflowConfigRevision: packet.payload.workflow_config_revision, capabilityManifestDigest: packet.payload.capability_manifest_digest, exactHead: packet.payload.target_head });
     assertReceiptEvidence(packet, receipt);
     const linkage = deriveLinkage(packet, receipt, live.gates);
-    const identity = runIdentity(packet, receipt);
-    const existing = accepted.get(identity);
-    if (existing) {
-      if (existing.receipt.content_hash !== receipt.content_hash
-        || existing.packet.content_hash !== packet.content_hash) {
-        fail('PR_LIFECYCLE_REPLAY_CONFLICT', 'receipt replay conflicts with accepted content');
-      }
-      return snapshot(existing.result, 'accepted receipt replay');
+    const trace = await callMethod(provider, 'readTrace', [{ issue_id: packet.payload.issue_id, repository_id: packet.payload.repository_id, ...(linkage.pr_number ? { pr_number: linkage.pr_number } : {}) }], 'trace');
+    const durable = durableAcceptance(trace, packet, receipt);
+    if (!durable && ['recordRunReceipt', 'recordReceipt', 'acceptRunReceipt'].some((method) => typeof provider[method] === 'function')) {
+      await callMethod(provider, ['recordRunReceipt', 'recordReceipt', 'acceptRunReceipt'].find((method) => typeof provider[method] === 'function'), [{ packet, receipt, linkage }], 'receipt', { sanitize: true });
     }
-    let persisted = null;
-    if (['recordRunReceipt', 'recordReceipt', 'acceptRunReceipt'].some(method => typeof provider[method] === 'function')) {
-      persisted = await callProvider(
-        provider,
-        ['recordRunReceipt', 'recordReceipt', 'acceptRunReceipt'],
-        [{ packet, receipt, linkage }],
-        'receipt',
-      );
-    }
-    const result = { accepted: true, packet, receipt, linkage, provider: persisted };
-    accepted.set(identity, { packet, receipt, result });
-    return snapshot(result, 'accepted receipt');
+    return stableResult('accepted', packet, receipt, linkage);
   }
 
   async function mergeWorkPacket(rawInput = {}) {
     const input = snapshot(rawInput, 'merge input');
     const packet = snapshot(input.packet, 'WorkPacket');
     const receipt = snapshot(input.receipt, 'RunReceipt');
-    const identity = runIdentity(packet, receipt);
-    const acceptedResult = accepted.get(identity);
-    if (!acceptedResult) fail('PR_LIFECYCLE_NOT_ACCEPTED', 'WorkPacket and RunReceipt were not accepted');
+    assertContract(packet, WORK_PACKET_SCHEMA);
+    assertContract(receipt, RUN_RECEIPT_SCHEMA);
+    assertCallerBinding(input, packet);
     const live = await readLive({ ...input, issue_id: packet.payload.issue_id }, packet);
-    assertContract(packet, WORK_PACKET_SCHEMA, {
-      issueRevision: live.issueRevision,
-      workflowConfigRevision: live.workflowConfigRevision,
-      capabilityManifestDigest: live.capabilityDigest,
-      exactHead: live.head.head,
-    });
+    assertContract(packet, WORK_PACKET_SCHEMA, { issueRevision: live.issueRevision, workflowConfigRevision: live.workflowConfigRevision, capabilityManifestDigest: live.capabilityDigest, exactHead: live.head.head });
     assertPacketLiveBindings(packet, live);
+    assertContract(receipt, RUN_RECEIPT_SCHEMA, { packetHash: packet.content_hash, workflowConfigRevision: packet.payload.workflow_config_revision, capabilityManifestDigest: packet.payload.capability_manifest_digest, exactHead: packet.payload.target_head });
+    assertReceiptEvidence(packet, receipt);
     const linkage = deriveLinkage(packet, receipt, live.gates);
-    if (live.head.head !== packet.payload.target_head) fail('PR_LIFECYCLE_HEAD_STALE', 'exact head changed before merge');
-    const traceTarget = linkage.pr_number === undefined
-      ? { issue_id: linkage.issue_id }
-      : { pr_number: linkage.pr_number, repo: linkage.repository_id };
-    const trace = await callProvider(provider, ['readTrace'], [traceTarget], 'trace');
-    assertTraceLinkage(trace, linkage);
-    const key = `${identity}:${linkage.pr_number ?? ''}`;
-    if (merged.has(key)) return snapshot(merged.get(key), 'merge replay');
-    let result;
+    const trace = await callMethod(provider, 'readTrace', [{ issue_id: linkage.issue_id, repository_id: linkage.repository_id, ...(linkage.pr_number ? { pr_number: linkage.pr_number, repo: linkage.repository_id } : {}) }], 'trace');
+    // Compare durable packet/receipt content before linkage checks so a reused run id with
+    // divergent content fails closed even when the incoming packet omitted a PR number.
+    durableAcceptance(trace, packet, receipt);
+    assertTraceLinkage(trace, linkage, packet, receipt);
+    const target = packet.payload.target;
     if (typeof provider.mergePr === 'function' || typeof provider.merge === 'function') {
-      result = await callProvider(provider, ['mergePr', 'merge'], [{ packet, receipt, linkage }], 'merge');
+      const method = typeof provider.mergePr === 'function' ? 'mergePr' : 'merge';
+      await callMethod(provider, method, [{ packet, receipt, linkage }], 'merge', { sanitize: true });
     } else {
-      const target = packet.payload.target;
-      if (!target || !Number.isInteger(linkage.pr_number)
-        || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string') {
-        fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage fields');
-      }
-      result = await callProvider(provider, ['recordPrLinkage'], [{
-        phase: 'merged',
-        git_common_dir: target.git_common_dir,
-        repo: packet.payload.repository_id,
-        number: linkage.pr_number,
-        branch: target.branch,
-        url: target.url,
-        occurred_at: receipt.ended_at ?? receipt.created_at,
-        work_packet: packet,
-        run_receipt: receipt,
-      }], 'PR linkage');
+      if (!target || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string') fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage fields');
+      await callMethod(provider, 'recordPrLinkage', [{ phase: 'merged', git_common_dir: target.git_common_dir, repo: packet.payload.repository_id, number: linkage.pr_number, branch: target.branch, url: target.url, occurred_at: receipt.payload.ended_at ?? receipt.created_at, work_packet: packet, run_receipt: receipt }], 'PR linkage', { sanitize: true });
     }
-    const mergedResult = { merged: true, linkage, provider: result };
-    merged.set(key, mergedResult);
-    return snapshot(mergedResult, 'merge result');
+    return stableResult('merged', packet, receipt, linkage);
   }
 
   async function requestNextWork(rawInput = {}) {
     const input = snapshot(rawInput, 'next work input');
-    const ready = await callProvider(provider, ['listReadyWork', 'ready', 'requestNextWork'], [input], 'ready');
+    const method = ['listReadyWork', 'ready', 'requestNextWork'].find((name) => typeof provider[name] === 'function');
+    if (!method) fail('PR_LIFECYCLE_UNAVAILABLE', 'ready provider operation is unavailable');
+    const ready = await callMethod(provider, method, [input], 'ready');
     if (!Array.isArray(ready)) fail('PR_LIFECYCLE_UNAVAILABLE', 'ready provider returned a malformed queue');
-    return snapshot(ready, 'ready queue');
+    return ready;
   }
 
-  const api = {
-    issueWorkPacket,
-    acceptRunReceipt,
-    mergeWorkPacket,
-    requestNextWork,
-  };
-  return Object.freeze(api);
+  return Object.freeze({ issueWorkPacket, acceptRunReceipt, mergeWorkPacket, requestNextWork });
 }
 
-module.exports = {
-  PR_LIFECYCLE_PROVIDER_METHODS,
-  PrLifecycleAuthorityError,
-  createPrLifecycleAuthority,
-};
+module.exports = { PR_LIFECYCLE_PROVIDER_METHODS, PrLifecycleAuthorityError, createPrLifecycleAuthority };
