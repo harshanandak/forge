@@ -391,6 +391,22 @@ describe('public PR lifecycle authority', () => {
     })).rejects.toMatchObject({ code: 'PR_LIFECYCLE_MUTATION_UNAUTHORIZED' });
   });
 
+  test('rejects pr.merge-only evidence before durable linkage', async () => {
+    let writes = 0;
+    const workPacket = packet({ payload: { allowed_mutations: ['pr.merge'] } });
+    const authority = createPrLifecycleAuthority({
+      provider: provider({ recordPrLinkage: async () => { writes += 1; return { ok: true }; } }),
+    });
+    await expect(authority.acceptRunReceipt({
+      packet: workPacket,
+      receipt: receipt(workPacket, { payload: {
+        mutations_attempted: ['pr.merge'],
+        mutations_authorized: ['pr.merge'],
+      } }),
+    })).rejects.toMatchObject({ code: 'PR_LIFECYCLE_MUTATION_UNAUTHORIZED' });
+    expect(writes).toBe(0);
+  });
+
   test('requires receipt provenance to match the packet and live owner actor', async () => {
     const workPacket = packet();
     const authority = createPrLifecycleAuthority({ provider: provider() });

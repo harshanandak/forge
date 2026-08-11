@@ -308,15 +308,19 @@ function assertReceiptEvidence(packet, receipt) {
   const allowed = packet.payload.allowed_mutations ?? [];
   const sameMutations = attempted.length === authorized.length
     && attempted.every((mutation, index) => mutation === authorized[index]);
-  const mutation = ['pr.opened', 'pr.merged', 'pr.merge'].find((candidate) => (
-    allowed.includes(candidate) && attempted.includes(candidate) && authorized.includes(candidate)
-  ));
-  if (!mutation || !sameMutations || attempted.some((entry) => !allowed.includes(entry))) {
+  const phase = ['opened', 'merged'].find((candidate) => {
+    const candidateMutation = `pr.${candidate}`;
+    return allowed.includes(candidateMutation)
+      && attempted.includes(candidateMutation)
+      && authorized.includes(candidateMutation);
+  });
+  if (!phase || !sameMutations || attempted.some((entry) => !allowed.includes(entry))) {
     fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'RunReceipt mutation evidence is incomplete or incompatible');
   }
   if (receipt.payload.lease_epoch !== undefined) fail('PR_LIFECYCLE_AUTHORITY_UNSUPPORTED', 'lease_epoch is deferred for 0.1');
   if (receipt.payload.validation?.status !== 'PASS' || receipt.payload.cleanup?.status !== 'PASS') fail('PR_LIFECYCLE_TERMINAL_INVALID', 'RunReceipt terminal validation or cleanup is incomplete');
   if (!Array.isArray(receipt.payload.evidence_refs) || receipt.payload.evidence_refs.length === 0) fail('PR_LIFECYCLE_TERMINAL_INVALID', 'RunReceipt terminal evidence is missing');
+  return phase;
 }
 
 function assertPacketLiveBindings(packet, live) {
@@ -452,7 +456,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
     assertContract(packet, WORK_PACKET_SCHEMA, { issueRevision: live.issueRevision, workflowConfigRevision: live.workflowConfigRevision, capabilityManifestDigest: live.capabilityDigest, exactHead: live.head.head });
     assertPacketLiveBindings(packet, live);
     assertContract(receipt, RUN_RECEIPT_SCHEMA, { packetHash: packet.content_hash, workflowConfigRevision: packet.payload.workflow_config_revision, capabilityManifestDigest: packet.payload.capability_manifest_digest, exactHead: packet.payload.target_head });
-    assertReceiptEvidence(packet, receipt);
+    const phase = assertReceiptEvidence(packet, receipt);
     if (receipt.provenance.actor_id !== packet.provenance.actor_id || receipt.provenance.actor_id !== live.ownership.actor_id) {
       fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'RunReceipt provenance actor does not match live ownership');
     }
@@ -468,7 +472,6 @@ function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
     if (durable) {
       assertTraceLinkage(trace, linkage, packet, receipt);
     } else {
-      const phase = receipt.payload.mutations_attempted.includes('pr.opened') ? 'opened' : 'merged';
       await callMethod(provider, 'recordPrLinkage', [{
         phase,
         git_common_dir: target.git_common_dir,
