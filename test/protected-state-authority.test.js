@@ -101,15 +101,24 @@ describe('protected-state Kernel authority', () => {
 	test('fails closed when the staged HEAD differs from or is absent on the capability', () => {
 		const mismatched = evaluateAuthorization(
 			{ ...target, sourceHead: 'b'.repeat(40) },
-			[eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-head')],
+			[
+				eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-head'),
+				eventRow(PROTECTED_STATE_WRITE_COMPLETED, 'capability-head'),
+			],
 		);
 		const missing = evaluateAuthorization(
 			target,
-			[eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-missing-head', { sourceHead: undefined })],
+			[
+				eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-missing-head', { sourceHead: undefined }),
+				eventRow(PROTECTED_STATE_WRITE_COMPLETED, 'capability-missing-head', { sourceHead: undefined }),
+			],
 		);
 
 		expect(mismatched).toMatchObject({ allowed: false, decision: 'blocked' });
+		expect(mismatched.reason).toContain('source HEAD');
 		expect(missing).toMatchObject({ allowed: false, decision: 'blocked' });
+		expect(missing.reason).toContain('malformed');
+		expect(missing.reason).toContain('owning command');
 	});
 
 	test('fails closed on cross-actor, cross-surface, and malformed issuer records', () => {
