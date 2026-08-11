@@ -15,7 +15,7 @@ const TARGET = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 
 class MonitorDurabilityError extends Error {
   constructor(code, message, details = {}) {
-    super(message);
+    super(message, Object.hasOwn(details, "cause") ? { cause: details.cause } : undefined);
     this.name = "MonitorDurabilityError";
     this.code = code;
     Object.assign(this, details);

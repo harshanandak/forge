@@ -302,7 +302,7 @@ describe('monitor durability bridge', () => {
     await durability.acknowledgeDelivery('monitor-1', deliveryReceipt(event), acknowledgementConfig);
     await durability.recordTerminalReceipt(terminalReceipt([event]), terminalConfig);
 
-    expect(driver.state.configCalls).toEqual([
+    const expectedCalls = [
       ['appendMonitorEvent', persistConfig],
       ['getMonitorEvent', acknowledgementConfig],
       ['readMonitorDeliveryState', acknowledgementConfig],
@@ -310,7 +310,12 @@ describe('monitor durability bridge', () => {
       ['readMonitorDeliveryState', terminalConfig],
       ['readMonitorEventTail', terminalConfig],
       ['recordMonitorTerminalReceipt', terminalConfig],
-    ]);
+    ];
+    expect(driver.state.configCalls).toEqual(expectedCalls);
+    driver.state.configCalls.forEach(([, config], index) => {
+      expect(config).not.toBe(expectedCalls[index][1]);
+      expect(Object.isFrozen(config)).toBe(true);
+    });
   });
 
   test('rejects event identity/content conflicts without delivering the conflicting event', async () => {
@@ -434,17 +439,28 @@ describe('monitor durability bridge', () => {
 
   test('reports delivery failure without hiding that the event is already durable', async () => {
     const driver = createDurableDriver();
-    const deliveryError = new Error("delivery provider lost");
+    const deliveryError = Object.assign(new Error("delivery provider lost"), {
+      authorization: 'Bearer secret-transport-token',
+    });
     const deliver = mock(async () => {
       throw deliveryError;
     });
 
-    await expect(bridge(driver, deliver).persistEvent(monitorEvent())).rejects.toMatchObject({
+    let failure;
+    try {
+      await bridge(driver, deliver).persistEvent(monitorEvent());
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
       code: "DELIVERY_FAILED",
       persisted: true,
       eventId: "event-0",
       cause: deliveryError,
     });
+    expect(Object.getOwnPropertyDescriptor(failure, 'cause')).toMatchObject({ enumerable: false });
+    expect(JSON.stringify(failure)).not.toContain('secret-transport-token');
+    expect(failure.cause).toBe(deliveryError);
     expect(driver.state.events.has("event-0")).toBe(true);
   });
 
