@@ -37,6 +37,77 @@ test('claim markers share one path across worktrees with the same common dir', (
 });
 
 describe('execute — watcher lifecycle', () => {
+	test('persists and replays the public Flow process lifecycle across daemon restarts', async () => {
+		const first = await executor.execute(
+			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000,
+				spawnWatcher: () => ({ pid: 1234 }), writeClaim: () => {}, watchers: [],
+			},
+		);
+		expect(first[0].lifecycle.state).toMatchObject({ phase: 'RUNNING', attempts: 1 });
+
+		const restarted = await executor.execute([], {
+			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000, watchers: first,
+		});
+		expect(restarted).toEqual(first);
+	});
+
+	test('fails closed before process mutation when a persisted lifecycle checkpoint conflicts', async () => {
+		let killed = false;
+		await expect(executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
+				watchers: [{
+					pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z',
+					lifecycle: { processId: 'watcher:forge:5:999', events: [{ id: 'bad', type: 'exit', at: 1000, code: 0 }] },
+				}],
+				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z', kill: () => { killed = true; },
+			},
+		)).rejects.toMatchObject({ code: 'INVALID_TRANSITION' });
+		expect(killed).toBe(false);
+	});
+
+	test('records cancellation acknowledgement and terminal reap before cleanup', async () => {
+		const checkpoints = [];
+		const cancelling = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
+				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
+				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z', kill: () => {},
+				removeClaim: () => {}, onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
+			},
+		);
+		expect(cancelling[0].lifecycle.state.phase).toBe('CANCEL_REQUESTED');
+		const watchers = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2001,
+				watchers: cancelling, isAlive: () => false, removeClaim: () => {},
+				onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
+			},
+		);
+		expect(watchers).toEqual([]);
+		expect(checkpoints.at(-1).state).toMatchObject({
+			phase: 'TERMINAL', status: 'CANCELLED', terminationAcknowledged: true, childReaped: true,
+		});
+	});
+
+	test('provider loss fails closed before terminating a watcher', async () => {
+		let killed = false;
+		await expect(executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
+				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
+				persistLifecycleCheckpoint: () => false,
+				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z', kill: () => { killed = true; },
+			},
+		)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+		expect(killed).toBe(false);
+	});
 	test('startWatcher spawns a watcher and records a {pr,repo,pid,startedAt} entry + start-time marker', async () => {
 		const spawned = [];
 		const claims = [];
@@ -54,7 +125,7 @@ describe('execute — watcher lifecycle', () => {
 		expect(spawned).toHaveLength(1);
 		expect(spawned[0].prNumber).toBe(42);
 		expect(watchers).toHaveLength(1);
-		expect(watchers[0]).toEqual({ pr: 42, repo: 'forge', pid: 1234, startedAt: '2026-07-20T00:00:00.000Z' });
+		expect(watchers[0]).toMatchObject({ pr: 42, repo: 'forge', pid: 1234, startedAt: '2026-07-20T00:00:00.000Z' });
 		expect(claims).toHaveLength(1);
 		expect(claims[0].startedAt).toBe('2026-07-20T00:00:00.000Z');
 	});
@@ -353,14 +424,21 @@ describe('runDaemon — singleton lease lifecycle', () => {
 describe('watcher marker cleanup + superseded-daemon stop', () => {
 	test('stopWatcher/reapOrphan remove the start-time marker (a reused PID cannot match a stale one)', async () => {
 		const removed = [];
-		await executor.execute(
+		const cancelling = await executor.execute(
 			[{ type: 'stopWatcher', pr: { number: 5 } }],
 			{
-				projectRoot: '/repo',
+				projectRoot: '/repo', now: () => 1000,
 				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: 't1' }],
 				isAlive: () => true, readClaim: () => 't1', kill: () => {},
 				removeClaim: (e) => removed.push(e),
 				broker: {},
+			},
+		);
+		await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', watchers: cancelling, now: () => 2000,
+				isAlive: () => false, removeClaim: (e) => removed.push(e), broker: {},
 			},
 		);
 		expect(removed).toHaveLength(1);
@@ -1156,8 +1234,8 @@ describe('finding 9 — execute dispatches every action type via the handler map
 		expect(retires).toHaveLength(1);
 		expect(kills.slice().sort()).toEqual([300, 900]);
 		expect(watchers.some((w) => w.pr === 1)).toBe(true);
-		expect(watchers.some((w) => w.pr === 3)).toBe(false);   // stopped
-		expect(watchers.some((w) => w.pid === 900)).toBe(false); // reaped
+		expect(watchers.find((w) => w.pr === 3).lifecycle.state.phase).toBe('CANCEL_REQUESTED');
+		expect(watchers.find((w) => w.pid === 900).lifecycle.state.phase).toBe('ORPHANED');
 	});
 });
 
