@@ -194,6 +194,199 @@ describe('Kernel receipt-bound PR trace', () => {
 			gate_receipts: [GATE_RECEIPT],
 		});
 		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([{ n: 2 }]);
+		expect(await driver.queryAll("SELECT DISTINCT target FROM kernel_outbox WHERE target = 'jsonl';", config))
+			.toEqual([{ target: 'jsonl' }]);
+	});
+
+	test('shares initialized Kernel state with an isolated linkage transaction for an in-memory database', async () => {
+		const memoryConfig = { databasePath: ':memory:' };
+		const memoryDriver = createBuiltinSQLiteDriver({});
+		const memoryBroker = createLocalBroker({ projectRoot: root, gitCommonDir, ...memoryConfig, driver: memoryDriver });
+		await memoryBroker.initialize();
+		try {
+			await memoryDriver.exec(
+				"INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-trace', 'Trace', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');",
+				memoryConfig,
+			);
+			memoryDriver.registerWorktree({
+				id: 'worktree-trace', git_common_dir: gitCommonDir, path: path.join(root, '.worktrees', 'trace'),
+				branch, issue_id: 'issue-trace', work_folder: workFolder, registered_at: '2026-08-11T00:00:00.000Z',
+			}, memoryConfig);
+			await memoryDriver.insertKernelEvent({
+				entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.approved',
+				idempotency_key: GATE_RECEIPT, expected_revision: 0, actor: 'maintainer', origin: 'test',
+				payload: { gate: GATE_ID, expires_at: null, generation: 0 }, created_at: '2026-08-11T00:04:00.000Z',
+			}, {}, memoryConfig);
+			await memoryDriver.insertKernelClaim({
+				id: 'claim-memory', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
+				state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z',
+			}, {}, memoryConfig);
+
+			const memoryResult = memoryBroker.recordOpenedPrLinkage(linkage(), {
+				actor: 'agent-1', sessionId: 'session-1', now: '2026-08-11T00:10:00.000Z',
+			});
+			await expect(memoryResult).resolves.toHaveProperty('iteration.decision', 'accept');
+			expect(await memoryDriver.queryAll("SELECT issue_id, number FROM kernel_pr;", memoryConfig))
+				.toEqual([{ issue_id: 'issue-trace', number: 514 }]);
+		} finally {
+			memoryDriver.close();
+		}
+	});
+
+	test('atomically rejects divergent opened evidence across independent brokers', async () => {
+		const secondDriver = createBuiltinSQLiteDriver({ databasePath: config.databasePath });
+		const secondBroker = createLocalBroker({ projectRoot: root, gitCommonDir, databasePath: config.databasePath, driver: secondDriver });
+		await secondBroker.initialize();
+		try {
+			const firstPacket = workPacket();
+			const secondPacket = rehash({ ...structuredClone(firstPacket), object_id: '10000000-0000-4000-8000-000000000099' });
+			const first = linkage('opened', firstPacket, runReceipt(firstPacket));
+			const second = linkage('opened', secondPacket, runReceipt(secondPacket), { number: 515, url: 'https://github.com/owner/forge/pull/515' });
+			const results = await Promise.allSettled([broker.recordPrLinkage(first), secondBroker.recordPrLinkage(second)]);
+			expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+			const rejected = results.find(result => result.status === 'rejected');
+			expect(rejected.reason).toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+			const rows = await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE event_type = 'pr.opened';", config);
+			expect(rows).toEqual([{ n: 1 }]);
+		} finally {
+			secondDriver.close();
+		}
+	});
+
+	test('atomically rejects reuse of one Flow run identity across PR targets', async () => {
+		const firstPacket = workPacket();
+		await broker.recordPrLinkage(linkage('opened', firstPacket, runReceipt(firstPacket)));
+		const secondPacket = rehash({ ...structuredClone(firstPacket), object_id: '10000000-0000-4000-8000-000000000099',
+			payload: { ...structuredClone(firstPacket.payload), packet_id: 'packet-other' } });
+		await expect(broker.recordPrLinkage(linkage('opened', secondPacket, runReceipt(secondPacket), {
+			number: 515, url: 'https://github.com/owner/forge/pull/515',
+		}))).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE event_type = 'pr.opened';", config))
+			.toEqual([{ n: 1 }]);
+	});
+
+	test('serializes same-driver linkage turns and releases the queue after failure', async () => {
+		const invalidPacket = workPacket({ target_head: 'f'.repeat(40) });
+		const invalid = linkage('opened', invalidPacket, runReceipt(invalidPacket, { exact_head: HEAD_SHA }));
+		const first = broker.recordPrLinkage(invalid).then(() => null, error => error);
+		const second = broker.recordPrLinkage(linkage());
+		await expect(first).resolves.toBeInstanceOf(Error);
+		await expect(second).resolves.toHaveProperty('iteration');
+		await expect(broker.recordPrLinkage(linkage())).resolves.toHaveProperty('iteration');
+	});
+
+	test('fails closed before linkage work when isolation is unavailable', async () => {
+		const originalFork = driver.forkConnection;
+		let calls = 0;
+		const originalResolve = driver.resolvePrLinkage;
+		driver.resolvePrLinkage = async (...args) => { calls += 1; return originalResolve(...args); };
+		driver.forkConnection = undefined;
+		await expect(broker.recordPrLinkage(linkage())).rejects.toMatchObject({ code: 'FORGE_TRACE_UNAVAILABLE' });
+		driver.forkConnection = () => { throw new Error('fork unavailable'); };
+		await expect(broker.recordPrLinkage(linkage())).rejects.toMatchObject({ code: 'FORGE_TRACE_UNAVAILABLE' });
+		expect(calls).toBe(0);
+		driver.forkConnection = originalFork;
+		driver.resolvePrLinkage = originalResolve;
+	});
+
+	test('always closes the isolated linkage connection on success and error', async () => {
+		const originalFork = driver.forkConnection;
+		let closes = 0;
+		driver.forkConnection = () => {
+			const fork = originalFork.call(driver);
+			const close = fork.close;
+			fork.close = () => { closes += 1; close.call(fork); };
+			return fork;
+		};
+		await broker.recordPrLinkage(linkage());
+		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-1', sessionId: 'session-1' }))
+			.rejects.toBeInstanceOf(Error);
+		expect(closes).toBe(2);
+		driver.forkConnection = originalFork;
+	});
+
+	test('closes the isolated linkage connection when transaction acquisition fails', async () => {
+		const originalFork = driver.forkConnection;
+		let closes = 0;
+		driver.forkConnection = () => {
+			const fork = originalFork.call(driver);
+			const exec = fork.exec;
+			const close = fork.close;
+			fork.exec = async (statement, ...args) => {
+				if (statement === 'BEGIN IMMEDIATE;') throw new Error('begin failed');
+				return exec.call(fork, statement, ...args);
+			};
+			fork.close = () => { closes += 1; close.call(fork); };
+			return fork;
+		};
+		await expect(broker.recordPrLinkage(linkage())).rejects.toThrow('begin failed');
+		expect(closes).toBe(1);
+		driver.forkConnection = originalFork;
+	});
+
+	test('closes the isolated linkage connection when input or receipt validation fails', async () => {
+		const originalFork = driver.forkConnection;
+		let closes = 0;
+		driver.forkConnection = () => {
+			const fork = originalFork.call(driver);
+			const close = fork.close;
+			fork.close = () => { closes += 1; close.call(fork); };
+			return fork;
+		};
+		await expect(broker.recordPrLinkage({})).rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
+		await expect(broker.recordPrLinkage(linkage('opened', workPacket(), { invalid: true })))
+			.rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
+		expect(closes).toBe(2);
+		driver.forkConnection = originalFork;
+	});
+
+	test('rejects missing, malformed, or oversized run identities before linkage writes', async () => {
+		for (const [field, value] of [
+			['run_id', undefined], ['run_id', ''], ['run_id', 'x'.repeat(513)], ['run_id', 'run\u0000id'],
+			['attempt_id', undefined], ['attempt_id', ''], ['attempt_id', 'x'.repeat(513)], ['attempt_id', 'attempt\nid'],
+		]) {
+			const packet = workPacket();
+			const candidate = runReceipt(packet);
+			if (value === undefined) delete candidate.payload[field];
+			else candidate.payload[field] = value;
+			const invalidReceipt = rehash(candidate);
+			await expect(broker.recordPrLinkage(linkage('opened', packet, invalidReceipt)))
+				.rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
+		}
+		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE entity_type = 'pr';", config))
+			.toEqual([{ n: 0 }]);
+		expect(await driver.queryAll('SELECT COUNT(*) AS n FROM kernel_pr;', config)).toEqual([{ n: 0 }]);
+	});
+
+	test('revalidates exact claim ownership inside opened linkage persistence', async () => {
+		await driver.insertKernelClaim({ id: 'claim-1', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
+			state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z' }, {}, config);
+		const context = { actor: 'agent-1', sessionId: 'session-1', now: '2026-08-11T00:10:00.000Z' };
+		await expect(broker.recordOpenedPrLinkage(linkage(), context)).resolves.toHaveProperty('iteration');
+		await driver.updateKernelClaimState('claim-1', 'released', {}, config);
+		await expect(broker.recordOpenedPrLinkage(linkage(), context)).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+		await driver.insertKernelClaim({ id: 'claim-2', issue_id: 'issue-trace', actor: 'agent-2', session_id: 'session-2',
+			state: 'active', claimed_at: '2026-08-11T00:11:00.000Z', expires_at: '2026-08-11T00:12:00.000Z' }, {}, config);
+		await expect(broker.recordOpenedPrLinkage(linkage(), context)).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-2', sessionId: 'session-2', now: '2026-08-11T00:13:00.000Z' }))
+			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+	});
+
+	test('rejects a foreign issue PR binding inside the linkage transaction', async () => {
+		await driver.exec("INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-other', 'Other', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');", config);
+		await driver.upsertPr({ id: 'foreign-pr', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 514,
+			issue_id: 'issue-other', worktree_id: 'worktree-other', branch, head_sha: 'f'.repeat(40) }, {}, config);
+		await expect(broker.recordPrLinkage(linkage())).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+		const rows = await driver.queryAll('SELECT issue_id, head_sha FROM kernel_pr WHERE id = \'foreign-pr\';', config);
+		expect(rows).toEqual([{ issue_id: 'issue-other', head_sha: 'f'.repeat(40) }]);
+	});
+
+	test('never overwrites a newer authoritative PR head with a stale receipt', async () => {
+		await driver.upsertPr({ id: 'advanced-pr', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 514,
+			issue_id: 'issue-trace', worktree_id: 'worktree-trace', branch, head_sha: 'f'.repeat(40) }, {}, config);
+		await expect(broker.recordPrLinkage(linkage())).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+		expect(await driver.queryAll("SELECT head_sha FROM kernel_pr WHERE id = 'advanced-pr';", config))
+			.toEqual([{ head_sha: 'f'.repeat(40) }]);
 	});
 
 	test('accepts producer-canonical hashes with mixed-case receipt keys', async () => {
@@ -258,6 +451,18 @@ describe('Kernel receipt-bound PR trace', () => {
 		}
 		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
 		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
+	});
+
+	test('rejects missing or non-string packet identity before writes', async () => {
+		for (const packetId of [undefined, { forged: true }]) {
+			let packet = workPacket();
+			if (packetId === undefined) delete packet.payload.packet_id;
+			else packet.payload.packet_id = packetId;
+			packet = rehash(packet);
+			await expect(broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet))))
+				.rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
+		}
+		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
 	});
 
 	test('rejects a hash-valid zero packet revision before writes', async () => {
@@ -461,7 +666,7 @@ describe('Kernel receipt-bound PR trace', () => {
 			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
 		const changedHeadPacket = workPacket({ target_head: 'f'.repeat(40) });
 		await expect(broker.recordPrLinkage(linkage('merged', changedHeadPacket, runReceipt(changedHeadPacket, {}, 'merged'))))
-			.rejects.toMatchObject({ code: 'FORGE_TRACE_TERMINAL_CONFLICT' });
+			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
 		expect((await driver.queryAll('SELECT * FROM kernel_pr;', config))[0]).toEqual(before);
 	});
 
