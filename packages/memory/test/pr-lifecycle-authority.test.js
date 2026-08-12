@@ -502,10 +502,10 @@ describe('public PR lifecycle authority', () => {
     const workPacket = packet();
     const authority = createPrLifecycleAuthority({
       provider: provider({ recordPrLinkage: async () => {
-        await new Promise(resolve => setTimeout(resolve, 8));
+        await new Promise(resolve => setTimeout(resolve, 150));
         return { ok: true };
       } }),
-      timeoutMs: 5,
+      timeoutMs: 100,
     });
     await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
       .resolves.toMatchObject({ accepted: true });
@@ -541,13 +541,13 @@ describe('public PR lifecycle authority', () => {
     const authority = createPrLifecycleAuthority({
       provider: provider({
         recordPrLinkage: async () => {
-          await new Promise(resolve => setTimeout(resolve, 15));
+          await new Promise(resolve => setTimeout(resolve, 150));
           recorded = true;
           return { ok: true };
         },
         readTrace: async () => {
           reads += 1;
-          if (reads === 2) await new Promise(resolve => setTimeout(resolve, 11));
+          if (reads === 2) await new Promise(resolve => setTimeout(resolve, 110));
           return recorded ? { pull_requests: [{
             number: 514, repo: REPOSITORY_ID, head_sha: HEAD, issue_id: ISSUE_ID,
             iterations: [{ type: 'pr.opened', work_packet_hash: workPacket.content_hash,
@@ -555,7 +555,7 @@ describe('public PR lifecycle authority', () => {
           }] } : { pull_requests: [] };
         },
       }),
-      timeoutMs: 10,
+      timeoutMs: 100,
     });
     await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
       .resolves.toMatchObject({ accepted: true });
