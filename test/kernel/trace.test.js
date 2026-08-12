@@ -253,6 +253,18 @@ describe('Kernel receipt-bound PR trace', () => {
 		}
 	});
 
+	test('atomically rejects reuse of one Flow run identity across PR targets', async () => {
+		const firstPacket = workPacket();
+		await broker.recordPrLinkage(linkage('opened', firstPacket, runReceipt(firstPacket)));
+		const secondPacket = rehash({ ...structuredClone(firstPacket), object_id: '10000000-0000-4000-8000-000000000099',
+			payload: { ...structuredClone(firstPacket.payload), packet_id: 'packet-other' } });
+		await expect(broker.recordPrLinkage(linkage('opened', secondPacket, runReceipt(secondPacket), {
+			number: 515, url: 'https://github.com/owner/forge/pull/515',
+		}))).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE event_type = 'pr.opened';", config))
+			.toEqual([{ n: 1 }]);
+	});
+
 	test('serializes same-driver linkage turns and releases the queue after failure', async () => {
 		const invalidPacket = workPacket({ target_head: 'f'.repeat(40) });
 		const invalid = linkage('opened', invalidPacket, runReceipt(invalidPacket, { exact_head: HEAD_SHA }));
@@ -309,6 +321,22 @@ describe('Kernel receipt-bound PR trace', () => {
 		};
 		await expect(broker.recordPrLinkage(linkage())).rejects.toThrow('begin failed');
 		expect(closes).toBe(1);
+		driver.forkConnection = originalFork;
+	});
+
+	test('closes the isolated linkage connection when input or receipt validation fails', async () => {
+		const originalFork = driver.forkConnection;
+		let closes = 0;
+		driver.forkConnection = () => {
+			const fork = originalFork.call(driver);
+			const close = fork.close;
+			fork.close = () => { closes += 1; close.call(fork); };
+			return fork;
+		};
+		await expect(broker.recordPrLinkage({})).rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
+		await expect(broker.recordPrLinkage(linkage('opened', workPacket(), { invalid: true })))
+			.rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
+		expect(closes).toBe(2);
 		driver.forkConnection = originalFork;
 	});
 
@@ -612,7 +640,7 @@ describe('Kernel receipt-bound PR trace', () => {
 			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
 		const changedHeadPacket = workPacket({ target_head: 'f'.repeat(40) });
 		await expect(broker.recordPrLinkage(linkage('merged', changedHeadPacket, runReceipt(changedHeadPacket, {}, 'merged'))))
-			.rejects.toMatchObject({ code: 'FORGE_TRACE_TERMINAL_CONFLICT' });
+			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
 		expect((await driver.queryAll('SELECT * FROM kernel_pr;', config))[0]).toEqual(before);
 	});
 
