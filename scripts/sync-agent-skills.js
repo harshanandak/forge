@@ -49,6 +49,16 @@ function generatedDriftPaths(root, runGit) {
   }))));
 }
 
+function ignoredUntrackedPaths(root, runGit) {
+  return new Set(parseGitPaths(runGit('git', [
+    'ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--', 'skills',
+  ], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })).map(normalizedRepoPath));
+}
+
 function gitObjectHash(root, args, content, runGit) {
   const hash = runGit('git', ['hash-object', ...args, '--stdin'], {
     cwd: root,
@@ -104,6 +114,10 @@ function ambiguousCanonicalPaths(root, runGit) {
   const worktree = new Map();
   for (const prefix of filesystemPrefixes) {
     walkRegularFiles(path.join(root, prefix), (_file, relative) => recordNormalizedPath(worktree, `${prefix}${relative}`));
+  }
+  const ignoredWorktree = ignoredUntrackedPaths(root, runGit);
+  for (const key of ignoredWorktree) {
+    if (!indexed.has(key)) worktree.delete(key);
   }
   for (const repoPath of skipWorktree.values()) {
     const mirrorPath = `.agents/${repoPath}`;
@@ -161,9 +175,11 @@ function walkRegularFiles(root, visit, current = root) {
 function changedSkillFiles(root, runGit = execFileSync) {
   const mirror = resolveCodexRepoSkillsDir(root);
   const drift = generatedDriftPaths(root, runGit);
+  const ignoredCanonical = ignoredUntrackedPaths(root, runGit);
   const changed = [];
   for (const { name, sourcePath: sourceRoot } of listCanonicalSkills(root)) {
     walkRegularFiles(sourceRoot, (sourcePath, relative) => {
+      if (ignoredCanonical.has(normalizedRepoPath(`skills/${name}/${relative}`))) return;
       const canonical = fs.readFileSync(sourcePath);
       const mirrorPath = path.join(mirror, name, relative);
       const repoPath = `.agents/skills/${name}/${relative}`;

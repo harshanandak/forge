@@ -697,6 +697,34 @@ describe('command-owned agent skill sync', () => {
     }
   }, 30_000);
 
+  test('ignores Git-ignored files inside canonical skill directories', async () => {
+    const { root, run } = parityFixture();
+    let authorizations = 0;
+    try {
+      fs.writeFileSync(path.join(root, '.gitignore'), '*.tmp\n');
+      expect(run(['add', '.gitignore']).status).toBe(0);
+      expect(run(['commit', '-m', 'ignore temp files']).status).toBe(0);
+      fs.writeFileSync(path.join(root, 'skills/review/editor.tmp'), 'editor scratch\n');
+      expect(run(['check-ignore', 'skills/review/editor.tmp']).status).toBe(0);
+
+      const result = await syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-ignored-file-owner' },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      });
+
+      expect(result.changed).toEqual([]);
+      expect(authorizations).toBe(0);
+      expect(fs.existsSync(path.join(root, 'skills/review/editor.tmp'))).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   const ambiguityMatrix = [
     {
       name: 'staged canonical addition removed from the worktree',
