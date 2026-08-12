@@ -18,6 +18,21 @@ function fixture() {
   return root;
 }
 
+function parityFixture() {
+  const root = fixture();
+  const run = args => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+  fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'base canonical bytes\n');
+  fs.writeFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'base canonical bytes\n');
+  if (run(['init']).status !== 0
+    || run(['config', 'user.email', 'forge-test@example.invalid']).status !== 0
+    || run(['config', 'user.name', 'Forge Test']).status !== 0
+    || run(['add', '.']).status !== 0
+    || run(['commit', '-m', 'base']).status !== 0) {
+    throw new Error('failed to initialize parity fixture');
+  }
+  return { root, run };
+}
+
 describe('command-owned agent skill sync', () => {
   test('authorizes before writing, proves exact bytes, completes, then stages', async () => {
     const root = fixture();
@@ -141,7 +156,7 @@ describe('command-owned agent skill sync', () => {
           return { success: true, capabilityId: 'must-not-be-issued' };
         },
         completeAuthorization: async () => ({ success: true }),
-      })).rejects.toThrow('unstaged canonical skill changes');
+      })).rejects.toThrow('canonical index differs from generated mirror index');
 
       expect(authorizations).toBe(0);
       expect(fs.readFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'utf8')).toBe('base canonical bytes\n');
@@ -201,7 +216,7 @@ describe('command-owned agent skill sync', () => {
           return { success: true, capabilityId: 'must-not-be-issued' };
         },
         completeAuthorization: async () => ({ success: true }),
-      })).rejects.toThrow('unstaged canonical skill changes');
+      })).rejects.toThrow('canonical index differs from generated mirror index');
 
       expect(authorizations).toBe(0);
       expect(fs.readFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'utf8')).toBe('base canonical bytes\n');
@@ -275,7 +290,7 @@ describe('command-owned agent skill sync', () => {
           return { success: true, capabilityId: 'must-not-be-issued' };
         },
         completeAuthorization: async () => ({ success: true }),
-      })).rejects.toThrow('unstaged canonical skill changes');
+      })).rejects.toThrow('canonical index differs from generated mirror index');
 
       expect(authorizations).toBe(0);
       expect(run(['diff', '--cached', '--name-only']).stdout).toContain('skills/review/SKILL.md');
@@ -313,7 +328,7 @@ describe('command-owned agent skill sync', () => {
           return { success: true, capabilityId: 'must-not-be-issued' };
         },
         completeAuthorization: async () => ({ success: true }),
-      })).rejects.toThrow('unstaged canonical skill changes');
+      })).rejects.toThrow('canonical index differs from generated mirror index');
 
       expect(authorizations).toBe(0);
       expect(fs.readFileSync(path.join(root, '.agents', 'skills', skill, 'SKILL.md'), 'utf8')).toBe('base canonical bytes\n');
@@ -321,6 +336,94 @@ describe('command-owned agent skill sync', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   }, 30_000);
+
+  test('blocks staged canonical bytes when the worktree is restored to mirror bytes', async () => {
+    const root = fixture();
+    const run = args => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+    let authorizations = 0;
+    try {
+      fs.writeFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'base canonical bytes\n');
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'base canonical bytes\n');
+      expect(run(['init']).status).toBe(0);
+      expect(run(['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+      expect(run(['config', 'user.name', 'Forge Test']).status).toBe(0);
+      expect(run(['add', '.']).status).toBe(0);
+      expect(run(['commit', '-m', 'base']).status).toBe(0);
+
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'staged canonical bytes\n');
+      expect(run(['add', 'skills/review/SKILL.md']).status).toBe(0);
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'base canonical bytes\n');
+
+      await expect(syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-restored-parity-owner' },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      })).rejects.toThrow('canonical index differs from generated mirror index');
+
+      expect(authorizations).toBe(0);
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/SKILL.md');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  const ambiguityMatrix = [
+    {
+      name: 'staged canonical addition removed from the worktree',
+      expected: 'canonical index differs from generated mirror index',
+      setup(root, run) {
+        fs.mkdirSync(path.join(root, 'skills/ship'), { recursive: true });
+        fs.writeFileSync(path.join(root, 'skills/ship/SKILL.md'), 'staged addition\n');
+        expect(run(['add', 'skills/ship/SKILL.md']).status).toBe(0);
+        fs.rmSync(path.join(root, 'skills/ship'), { recursive: true, force: true });
+      },
+    },
+    {
+      name: 'matching staged canonical and mirror with later canonical edit',
+      expected: 'unstaged canonical skill changes',
+      setup(root, run) {
+        fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'staged pair\n');
+        fs.writeFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'staged pair\n');
+        expect(run(['add', 'skills/review/SKILL.md', '.agents/skills/review/SKILL.md']).status).toBe(0);
+        fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'later canonical edit\n');
+      },
+    },
+    {
+      name: 'matching staged deletions with later canonical recreation',
+      expected: 'unstaged canonical skill changes',
+      setup(root, run) {
+        expect(run(['rm', 'skills/review/SKILL.md', '.agents/skills/review/SKILL.md']).status).toBe(0);
+        fs.mkdirSync(path.join(root, 'skills/review'), { recursive: true });
+        fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'recreated canonical bytes\n');
+      },
+    },
+  ];
+
+  for (const scenario of ambiguityMatrix) {
+    test(`blocks ambiguity matrix: ${scenario.name}`, async () => {
+      const { root, run } = parityFixture();
+      let authorizations = 0;
+      try {
+        scenario.setup(root, run);
+        await expect(syncAgentSkills({
+          root,
+          env: { FORGE_ACTOR: 'skill-ambiguity-matrix-owner' },
+          issueAuthorization: async () => {
+            authorizations += 1;
+            return { success: true, capabilityId: 'must-not-be-issued' };
+          },
+          completeAuthorization: async () => ({ success: true }),
+        })).rejects.toThrow(scenario.expected);
+        expect(authorizations).toBe(0);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    }, 30_000);
+  }
 
   test('real hook accepts one exact sync and denies replay or foreign actor', async () => {
     const root = fixture();

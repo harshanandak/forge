@@ -61,6 +61,20 @@ function unstagedCanonicalPaths(root, runGit) {
   }))));
 }
 
+function indexedFile(root, repoPath, runGit) {
+  const tracked = parseGitPaths(runGit('git', ['ls-files', '-z', '--', repoPath], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }));
+  if (!tracked.includes(repoPath)) return null;
+  return runGit('git', ['show', `:${repoPath}`], {
+    cwd: root,
+    encoding: null,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
 function walkRegularFiles(root, visit, current = root) {
   if (!fs.existsSync(current)) return;
   const currentStat = fs.lstatSync(current);
@@ -137,8 +151,16 @@ async function syncAgentSkills(options = {}) {
   }).trim();
   if (!/^[0-9a-f]{40}$/.test(sourceHead)) throw new Error('source HEAD is not a full lowercase commit SHA');
 
-  const changed = changedSkillFiles(root, runGit);
   const unstagedCanonical = unstagedCanonicalPaths(root, runGit);
+  for (const canonicalPath of unstagedCanonical) {
+    const indexedCanonical = indexedFile(root, canonicalPath, runGit);
+    const indexedMirror = indexedFile(root, `.agents/${canonicalPath}`, runGit);
+    if (indexedCanonical === null ? indexedMirror !== null : indexedMirror === null || !indexedCanonical.equals(indexedMirror)) {
+      throw new Error(`canonical index differs from generated mirror index: ${canonicalPath}`);
+    }
+  }
+
+  const changed = changedSkillFiles(root, runGit);
   const deferred = changed
     .map(file => `skills/${file.path.slice('.agents/skills/'.length)}`)
     .filter(file => unstagedCanonical.has(file));
