@@ -748,11 +748,45 @@ describe('command-owned agent skill sync', () => {
           return { success: true, capabilityId: 'must-not-be-issued' };
         },
         completeAuthorization: async () => ({ success: true }),
-      })).rejects.toThrow('ignored canonical skill path still has a tracked mirror');
+      })).rejects.toThrow('ignored canonical skill path still has a mirror');
 
       expect(authorizations).toBe(0);
       expect(fs.readFileSync(path.join(root, '.agents/skills/review/notes.tmp'), 'utf8')).toBe('tracked notes\n');
       expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/notes.tmp');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('fails closed when an ignored canonical file has untracked mirror residue', async () => {
+    const { root, run } = parityFixture();
+    let authorizations = 0;
+    let staged = 0;
+    try {
+      fs.writeFileSync(path.join(root, '.gitignore'), '/skills/**/*.tmp\n');
+      expect(run(['add', '.gitignore']).status).toBe(0);
+      expect(run(['commit', '-m', 'ignore temp files']).status).toBe(0);
+      fs.writeFileSync(path.join(root, 'skills/review/editor.tmp'), 'editor scratch\n');
+      fs.writeFileSync(path.join(root, '.agents/skills/review/editor.tmp'), 'stale residue\n');
+
+      await expect(syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-ignored-residue-owner' },
+        execFileSync: (command, args, options) => {
+          if (args[0] === 'add') staged += 1;
+          return execFileSync(command, args, options);
+        },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      })).rejects.toThrow('ignored canonical skill path still has a mirror');
+
+      expect(authorizations).toBe(0);
+      expect(staged).toBe(0);
+      expect(fs.readFileSync(path.join(root, '.agents/skills/review/editor.tmp'), 'utf8')).toBe('stale residue\n');
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/editor.tmp');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
