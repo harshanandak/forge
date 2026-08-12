@@ -15,7 +15,7 @@ const {
 	createVerifiedClaimRepairBackup,
 	verifyClaimRepairBackup,
 } = require('../../lib/kernel/legacy-claim-repair');
-const { parseArgs } = require('../../scripts/legacy-claim-repair');
+const { parseArgs, run } = require('../../scripts/legacy-claim-repair');
 
 const OBSERVED_AT = '2026-08-12T08:00:00.000Z';
 const tempDirs = [];
@@ -160,6 +160,22 @@ describe('legacy claim repair preflight', () => {
 		expect(cleanupOptions).toMatchObject({ recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	});
 
+	test('dry-run reports only a preflight bound to the verified backup snapshot', async () => {
+		const driver = {
+			async preflightLegacyClaimRepair() { return { digest: 'b'.repeat(64) }; },
+			close() {},
+		};
+		await expect(run({
+			mode: 'dry-run',
+			databasePath: 'source.sqlite',
+			backupPath: 'backup.sqlite',
+			observedAt: OBSERVED_AT,
+		}, {
+			openDriver: () => driver,
+			createVerifiedClaimRepairBackup: async () => ({ plan_digest: 'a'.repeat(64) }),
+		})).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
+	});
+
 	test('classifies terminal rows before expiry and emits deterministic privacy-safe counts', async () => {
 		const fixture = await createFixture();
 		await seedMixedClaims(fixture);
@@ -255,6 +271,25 @@ describe('legacy claim repair backup and apply', () => {
 			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
 		});
 		expect(verifiedAgain).toEqual(proof);
+		fixture.driver.close();
+	});
+
+	test('never replaces a backup path created during publication', async () => {
+		let racedBackupPath;
+		const fixture = await createFixture({
+			backupVerifier() {
+				fs.writeFileSync(racedBackupPath, 'racing-writer', { flag: 'wx' });
+			},
+		});
+		await seedMixedClaims(fixture);
+		racedBackupPath = path.join(fixture.root, 'raced-backup.sqlite');
+		await expect(createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath: racedBackupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+		})).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_EXISTS' });
+		expect(fs.readFileSync(racedBackupPath, 'utf8')).toBe('racing-writer');
 		fixture.driver.close();
 	});
 

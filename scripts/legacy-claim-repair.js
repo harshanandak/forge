@@ -3,6 +3,7 @@
 
 const { createBuiltinSQLiteDriver } = require('../lib/kernel/sqlite-driver');
 const {
+	ClaimRepairError,
 	createVerifiedClaimRepairBackup,
 } = require('../lib/kernel/legacy-claim-repair');
 
@@ -60,16 +61,24 @@ function parseArgs(argv = []) {
 async function run(options, dependencies = {}) {
 	const openDriver = dependencies.openDriver
 		|| (databasePath => createBuiltinSQLiteDriver({ databasePath }));
+	const createBackup = dependencies.createVerifiedClaimRepairBackup
+		|| createVerifiedClaimRepairBackup;
 	const sourceDriver = openDriver(options.databasePath);
 	try {
 		if (options.mode === 'dry-run') {
-			const preflight = await sourceDriver.preflightLegacyClaimRepair({ observedAt: options.observedAt });
-			const backup = await createVerifiedClaimRepairBackup({
+			const backup = await createBackup({
 				sourceDriver,
 				backupPath: options.backupPath,
 				observedAt: options.observedAt,
 				openDriver,
 			});
+			const preflight = await sourceDriver.preflightLegacyClaimRepair({ observedAt: options.observedAt });
+			if (preflight.digest !== backup.plan_digest) {
+				throw new ClaimRepairError(
+					'CLAIM_REPAIR_BACKUP_DRIFT',
+					'Live claim authority changed while binding the reported preflight to its verified backup',
+				);
+			}
 			return { ok: true, preflight, backup };
 		}
 
