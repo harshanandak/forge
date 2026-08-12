@@ -701,7 +701,7 @@ describe('command-owned agent skill sync', () => {
     const { root, run } = parityFixture();
     let authorizations = 0;
     try {
-      fs.writeFileSync(path.join(root, '.gitignore'), '*.tmp\n');
+      fs.writeFileSync(path.join(root, '.gitignore'), '/skills/**/*.tmp\n');
       expect(run(['add', '.gitignore']).status).toBe(0);
       expect(run(['commit', '-m', 'ignore temp files']).status).toBe(0);
       fs.writeFileSync(path.join(root, 'skills/review/editor.tmp'), 'editor scratch\n');
@@ -720,6 +720,8 @@ describe('command-owned agent skill sync', () => {
       expect(result.changed).toEqual([]);
       expect(authorizations).toBe(0);
       expect(fs.existsSync(path.join(root, 'skills/review/editor.tmp'))).toBe(true);
+      expect(fs.existsSync(path.join(root, '.agents/skills/review/editor.tmp'))).toBe(false);
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/editor.tmp');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

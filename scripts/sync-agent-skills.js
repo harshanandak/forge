@@ -172,10 +172,9 @@ function walkRegularFiles(root, visit, current = root) {
   }
 }
 
-function changedSkillFiles(root, runGit = execFileSync) {
+function changedSkillFiles(root, runGit = execFileSync, ignoredCanonical = ignoredUntrackedPaths(root, runGit)) {
   const mirror = resolveCodexRepoSkillsDir(root);
   const drift = generatedDriftPaths(root, runGit);
-  const ignoredCanonical = ignoredUntrackedPaths(root, runGit);
   const changed = [];
   for (const { name, sourcePath: sourceRoot } of listCanonicalSkills(root)) {
     walkRegularFiles(sourceRoot, (sourcePath, relative) => {
@@ -249,7 +248,8 @@ async function syncAgentSkills(options = {}) {
     throw new Error(`unstaged canonical skill changes must be reconciled before mirror sync: ${[...ambiguousCanonical].join(', ')}`);
   }
 
-  const changed = changedSkillFiles(root, runGit);
+  const ignoredCanonical = ignoredUntrackedPaths(root, runGit);
+  const changed = changedSkillFiles(root, runGit, ignoredCanonical);
   const authorizations = [];
   for (const file of changed) {
     const authorization = await issueAuthorization(root, {
@@ -263,7 +263,14 @@ async function syncAgentSkills(options = {}) {
     authorizations.push({ ...file, capabilityId: authorization.capabilityId });
   }
 
-  const { written } = populateCodexRepoSkills({ sourceRoot: root, projectRoot: root, clean: true });
+  const excludeRelativePaths = new Set([...ignoredCanonical]
+    .map(repoPath => repoPath.slice('skills/'.length)));
+  const { written } = populateCodexRepoSkills({
+    sourceRoot: root,
+    projectRoot: root,
+    clean: true,
+    excludeRelativePaths,
+  });
   for (const file of authorizations) {
     const mirrorExists = fs.existsSync(path.join(root, file.path));
     if (file.writeIntent === 'delete' ? mirrorExists : !file.canonical.equals(fs.readFileSync(path.join(root, file.path)))) {
