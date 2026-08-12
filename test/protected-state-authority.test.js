@@ -7,6 +7,7 @@ const {
 	PROTECTED_STATE_AUTHORIZATION_ISSUED,
 	authorizationEntityId,
 	evaluateAuthorization,
+	issueGeneratedHarnessSkillAuthorization,
 	resolveWorktreeScope,
 } = require('../lib/protected-state-authority');
 
@@ -47,6 +48,7 @@ function eventRow(eventType, capabilityId, overrides = {}) {
 			surface,
 			contentHash: hashProtectedContent(content),
 			worktreeScope: overrides.worktreeScope || target.worktreeScope,
+			writeIntent: overrides.writeIntent || 'update',
 			operation: eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
 				? 'generate_npm_workflow'
 				: (eventType === PROTECTED_STATE_WRITE_COMPLETED ? 'generate_npm_workflow_completed' : 'staged_edit'),
@@ -117,6 +119,7 @@ describe('protected-state Kernel authority', () => {
 				surface: overrides.surface || skillTarget.surface,
 				contentHash: hashProtectedContent(overrides.content || skillTarget.content),
 				worktreeScope: overrides.worktreeScope || skillTarget.worktreeScope,
+				writeIntent: overrides.writeIntent || 'update',
 				operation: eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
 					? 'sync_agent_skill'
 					: 'sync_agent_skill_completed',
@@ -234,5 +237,31 @@ describe('protected-state Kernel authority', () => {
 		expect(replay.reason).toContain('already consumed');
 		expect(ambiguous.allowed).toBe(false);
 		expect(ambiguous.reason).toContain('multiple unconsumed');
+	});
+
+	test('rejects traversal and symlinked canonical skill roots before issuing authority', async () => {
+		const fs = require('node:fs');
+		const os = require('node:os');
+		const path = require('node:path');
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skill-path-'));
+		const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skill-outside-'));
+		try {
+			fs.mkdirSync(path.join(root, 'skills'), { recursive: true });
+			fs.writeFileSync(path.join(outside, 'SKILL.md'), 'foreign bytes\n');
+			fs.symlinkSync(outside, path.join(root, 'skills', 'review'), 'junction');
+			expect((await issueGeneratedHarnessSkillAuthorization(root, {
+				actor: 'skill-sync',
+				path: '.agents/skills/review/SKILL.md',
+				sourceHead: TEST_HEAD,
+			})).success).toBe(false);
+			expect((await issueGeneratedHarnessSkillAuthorization(root, {
+				actor: 'skill-sync',
+				path: '.agents/skills/review/../SKILL.md',
+				sourceHead: TEST_HEAD,
+			})).success).toBe(false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(outside, { recursive: true, force: true });
+		}
 	});
 });

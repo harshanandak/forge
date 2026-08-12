@@ -28,29 +28,58 @@ function actorFromEnv(env) {
   return env.FORGE_ACTOR || env.USER || env.USERNAME || 'unknown';
 }
 
-function changedSkillFiles(root) {
+function stagedPaths(root, runGit) {
+  try {
+    return new Set(runGit('git', ['diff', '--cached', '--name-only', '--diff-filter=ACMRDT'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).split(/\r?\n/).map(value => value.trim().replace(/\\/g, '/')).filter(Boolean));
+  } catch {
+    return new Set();
+  }
+}
+
+function walkRegularFiles(root, visit, current = root) {
+  if (!fs.existsSync(current)) return;
+  const currentStat = fs.lstatSync(current);
+  if (!currentStat.isDirectory() || currentStat.isSymbolicLink()) throw new Error(`skill sync path is not a real directory: ${current}`);
+  for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+    const entryPath = path.join(current, entry.name);
+    const stat = fs.lstatSync(entryPath);
+    if (stat.isSymbolicLink()) throw new Error(`skill sync refuses symlink: ${entryPath}`);
+    if (stat.isDirectory()) walkRegularFiles(root, visit, entryPath);
+    else if (stat.isFile()) visit(entryPath, path.relative(root, entryPath).replace(/\\/g, '/'));
+  }
+}
+
+function changedSkillFiles(root, runGit = execFileSync) {
   const mirror = resolveCodexRepoSkillsDir(root);
+  const staged = stagedPaths(root, runGit);
   const changed = [];
-  function walk(name, sourceRoot, current = sourceRoot) {
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      const sourcePath = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        walk(name, sourceRoot, sourcePath);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      const relative = path.relative(sourceRoot, sourcePath).replace(/\\/g, '/');
+  for (const { name, sourcePath: sourceRoot } of listCanonicalSkills(root)) {
+    walkRegularFiles(sourceRoot, (sourcePath, relative) => {
       const canonical = fs.readFileSync(sourcePath);
       const mirrorPath = path.join(mirror, name, relative);
+      const repoPath = `.agents/skills/${name}/${relative}`;
       try {
-        if (canonical.equals(fs.readFileSync(mirrorPath))) continue;
+        if (canonical.equals(fs.readFileSync(mirrorPath)) && !staged.has(repoPath)) return;
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }
-      changed.push({ path: `.agents/skills/${name}/${relative}`, canonical });
-    }
+      changed.push({ path: repoPath, canonical, writeIntent: 'update' });
+    });
   }
-  for (const { name, sourcePath } of listCanonicalSkills(root)) walk(name, sourcePath);
+  walkRegularFiles(mirror, (mirrorPath, relative) => {
+    const canonicalPath = path.join(root, 'skills', relative);
+    if (!fs.existsSync(canonicalPath)) {
+      changed.push({
+        path: `.agents/skills/${relative}`,
+        canonical: fs.readFileSync(mirrorPath),
+        writeIntent: 'delete',
+      });
+    }
+  });
   return changed;
 }
 
@@ -68,24 +97,33 @@ async function syncAgentSkills(options = {}) {
   }).trim();
   if (!/^[0-9a-f]{40}$/.test(sourceHead)) throw new Error('source HEAD is not a full lowercase commit SHA');
 
-  const changed = changedSkillFiles(root);
+  const changed = changedSkillFiles(root, runGit);
   const authorizations = [];
   for (const file of changed) {
-    const authorization = await issueAuthorization(root, { actor, path: file.path, sourceHead });
+    const authorization = await issueAuthorization(root, {
+      actor,
+      path: file.path,
+      sourceHead,
+      writeIntent: file.writeIntent,
+      ...(file.writeIntent === 'delete' ? { priorContent: file.canonical } : {}),
+    });
     if (!authorization.success) throw new Error(`authorization failed for ${file.path}: ${authorization.error}`);
     authorizations.push({ ...file, capabilityId: authorization.capabilityId });
   }
 
   const { written } = populateCodexRepoSkills({ sourceRoot: root, projectRoot: root, clean: true });
   for (const file of authorizations) {
-    if (!file.canonical.equals(fs.readFileSync(path.join(root, file.path)))) {
-      throw new Error(`canonical byte equality failed for ${file.path}`);
+    const mirrorExists = fs.existsSync(path.join(root, file.path));
+    if (file.writeIntent === 'delete' ? mirrorExists : !file.canonical.equals(fs.readFileSync(path.join(root, file.path)))) {
+      throw new Error(`canonical mirror intent failed for ${file.path}`);
     }
     const completion = await completeAuthorization(root, {
       actor,
       path: file.path,
       sourceHead,
       capabilityId: file.capabilityId,
+      writeIntent: file.writeIntent,
+      ...(file.writeIntent === 'delete' ? { priorContent: file.canonical } : {}),
     });
     if (!completion.success) throw new Error(`completion failed for ${file.path}: ${completion.error}`);
   }

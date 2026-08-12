@@ -28,6 +28,7 @@ describe('command-owned agent skill sync', () => {
         env: { FORGE_ACTOR: 'skill-sync-owner' },
         execFileSync: (_command, args) => {
           if (args[0] === 'rev-parse') return `${HEAD}\n`;
+          if (args[0] === 'diff') return '';
           calls.push('stage');
           return '';
         },
@@ -37,6 +38,7 @@ describe('command-owned agent skill sync', () => {
             actor: 'skill-sync-owner',
             path: '.agents/skills/review/SKILL.md',
             sourceHead: HEAD,
+            writeIntent: 'update',
           });
           expect(fs.readFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'utf8')).toBe('old bytes\n');
           return { success: true, capabilityId: 'capability-1' };
@@ -65,6 +67,7 @@ describe('command-owned agent skill sync', () => {
         env: { FORGE_ACTOR: 'skill-sync-owner' },
         execFileSync: (_command, args) => {
           if (args[0] === 'rev-parse') return `${HEAD}\n`;
+          if (args[0] === 'diff') return '';
           staged = true;
           return '';
         },
@@ -100,7 +103,37 @@ describe('command-owned agent skill sync', () => {
       await syncAgentSkills({ root, env: { FORGE_ACTOR: actor } });
       expect(check('foreign-actor').status).toBe(1);
       expect(check().status).toBe(0);
+
+	  await syncAgentSkills({ root, env: { FORGE_ACTOR: actor } });
+	  expect(check().status).toBe(0);
       expect(check().status).toBe(1);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('authorizes and completes canonical skill removal before staging the mirror deletion', async () => {
+    const root = fixture();
+    const actor = 'skill-delete-integration';
+    const checker = path.resolve(__dirname, '../scripts/protected-state-check.js');
+    const run = (args) => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+    try {
+      expect(run(['init']).status).toBe(0);
+      expect(run(['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+      expect(run(['config', 'user.name', 'Forge Test']).status).toBe(0);
+      expect(run(['add', '.']).status).toBe(0);
+      expect(run(['commit', '-m', 'base']).status).toBe(0);
+      fs.rmSync(path.join(root, 'skills/review'), { recursive: true, force: true });
+      expect(run(['add', '--all', '--', 'skills/review']).status).toBe(0);
+
+      await syncAgentSkills({ root, env: { FORGE_ACTOR: actor } });
+      expect(fs.existsSync(path.join(root, '.agents/skills/review'))).toBe(false);
+      const check = spawnSync(process.execPath, [checker], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: actor },
+      });
+      expect(check.status).toBe(0);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
