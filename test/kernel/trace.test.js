@@ -226,6 +226,36 @@ describe('Kernel receipt-bound PR trace', () => {
 		await expect(broker.recordPrLinkage(linkage())).resolves.toHaveProperty('iteration');
 	});
 
+	test('fails closed before linkage work when isolation is unavailable', async () => {
+		const originalFork = driver.forkConnection;
+		let calls = 0;
+		const originalResolve = driver.resolvePrLinkage;
+		driver.resolvePrLinkage = async (...args) => { calls += 1; return originalResolve(...args); };
+		driver.forkConnection = undefined;
+		await expect(broker.recordPrLinkage(linkage())).rejects.toMatchObject({ code: 'FORGE_TRACE_UNAVAILABLE' });
+		driver.forkConnection = () => { throw new Error('fork unavailable'); };
+		await expect(broker.recordPrLinkage(linkage())).rejects.toMatchObject({ code: 'FORGE_TRACE_UNAVAILABLE' });
+		expect(calls).toBe(0);
+		driver.forkConnection = originalFork;
+		driver.resolvePrLinkage = originalResolve;
+	});
+
+	test('always closes the isolated linkage connection on success and error', async () => {
+		const originalFork = driver.forkConnection;
+		let closes = 0;
+		driver.forkConnection = () => {
+			const fork = originalFork.call(driver);
+			const close = fork.close;
+			fork.close = () => { closes += 1; close.call(fork); };
+			return fork;
+		};
+		await broker.recordPrLinkage(linkage());
+		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-1', sessionId: 'session-1' }))
+			.rejects.toBeInstanceOf(Error);
+		expect(closes).toBe(2);
+		driver.forkConnection = originalFork;
+	});
+
 	test('revalidates exact claim ownership inside opened linkage persistence', async () => {
 		await driver.insertKernelClaim({ id: 'claim-1', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
 			state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z' }, {}, config);
