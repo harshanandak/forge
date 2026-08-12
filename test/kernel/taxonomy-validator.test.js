@@ -354,6 +354,11 @@ describe('claim-lease invariants (validation layer)', () => {
 describe('claim validator — extra branches', () => {
 	const now = '2026-06-17T00:00:00.000Z';
 
+	test('accepts reclaimable as non-authoritative claim history', () => {
+		const result = validateClaim({ issue_id: 'forge-1', actor: 'a', state: 'reclaimable' }, { now });
+		expect(result.valid).toBe(true);
+	});
+
 	test('rejects an unknown claim state', () => {
 		const result = validateClaim({ issue_id: 'forge-1', actor: 'a', state: 'paused' }, { now });
 		expect(result.valid).toBe(false);
