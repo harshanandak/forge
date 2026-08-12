@@ -44,7 +44,7 @@ function deps(overrides = {}) {
     verifyMergeGate: async () => true,
     prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
     recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
-    env: { FORGE_ACTOR: 'release-actor' },
+    env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
     fetchPrContext: async () => context(),
     mergePr: async () => ({ merged: true }),
     ...overrides,
@@ -500,7 +500,7 @@ describe('merge authority — exact reviewer regressions', () => {
   });
 
   test('freezes actor identity across both ownership probes', async () => {
-    const env = { FORGE_ACTOR: 'alice' };
+    const env = { FORGE_ACTOR: 'alice', FORGE_SESSION_ID: 'alice-session' };
     let ownershipCalls = 0;
     let merges = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
@@ -519,6 +519,18 @@ describe('merge authority — exact reviewer regressions', () => {
     expect(ownershipCalls).toBe(2);
     expect(out.success).toBe(false);
     expect(out.merged).toBe(false);
+    expect(merges).toBe(0);
+  });
+
+  test('requires a session identity before the external merge mutation', async () => {
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      env: { FORGE_ACTOR: 'release-actor' },
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
+    expect(out.success).toBe(false);
+    expect(out.merged).toBe(false);
+    expect(out.error).toMatch(/session identity/i);
     expect(merges).toBe(0);
   });
 

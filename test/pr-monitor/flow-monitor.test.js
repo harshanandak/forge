@@ -192,9 +192,27 @@ describe('Flow-backed PR monitor authority', () => {
     const result = await runFlowMonitorPass(context(store, async () => large, async () => {}));
 
     expect(result.changed).toBe(true);
-    const persisted = store.events.at(-1).payload.bounded_payload.snapshot;
-    expect(persisted.checks.length).toBeLessThan(100);
     expect(Buffer.byteLength(JSON.stringify(store.events.at(-1).payload.bounded_payload))).toBeLessThanOrEqual(16_384);
+  });
+
+  test('retains transition identity beyond the first three snapshot entries', async () => {
+    const store = durableStore();
+    let next = snapshot({
+      checks: Array.from({ length: 4 }, (_, index) => ({ name: `check-${index}`, class: 'green' })),
+    });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({
+      checks: Array.from({ length: 4 }, (_, index) => ({
+        name: `check-${index}`,
+        class: index === 3 ? 'failed' : 'green',
+      })),
+    });
+
+    await runFlowMonitorPass(ctx);
+
+    expect(delivered.some(record => record.type === 'check.failed')).toBe(true);
   });
 
   test('rejects truncated durable history instead of treating it as a complete restart checkpoint', async () => {

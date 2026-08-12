@@ -63,7 +63,7 @@ function deps(overrides = {}) {
     verifyMergeGate: async () => true,
     prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
     recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
-    env: { FORGE_ACTOR: 'release-actor' },
+    env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
     fetchPrContext: async () => context(),
     mergePr: async () => ({ merged: true }),
     ...overrides,
