@@ -994,6 +994,36 @@ describe('legacy claim repair backup and apply', () => {
 		fixture.driver.close();
 	});
 
+	test('rejects replay when the retained recovery copy aliases the named backup', async () => {
+		const fixture = await createFixture();
+		await seedMixedClaims(fixture);
+		const backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		await createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
+		});
+		const applied = await fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config);
+		fs.rmSync(applied.recovery_path);
+		fs.linkSync(backupPath, applied.recovery_path);
+
+		await expect(fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_RECOVERY_INVALID' });
+		fixture.driver.close();
+	});
+
 	test('rejects a backup replaced by a source alias at the commit-fence seam', async () => {
 		let backupPath;
 		let databasePath;
