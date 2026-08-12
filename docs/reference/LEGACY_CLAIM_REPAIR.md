@@ -82,6 +82,12 @@ confirming that no repair process is still running, remove those stale
 directories before verifying or reusing that backup. An already committed
 receipt can still be replayed without this cleanup.
 
+`CLAIM_REPAIR_BACKUP_POSTCOMMIT_DRIFT` means the repair and receipt committed,
+but the named backup changed during commit. Do not discard the
+`details.recovery_path` hardlink: it is the retained verified backup. Fence
+writers and investigate the named path before any restore. Repeating the same
+approved apply returns the committed receipt without mutating rows again.
+
 ## Restore boundary
 
 Restore is deliberately not automated. Fence every Kernel writer, stop Forge

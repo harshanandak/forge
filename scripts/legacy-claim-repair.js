@@ -112,11 +112,16 @@ async function main(argv = process.argv.slice(2)) {
 		}
 		process.stdout.write(`${JSON.stringify(await run(options), null, 2)}\n`);
 	} catch (error) {
+		const recoveryPath = error?.code === 'CLAIM_REPAIR_BACKUP_POSTCOMMIT_DRIFT'
+			&& typeof error?.details?.recovery_path === 'string'
+			? error.details.recovery_path
+			: null;
 		process.stderr.write(`${JSON.stringify({
 			ok: false,
 			error: {
 				code: error?.code || 'CLAIM_REPAIR_USAGE',
 				message: error?.message || String(error),
+				...(recoveryPath ? { recovery_path: recoveryPath } : {}),
 			},
 		}, null, 2)}\n`);
 		process.exitCode = 1;

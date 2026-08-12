@@ -714,6 +714,57 @@ describe('legacy claim repair backup and apply', () => {
 		fixture.driver.close();
 	});
 
+	test('preserves the verified recovery inode when the backup name changes during commit', async () => {
+		let backupPath;
+		const fixture = await createFixture({
+			claimRepairFaultInjector(phase) {
+				if (phase !== 'after-commit-before-backup-check') return;
+				fs.rmSync(backupPath);
+				fs.writeFileSync(backupPath, 'post-commit replacement');
+			},
+		});
+		await seedMixedClaims(fixture);
+		backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		await createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
+		});
+
+		let failure;
+		try {
+			await fixture.driver.applyLegacyClaimRepair({
+				observedAt: OBSERVED_AT,
+				approvedDigest: preflight.digest,
+				backupPath,
+				actor: 'approved-operator',
+			}, fixture.config);
+		} catch (error) {
+			failure = error;
+		}
+		const recoveryPath = failure?.details?.recovery_path;
+		expect(failure?.code).toBe('CLAIM_REPAIR_BACKUP_POSTCOMMIT_DRIFT');
+		expect(typeof recoveryPath).toBe('string');
+		expect(fs.readdirSync(fixture.root)).toContain(path.basename(recoveryPath));
+		const rows = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
+		expect(rows).toEqual([{ state: 'active' }, { state: 'reclaimable' }, { state: 'active' }, { state: 'released' }]);
+		const receipts = await fixture.driver.queryAll(
+			"SELECT * FROM kernel_events WHERE event_type = 'claim.repair';",
+			fixture.config,
+		);
+		expect(receipts).toHaveLength(1);
+		await expect(fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config)).resolves.toMatchObject({ replayed: true });
+		fixture.driver.close();
+	});
+
 	test('rejects a backup replaced by a source alias at the commit-fence seam', async () => {
 		let backupPath;
 		let databasePath;
