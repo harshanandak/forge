@@ -271,13 +271,20 @@ function providerIssueRevision(issue) {
   return revision;
 }
 
+function canonicalRepositoryId(value) {
+  const repositoryId = requiredString(value, 'repository_id').trim().toLowerCase();
+  if (!/^[a-z0-9_.-]+(?:\/[a-z0-9_.-]+)+$/.test(repositoryId)) {
+    fail('PR_LIFECYCLE_INVALID_INPUT', 'repository_id must be a canonical owner/repository identifier');
+  }
+  return repositoryId;
+}
+
 function providerHead(head, repositoryId) {
   const value = typeof head === 'string' ? { head } : head;
   const exactHead = value?.head ?? value?.exact_head ?? value?.target_head;
   requiredLinkageHead(exactHead);
-  const repo = value?.repository_id ?? value?.repository ?? repositoryId;
-  requiredString(repo, 'repository_id');
-  if (repositoryId && repo !== repositoryId) fail('PR_LIFECYCLE_HEAD_STALE', 'live repository does not match packet');
+  const repo = canonicalRepositoryId(value?.repository_id ?? value?.repository ?? repositoryId);
+  if (repositoryId && repo !== canonicalRepositoryId(repositoryId)) fail('PR_LIFECYCLE_HEAD_STALE', 'live repository does not match packet');
   return { head: exactHead, repository_id: repo };
 }
 
@@ -403,7 +410,7 @@ function optionalPlainObjectField(input, field) {
 
 function buildPacket(input, live) {
   const issueId = requiredString(input.issue_id ?? input.issueId, 'issue_id');
-  const repositoryId = requiredString(input.repository_id ?? input.repositoryId ?? live.head.repository_id, 'repository_id');
+	const repositoryId = canonicalRepositoryId(input.repository_id ?? input.repositoryId ?? live.head.repository_id);
   const packetId = requiredString(input.packet_id ?? input.packetId ?? `packet-${issueId}-${live.issueRevision}-${live.head.head}`, 'packet_id');
   const createdAt = input.created_at ?? input.createdAt ?? new Date().toISOString();
   const objective = requiredString(input.objective ?? live.issue.objective ?? 'PR lifecycle operation', 'objective');

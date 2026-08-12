@@ -363,6 +363,14 @@ describe('Kernel receipt-bound PR trace', () => {
 		expect(rows).toEqual([{ issue_id: 'issue-other', head_sha: 'f'.repeat(40) }]);
 	});
 
+	test('never overwrites a newer authoritative PR head with a stale receipt', async () => {
+		await driver.upsertPr({ id: 'advanced-pr', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 514,
+			issue_id: 'issue-trace', worktree_id: 'worktree-trace', branch, head_sha: 'f'.repeat(40) }, {}, config);
+		await expect(broker.recordPrLinkage(linkage())).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+		expect(await driver.queryAll("SELECT head_sha FROM kernel_pr WHERE id = 'advanced-pr';", config))
+			.toEqual([{ head_sha: 'f'.repeat(40) }]);
+	});
+
 	test('accepts producer-canonical hashes with mixed-case receipt keys', async () => {
 		const packet = workPacket({ constraints: { Z: 'upper', a: 'lower' } });
 		const receipt = runReceipt(packet);
