@@ -280,6 +280,24 @@ describe('public PR lifecycle authority', () => {
     })).rejects.toMatchObject({ code: 'PR_LIFECYCLE_PRIVACY_REJECTED' });
   });
 
+  test('rejects traversal, encoded traversal, and secret-bearing trusted path segments before linkage', async () => {
+    for (const gitCommonDir of [
+      '/home/alice/../repo/.git',
+      'C:\\Users\\alice\\..\\repo\\.git',
+      '/home/alice/%2e%2e/repo/.git',
+      '/home/sk-live_1234567890123456/repo/.git',
+    ]) {
+      let writes = 0;
+      const authority = createPrLifecycleAuthority({
+        provider: provider({ recordPrLinkage: async () => { writes += 1; return { ok: true }; } }),
+      });
+      const workPacket = packet({ payload: { target: { pr_number: 514, branch: 'codex/test', git_common_dir: gitCommonDir, url: 'https://example.test/pull/514' } } });
+      await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket) }))
+        .rejects.toMatchObject({ code: 'PR_LIFECYCLE_PRIVACY_REJECTED' });
+      expect(writes).toBe(0);
+    }
+  });
+
   test('preserves stable input errors and rejects missing merge linkage URL before writing', async () => {
     const stable = createPrLifecycleAuthority({ provider: provider() });
     const invalid = { ...packet(), payload: { ...packet().payload, receipt_requirements: [] } };

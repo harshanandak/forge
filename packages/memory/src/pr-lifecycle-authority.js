@@ -46,9 +46,16 @@ const PR_LIFECYCLE_PROVIDER_METHODS = Object.freeze([
 function isCanonicalGitCommonDir(value) {
   if (typeof value !== 'string' || value.length === 0 || value.length > 512) return false;
   const normalized = value.replaceAll('\\', '/');
-  return normalized === '/repo/.git'
-    || /^\/(?:Users|home)\/[^/\s]+(?:\/[^/\s]+)+\/\.git$/i.test(normalized)
-    || /^[A-Za-z]:\/Users\/[^/\s]+(?:\/[^/\s]+)+\/\.git$/i.test(normalized);
+  if (normalized.includes('%') || [...normalized].some(character => {
+    const code = character.charCodeAt(0);
+    return code < 0x20 || code === 0x7f;
+  })) return false;
+  const segments = normalized.split('/');
+  if (segments.some(segment => segment === '.' || segment === '..' || containsSecret(segment))) return false;
+  if (segments.at(-1)?.toLowerCase() !== '.git') return false;
+  const posixHome = segments[0] === '' && ['users', 'home'].includes(segments[1]?.toLowerCase()) && segments.length >= 5;
+  const windowsHome = /^[a-z]:$/i.test(segments[0]) && segments[1]?.toLowerCase() === 'users' && segments.length >= 5;
+  return normalized === '/repo/.git' || posixHome || windowsHome;
 }
 
 class PrLifecycleAuthorityError extends Error {
