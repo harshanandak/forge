@@ -677,6 +677,31 @@ describe('public PR lifecycle authority', () => {
     await expect(authority.requestNextWork({ issue_id: ISSUE_ID })).resolves.toEqual([{ id: 'z' }, { id: 'a' }]);
   });
 
+  test('unwraps the Kernel ready envelope without reranking', async () => {
+    const base = provider();
+    delete base.listReadyWork;
+    base.runIssueOperation = async () => ({ ok: true, data: { issues: [{ id: 'z' }, { id: 'a' }], count: 2 } });
+    const authority = createPrLifecycleAuthority({ provider: base });
+    await expect(authority.requestNextWork()).resolves.toEqual([{ id: 'z' }, { id: 'a' }]);
+  });
+
+  test('rejects contradictory packet prohibitions before lifecycle side effects', async () => {
+    let writes = 0;
+    let merges = 0;
+    const workPacket = packet({ payload: { prohibited_actions: ['pr.merged'] } });
+    const runReceipt = receipt(workPacket);
+    const authority = createPrLifecycleAuthority({ provider: provider({
+      recordPrLinkage: async () => { writes += 1; return { ok: true }; },
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }) });
+    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_MUTATION_UNAUTHORIZED' });
+    await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_MUTATION_UNAUTHORIZED' });
+    expect(writes).toBe(0);
+    expect(merges).toBe(0);
+  });
+
   test('rejects ambiguous duplicate PR trace rows before merge side effects', async () => {
     let merges = 0;
     let durable;

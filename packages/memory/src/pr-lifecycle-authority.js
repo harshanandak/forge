@@ -425,6 +425,7 @@ function assertReceiptEvidence(packet, receipt) {
   const attempted = receipt.payload.mutations_attempted ?? [];
   const authorized = receipt.payload.mutations_authorized ?? [];
   const allowed = packet.payload.allowed_mutations ?? [];
+  const prohibited = packet.payload.prohibited_actions ?? [];
   const sameMutations = attempted.length === authorized.length
     && attempted.every((mutation, index) => mutation === authorized[index]);
   const satisfied = ['opened', 'merged'].filter((candidate) => {
@@ -434,7 +435,7 @@ function assertReceiptEvidence(packet, receipt) {
       && authorized.includes(candidateMutation);
   });
   const phase = satisfied.includes('merged') ? 'merged' : satisfied[0];
-  if (!phase || !sameMutations || attempted.some((entry) => !allowed.includes(entry))) {
+  if (!phase || !sameMutations || attempted.some((entry) => !allowed.includes(entry) || prohibited.includes(entry))) {
     fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'RunReceipt mutation evidence is incomplete or incompatible');
   }
   if (receipt.payload.lease_epoch !== undefined) fail('PR_LIFECYCLE_AUTHORITY_UNSUPPORTED', 'lease_epoch is deferred for 0.1');
@@ -448,6 +449,8 @@ function assertPacketLiveBindings(packet, live) {
   if (!Array.isArray(requiredGateIds) || requiredGateIds.length === 0 || requiredGateIds.some((id) => typeof id !== 'string' || id.length === 0) || new Set(requiredGateIds).size !== requiredGateIds.length) fail('PR_LIFECYCLE_GATE_INVALID', 'WorkPacket gate requirements are incomplete');
   if (requiredGateIds.length !== live.gates.ids.length || requiredGateIds.some((id) => !live.gates.ids.includes(id))) fail('PR_LIFECYCLE_GATE_INVALID', 'WorkPacket gate requirements do not match live gates');
   if (!HASH_PATTERN.test(packet.payload.risk_manifest_digest || '') || packet.payload.risk_manifest_digest !== live.risk.digest) fail('PR_LIFECYCLE_RISK_INVALID', 'WorkPacket risk digest does not match live risk');
+  const prohibited = packet.payload.prohibited_actions ?? [];
+  if (!Array.isArray(prohibited) || packet.payload.allowed_mutations.some(mutation => prohibited.includes(mutation))) fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'WorkPacket allowed and prohibited mutations conflict');
   if (!packet.payload.allowed_mutations.some((mutation) => ['pr.opened', 'pr.merged'].includes(mutation))) fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'WorkPacket does not authorize a PR lifecycle mutation');
 }
 
@@ -710,9 +713,10 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
   async function requestNextWork(rawInput = {}) {
     const input = snapshot(rawInput, 'next work input');
     const method = typeof provider.listReadyWork === 'function' ? 'listReadyWork' : undefined;
-    const ready = method
+    const response = method
       ? await callMethod(provider, method, [input], 'ready', { timeoutMs })
       : await callMethod(provider, 'runIssueOperation', ['ready', [input], {}], 'ready', { timeoutMs, unwrap: true });
+    const ready = Array.isArray(response) ? response : response?.issues;
     if (!Array.isArray(ready)) fail('PR_LIFECYCLE_UNAVAILABLE', 'ready provider returned a malformed queue');
     return ready;
   }
