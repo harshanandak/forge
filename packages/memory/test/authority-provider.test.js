@@ -84,4 +84,10 @@ describe('Memory authority provider', () => {
     broker.recordPrLinkage = async () => ({ ok: true });
     expect(() => createMemoryAuthorityProvider({ broker })).toThrow('recordPrLinkage() and readTrace()');
   });
+
+  test('fails closed when only readTrace is present', () => {
+    const broker = brokerStub([]);
+    broker.readTrace = async () => ({ pull_requests: [] });
+    expect(() => createMemoryAuthorityProvider({ broker })).toThrow('recordPrLinkage() and readTrace()');
+  });
 });

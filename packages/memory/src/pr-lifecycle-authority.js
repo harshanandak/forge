@@ -17,6 +17,9 @@ const MAX_SNAPSHOT_NODES = 2_000;
 const MAX_SNAPSHOT_BYTES = 65_536;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 5_000;
 const MAX_PROVIDER_TIMEOUT_MS = 30_000;
+const MAX_TRACE_ROWS = 2;
+const MAX_TRACE_SCAN_ROWS = 128;
+const MAX_TRACE_ITERATIONS = 128;
 const SECRET_PATTERNS = Object.freeze([
   /gh[pousr]_[A-Za-z0-9]{20,}/i,
   /sk_(?:live|test)_[A-Za-z0-9]{16,}/i,
@@ -55,9 +58,9 @@ function isCanonicalGitCommonDir(value) {
   if (segments.slice(segmentStart).some(segment => segment.length === 0 || segment.trim() !== segment)) return false;
   if (segments.some(segment => segment === '.' || segment === '..' || containsSecret(segment))) return false;
   if (segments.at(-1)?.toLowerCase() !== '.git') return false;
-  const posixHome = segments[0] === '' && ['Users', 'home'].includes(segments[1]) && segments.length >= 5;
-  const windowsHome = /^[a-z]:$/i.test(segments[0]) && segments[1]?.toLowerCase() === 'users' && segments.length >= 5;
-  return normalized === '/repo/.git' || posixHome || windowsHome;
+  const posixAbsolute = segments[0] === '' && segments.length >= 3;
+  const windowsAbsolute = /^[a-z]:$/i.test(segments[0]) && segments.length >= 3;
+  return posixAbsolute || windowsAbsolute;
 }
 
 class PrLifecycleAuthorityError extends Error {
@@ -78,7 +81,6 @@ function containsSecret(value) {
 
 function containsForbidden(value, options = {}, context = '') {
   if (typeof value === 'string') {
-    if (context === 'git_common_dir' && isCanonicalGitCommonDir(value)) return false;
     return containsSecret(value) || USER_PATH_PATTERN.test(value);
   }
   if (Array.isArray(value)) return value.some(item => containsForbidden(item, options, context));
@@ -174,6 +176,8 @@ function validateProviderTimeout(timeoutMs) {
 async function invokeWithDeadline(target, method, args, timeoutMs) {
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   const methodArgs = [...args];
+  // Cancellation is best-effort for backward compatibility: established provider
+  // methods do not accept an options object, so only explicit signal parameters opt in.
   if (controller && target[method]?.length > args.length) methodArgs.push(controller.signal);
   let timer;
   let timedOut = false;
@@ -206,7 +210,8 @@ async function callMethod(target, method, args, label, options = {}) {
     fail('PR_LIFECYCLE_UNAVAILABLE', `${label} provider operation failed`, { cause: error });
   }
   try {
-    const bounded = snapshot(result, `${label} provider response`, {
+    const projected = typeof options.project === 'function' ? options.project(result) : result;
+    const bounded = snapshot(projected, `${label} provider response`, {
       privacy: options.sanitize ? 'sanitize' : undefined,
     });
     if (options.unwrap && bounded?.ok === true && bounded.data !== undefined) return bounded.data;
@@ -400,7 +405,7 @@ function buildPacket(input, live) {
       capability_manifest_digest: live.capabilityDigest,
       ...optionalArrayField(input, 'acceptance_criteria'),
       ...optionalArrayField(input, 'prohibited_actions'),
-      ...(input.risk ?? live.risk ? { risk: input.risk ?? live.risk } : {}),
+      risk: input.risk ?? live.risk,
       ...(live.risk.digest ? { risk_manifest_digest: live.risk.digest } : {}),
       ...(input.target ? { target: input.target } : {}),
       receipt_requirements: {
@@ -422,12 +427,13 @@ function assertReceiptEvidence(packet, receipt) {
   const allowed = packet.payload.allowed_mutations ?? [];
   const sameMutations = attempted.length === authorized.length
     && attempted.every((mutation, index) => mutation === authorized[index]);
-  const phase = ['opened', 'merged'].find((candidate) => {
+  const satisfied = ['opened', 'merged'].filter((candidate) => {
     const candidateMutation = `pr.${candidate}`;
     return allowed.includes(candidateMutation)
       && attempted.includes(candidateMutation)
       && authorized.includes(candidateMutation);
   });
+  const phase = satisfied.includes('merged') ? 'merged' : satisfied[0];
   if (!phase || !sameMutations || attempted.some((entry) => !allowed.includes(entry))) {
     fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'RunReceipt mutation evidence is incomplete or incompatible');
   }
@@ -442,7 +448,7 @@ function assertPacketLiveBindings(packet, live) {
   if (!Array.isArray(requiredGateIds) || requiredGateIds.length === 0 || requiredGateIds.some((id) => typeof id !== 'string' || id.length === 0) || new Set(requiredGateIds).size !== requiredGateIds.length) fail('PR_LIFECYCLE_GATE_INVALID', 'WorkPacket gate requirements are incomplete');
   if (requiredGateIds.length !== live.gates.ids.length || requiredGateIds.some((id) => !live.gates.ids.includes(id))) fail('PR_LIFECYCLE_GATE_INVALID', 'WorkPacket gate requirements do not match live gates');
   if (!HASH_PATTERN.test(packet.payload.risk_manifest_digest || '') || packet.payload.risk_manifest_digest !== live.risk.digest) fail('PR_LIFECYCLE_RISK_INVALID', 'WorkPacket risk digest does not match live risk');
-  if (!packet.payload.allowed_mutations.some((mutation) => ['pr.opened', 'pr.merge', 'pr.merged'].includes(mutation))) fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'WorkPacket does not authorize a PR lifecycle mutation');
+  if (!packet.payload.allowed_mutations.some((mutation) => ['pr.opened', 'pr.merged'].includes(mutation))) fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'WorkPacket does not authorize a PR lifecycle mutation');
 }
 
 function deriveLinkage(packet, receipt, gates) {
@@ -490,6 +496,73 @@ function durableAcceptance(trace, packet, receipt) {
   return null;
 }
 
+function dataProperty(value, key) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor || !Object.hasOwn(descriptor, 'value')) return undefined;
+  return descriptor.value;
+}
+
+function projectTraceIteration(iteration) {
+  const packet = dataProperty(iteration, 'packet');
+  const receipt = dataProperty(iteration, 'receipt');
+  const receiptPayload = dataProperty(receipt, 'payload');
+  const packetHash = dataProperty(iteration, 'work_packet_hash')
+    ?? dataProperty(iteration, 'packet_hash')
+    ?? dataProperty(packet, 'content_hash');
+  const receiptHash = dataProperty(iteration, 'run_receipt_hash')
+    ?? dataProperty(iteration, 'receipt_hash')
+    ?? dataProperty(receipt, 'content_hash');
+  const runId = dataProperty(iteration, 'run_id') ?? dataProperty(receiptPayload, 'run_id');
+  return {
+    ...(packetHash === undefined ? {} : { work_packet_hash: packetHash }),
+    ...(receiptHash === undefined ? {} : { run_receipt_hash: receiptHash }),
+    ...(runId === undefined ? {} : { run_id: runId }),
+  };
+}
+
+function projectTrace(trace, target) {
+  const requests = dataProperty(trace, 'pull_requests');
+  if (!Array.isArray(requests)) return { pull_requests: requests };
+  if (requests.length > MAX_TRACE_SCAN_ROWS) {
+    fail('PR_LIFECYCLE_INVALID_INPUT', 'public PR trace rows exceed lifecycle bounds');
+  }
+  const matches = [];
+  for (const request of requests) {
+    if (Number(dataProperty(request, 'number')) !== target.pr_number) continue;
+    const iterations = dataProperty(request, 'iterations');
+    if (!Array.isArray(iterations) || iterations.length > MAX_TRACE_ITERATIONS) {
+      fail('PR_LIFECYCLE_INVALID_INPUT', 'public PR trace iterations exceed lifecycle bounds');
+    }
+    matches.push({
+      number: dataProperty(request, 'number'),
+      repo: dataProperty(request, 'repo'),
+      head_sha: dataProperty(request, 'head_sha'),
+      issue_id: dataProperty(request, 'issue_id'),
+      iterations: iterations.map(projectTraceIteration),
+    });
+    if (matches.length === MAX_TRACE_ROWS) break;
+  }
+  return { pull_requests: matches };
+}
+
+function traceTarget(linkage) {
+  return {
+    issue_id: linkage.issue_id,
+    repository_id: linkage.repository_id,
+    repo: linkage.repository_id,
+    ...(Number.isInteger(linkage.pr_number) ? { pr_number: linkage.pr_number } : {}),
+  };
+}
+
+async function readLifecycleTrace(provider, linkage, timeoutMs) {
+  const target = traceTarget(linkage);
+  return callMethod(provider, 'readTrace', [target], 'trace', {
+    timeoutMs,
+    project: value => projectTrace(value, target),
+  });
+}
+
 function assertTraceLinkage(trace, linkage, packet, receipt) {
   if (!trace || typeof trace !== 'object' || Array.isArray(trace)) fail('PR_LIFECYCLE_UNAVAILABLE', 'public PR trace is unavailable');
   if (!Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage');
@@ -499,7 +572,7 @@ function assertTraceLinkage(trace, linkage, packet, receipt) {
   if (candidates.length > 1) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'public PR trace contains ambiguous duplicate PR rows');
   const match = candidates[0];
   if (match.repo !== linkage.repository_id || match.head_sha !== linkage.head || match.issue_id !== linkage.issue_id) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'public PR trace conflicts with accepted linkage');
-  if (!durableAcceptance(trace, packet, receipt)) fail('PR_LIFECYCLE_NOT_ACCEPTED', 'public PR trace lacks accepted packet and receipt evidence');
+  if (!durableAcceptance({ pull_requests: [match] }, packet, receipt)) fail('PR_LIFECYCLE_NOT_ACCEPTED', 'public PR trace lacks accepted packet and receipt evidence');
 }
 
 function stableResult(kind, packet, receipt, linkage) {
@@ -524,7 +597,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
       fail('PR_LIFECYCLE_CONTRACT_INVALID', 'WorkPacket provenance cannot contain session_id');
     }
     const requestedActor = packet ? expectedActor : requiredString(input.actor_id ?? input.actorId, 'actor_id');
-    const requestedSession = input.session_id ?? input.sessionId;
+    const requestedSession = requiredString(input.session_id ?? input.sessionId, 'session_id');
     const issue = await callProbe(provider, liveProbes, ['readIssue'], [issueId], 'issue', 'show', timeoutMs);
     const issueRevision = assertLiveIssue(issue, issueId);
     const ownershipArgs = { issue_id: issueId, ...(requestedActor ? { actor_id: requestedActor } : {}), ...(requestedSession ? { session_id: requestedSession } : {}) };
@@ -582,8 +655,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
       || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string' || typeof target.url !== 'string') {
       fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'receipt acceptance requires authoritative PR linkage fields');
     }
-    const traceTarget = { pr_number: linkage.pr_number, repo: linkage.repository_id, issue_id: linkage.issue_id };
-    const trace = await callMethod(provider, 'readTrace', [traceTarget], 'trace', { timeoutMs });
+    const trace = await readLifecycleTrace(provider, linkage, timeoutMs);
     const durable = durableAcceptance(trace, packet, receipt);
     if (durable) {
       assertTraceLinkage(trace, linkage, packet, receipt);
@@ -599,7 +671,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
         work_packet: packet,
         run_receipt: receipt,
       }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs });
-      const persistedTrace = await callMethod(provider, 'readTrace', [traceTarget], 'trace', { timeoutMs });
+      const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs);
       assertTraceLinkage(persistedTrace, linkage, packet, receipt);
     }
     return stableResult('accepted', packet, receipt, linkage);
@@ -619,7 +691,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     const phase = assertReceiptEvidence(packet, receipt);
     if (phase !== 'merged') fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'merge requires completed pr.merged evidence');
     const linkage = deriveLinkage(packet, receipt, live.gates);
-    const trace = await callMethod(provider, 'readTrace', [{ issue_id: linkage.issue_id, repository_id: linkage.repository_id, ...(linkage.pr_number ? { pr_number: linkage.pr_number, repo: linkage.repository_id } : {}) }], 'trace', { timeoutMs });
+    const trace = await readLifecycleTrace(provider, linkage, timeoutMs);
     // Compare durable packet/receipt content before linkage checks so a reused run id with
     // divergent content fails closed even when the incoming packet omitted a PR number.
     durableAcceptance(trace, packet, receipt);
