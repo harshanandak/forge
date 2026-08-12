@@ -19,9 +19,9 @@ const MAX_SNAPSHOT_BYTES = 65_536;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 5_000;
 const PROVIDER_DEADLINE_SENTINEL = Symbol('provider-deadline');
 const MAX_PROVIDER_TIMEOUT_MS = 30_000;
-const MAX_TRACE_ROWS = 2;
 const MAX_TRACE_SCAN_ROWS = 128;
 const MAX_TRACE_ITERATIONS = 128;
+const MAX_TRACE_TOTAL_ITERATIONS = 128;
 const MAX_READY_ITEMS = 128;
 const SECRET_PATTERNS = Object.freeze([
   /gh[pousr]_[A-Za-z0-9]{20,}/i,
@@ -232,11 +232,11 @@ async function callMethod(target, method, args, label, options = {}) {
   }
 }
 
-async function callProbe(provider, probes, names, args, label, fallbackName, timeoutMs) {
+async function callProbe(provider, probes, names, args, label, fallbackName, timeoutMs, options = {}) {
   const injected = names.find((name) => typeof probes?.[name] === 'function');
-  if (injected) return callMethod(probes, injected, args, label, { timeoutMs });
+  if (injected) return callMethod(probes, injected, args, label, { timeoutMs, ...options });
   const direct = names.find((name) => typeof provider[name] === 'function');
-  if (direct) return callMethod(provider, direct, args, label, { timeoutMs });
+  if (direct) return callMethod(provider, direct, args, label, { timeoutMs, ...options });
   // Issue read/ownership may use the public operation broker. No invented live-state
   // operation names are permitted for head, capability, risk, or gate evidence.
   if (fallbackName && typeof provider.runIssueOperation === 'function') {
@@ -246,7 +246,7 @@ async function callProbe(provider, probes, names, args, label, fallbackName, tim
       operationArgs = [args[0].issue_id];
       context = { actor: args[0].actor_id, sessionId: args[0].session_id };
     }
-    return callMethod(provider, 'runIssueOperation', [fallbackName, operationArgs, context], label, { timeoutMs, unwrap: true });
+    return callMethod(provider, 'runIssueOperation', [fallbackName, operationArgs, context], label, { timeoutMs, unwrap: true, ...options });
   }
   fail('PR_LIFECYCLE_UNAVAILABLE', `${label} live probe is unavailable`);
 }
@@ -477,6 +477,25 @@ function assertReceiptExecutor(receipt) {
   }
 }
 
+async function authenticateReceipt(receiptVerifier, packet, receipt, timeoutMs) {
+  const identity = {
+    receipt_hash: receipt.content_hash,
+    packet_hash: packet.content_hash,
+    run_id: receipt.payload.run_id,
+    attempt_id: receipt.payload.attempt_id,
+    producer_instance_id: receipt.producer.instance_id,
+  };
+  const verification = await callMethod({ verify: receiptVerifier }, 'verify', [identity], 'receipt authentication', { timeoutMs });
+  if (verification?.authenticated !== true
+    || verification.receipt_hash !== identity.receipt_hash
+    || verification.packet_hash !== identity.packet_hash
+    || verification.run_id !== identity.run_id
+    || verification.attempt_id !== identity.attempt_id
+    || verification.producer_instance_id !== identity.producer_instance_id) {
+    fail('PR_LIFECYCLE_CONTRACT_INVALID', 'RunReceipt lacks authenticated Flow execution evidence');
+  }
+}
+
 function assertPacketLiveBindings(packet, live) {
   const requiredGateIds = packet.payload.receipt_requirements?.gate_ids;
   if (!Array.isArray(requiredGateIds) || requiredGateIds.length === 0 || requiredGateIds.some((id) => typeof id !== 'string' || id.length === 0) || new Set(requiredGateIds).size !== requiredGateIds.length) fail('PR_LIFECYCLE_GATE_INVALID', 'WorkPacket gate requirements are incomplete');
@@ -616,6 +635,24 @@ function projectReadyResponse(value) {
     : selected;
 }
 
+function projectIssueResponse(value) {
+  if (types.isProxy(value)) throw new TypeError('issue provider response cannot be a Proxy');
+  const ok = dataProperty(value, 'ok');
+  const data = dataProperty(value, 'data');
+  const issue = ok === true ? data : value;
+  if (!issue || typeof issue !== 'object' || Array.isArray(issue) || types.isProxy(issue)) return value;
+  const projected = {};
+  for (const key of ['id', 'issue_id', 'revision', 'issue_revision', 'status', 'state', 'ready', 'is_ready',
+    'blocked', 'blockers', 'objective']) {
+    const field = dataProperty(issue, key);
+    if (field !== undefined) projected[key] = field;
+  }
+  if (containsForbidden(projected)) {
+    fail('PR_LIFECYCLE_PRIVACY_REJECTED', 'issue provider response contains a secret or absolute user path');
+  }
+  return ok === true ? { ok: true, data: projected } : projected;
+}
+
 function projectTrace(trace, target) {
   const requests = dataProperty(trace, 'pull_requests');
   if (!Array.isArray(requests)) return { pull_requests: requests };
@@ -623,10 +660,14 @@ function projectTrace(trace, target) {
     fail('PR_LIFECYCLE_INVALID_INPUT', 'public PR trace rows exceed lifecycle bounds');
   }
   const matches = [];
+  let totalIterations = 0;
   for (const request of requests) {
-    if (Number(dataProperty(request, 'number')) !== target.pr_number) continue;
+    if (dataProperty(request, 'issue_id') !== target.issue_id
+      || dataProperty(request, 'repo') !== target.repository_id) continue;
     const iterations = dataProperty(request, 'iterations');
-    if (!Array.isArray(iterations) || iterations.length > MAX_TRACE_ITERATIONS) {
+    totalIterations += Array.isArray(iterations) ? iterations.length : 0;
+    if (!Array.isArray(iterations) || iterations.length > MAX_TRACE_ITERATIONS
+      || totalIterations > MAX_TRACE_TOTAL_ITERATIONS) {
       fail('PR_LIFECYCLE_INVALID_INPUT', 'public PR trace iterations exceed lifecycle bounds');
     }
     matches.push({
@@ -636,7 +677,6 @@ function projectTrace(trace, target) {
       issue_id: dataProperty(request, 'issue_id'),
       iterations: iterations.map(projectTraceIteration),
     });
-    if (matches.length === MAX_TRACE_ROWS) break;
   }
   return { pull_requests: matches };
 }
@@ -683,13 +723,14 @@ function stableResult(kind, packet, receipt, linkage) {
     : { merged: true, packet_hash: packet.content_hash, receipt_hash: receipt.content_hash, run_id: receipt.payload.run_id, linkage };
 }
 
-function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEFAULT_PROVIDER_TIMEOUT_MS } = {}) {
+function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier, timeoutMs = DEFAULT_PROVIDER_TIMEOUT_MS } = {}) {
   if (!provider || typeof provider !== 'object' || Array.isArray(provider)) throw new TypeError('PR lifecycle authority requires a public provider object');
   validateProviderTimeout(timeoutMs);
   for (const method of ['runIssueOperation', 'recordPrLinkage', 'readTrace']) {
     if (typeof provider[method] !== 'function') throw new TypeError(`PR lifecycle provider must implement ${method}()`);
   }
   if (!liveProbes || typeof liveProbes !== 'object' || Array.isArray(liveProbes)) throw new TypeError('liveProbes must be an object');
+  if (typeof receiptVerifier !== 'function') throw new TypeError('receiptVerifier must be a function');
 
   async function readLive(input, packet = null) {
     const issueId = requiredString(input.issue_id ?? input.issueId ?? packet?.payload.issue_id, 'issue_id');
@@ -700,7 +741,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     }
     const requestedActor = packet ? expectedActor : requiredString(input.actor_id ?? input.actorId, 'actor_id');
     const requestedSession = requiredString(input.session_id ?? input.sessionId, 'session_id');
-    const issue = await callProbe(provider, liveProbes, ['readIssue'], [issueId], 'issue', 'show', timeoutMs);
+    const issue = await callProbe(provider, liveProbes, ['readIssue'], [issueId], 'issue', 'show', timeoutMs, { project: projectIssueResponse });
     const issueRevision = assertLiveIssue(issue, issueId);
     const ownershipArgs = { issue_id: issueId, ...(requestedActor ? { actor_id: requestedActor } : {}), ...(requestedSession ? { session_id: requestedSession } : {}) };
     const ownership = assertOwnership(
@@ -749,6 +790,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     assertContract(receipt, RUN_RECEIPT_SCHEMA, { packetHash: packet.content_hash, workflowConfigRevision: packet.payload.workflow_config_revision, capabilityManifestDigest: packet.payload.capability_manifest_digest, exactHead: packet.payload.target_head });
     const phase = assertReceiptEvidence(packet, receipt);
     assertReceiptExecutor(receipt);
+    await authenticateReceipt(receiptVerifier, packet, receipt, timeoutMs);
     const linkage = deriveLinkage(packet, receipt, live.gates);
     const target = packet.payload.target;
     if (!target || !Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0
@@ -792,6 +834,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     const phase = assertReceiptEvidence(packet, receipt);
     if (phase !== 'merged') fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'merge requires completed pr.merged evidence');
     assertReceiptExecutor(receipt);
+    await authenticateReceipt(receiptVerifier, packet, receipt, timeoutMs);
     const linkage = deriveLinkage(packet, receipt, live.gates);
     if (!Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage');
     const trace = await readLifecycleTrace(provider, linkage, timeoutMs, packet.payload.target?.git_common_dir);
