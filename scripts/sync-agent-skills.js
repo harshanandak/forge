@@ -172,10 +172,20 @@ function walkRegularFiles(root, visit, current = root) {
   }
 }
 
+function rejectIgnoredSkillDescriptors(root, ignoredCanonical) {
+  for (const { name } of listCanonicalSkills(root)) {
+    const descriptorRepoPath = `skills/${name}/SKILL.md`;
+    if (ignoredCanonical.has(normalizedRepoPath(descriptorRepoPath))) {
+      throw new Error(`ignored canonical skill descriptor: ${descriptorRepoPath}`);
+    }
+  }
+}
+
 function changedSkillFiles(root, runGit = execFileSync, ignoredCanonical = ignoredUntrackedPaths(root, runGit)) {
   const mirror = resolveCodexRepoSkillsDir(root);
   const drift = generatedDriftPaths(root, runGit);
   const changed = [];
+  rejectIgnoredSkillDescriptors(root, ignoredCanonical);
   for (const { name, sourcePath: sourceRoot } of listCanonicalSkills(root)) {
     walkRegularFiles(sourceRoot, (sourcePath, relative) => {
       const canonicalRepoPath = `skills/${name}/${relative}`;
@@ -243,6 +253,8 @@ async function syncAgentSkills(options = {}) {
   }).trim();
   if (!/^[0-9a-f]{40}$/.test(sourceHead)) throw new Error('source HEAD is not a full lowercase commit SHA');
 
+  const ignoredCanonical = ignoredUntrackedPaths(root, runGit);
+  rejectIgnoredSkillDescriptors(root, ignoredCanonical);
   const ambiguousCanonical = ambiguousCanonicalPaths(root, runGit);
   for (const canonicalPath of ambiguousCanonical) {
     const indexedCanonical = indexedFile(root, canonicalPath, runGit);
@@ -255,7 +267,6 @@ async function syncAgentSkills(options = {}) {
     throw new Error(`unstaged canonical skill changes must be reconciled before mirror sync: ${[...ambiguousCanonical].join(', ')}`);
   }
 
-  const ignoredCanonical = ignoredUntrackedPaths(root, runGit);
   const changed = changedSkillFiles(root, runGit, ignoredCanonical);
   const authorizations = [];
   for (const file of changed) {

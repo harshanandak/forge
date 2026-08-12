@@ -792,6 +792,55 @@ describe('command-owned agent skill sync', () => {
     }
   }, 30_000);
 
+  const ignoredDescriptorMatrix = [
+    { name: 'without siblings', sibling: null, staged: false },
+    { name: 'with an unstaged sibling', sibling: 'README.md', staged: false },
+    { name: 'with a staged sibling', sibling: 'README.md', staged: true },
+    { name: 'with a staged nested sibling', sibling: 'references/guide.md', staged: true },
+  ];
+
+  for (const scenario of ignoredDescriptorMatrix) {
+    test(`rejects an ignored skill descriptor ${scenario.name}`, async () => {
+      const { root, run } = parityFixture();
+      let authorizations = 0;
+      let staged = 0;
+      try {
+        fs.writeFileSync(path.join(root, '.gitignore'), '/skills/*/SKILL.md\n');
+        expect(run(['add', '.gitignore']).status).toBe(0);
+        expect(run(['commit', '-m', 'ignore skill descriptors']).status).toBe(0);
+        fs.mkdirSync(path.join(root, 'skills/orphan'), { recursive: true });
+        fs.writeFileSync(path.join(root, 'skills/orphan/SKILL.md'), 'ignored descriptor\n');
+        if (scenario.sibling) {
+          const siblingPath = path.join(root, 'skills/orphan', scenario.sibling);
+          fs.mkdirSync(path.dirname(siblingPath), { recursive: true });
+          fs.writeFileSync(siblingPath, 'sibling bytes\n');
+          if (scenario.staged) expect(run(['add', `skills/orphan/${scenario.sibling}`]).status).toBe(0);
+        }
+
+        await expect(syncAgentSkills({
+          root,
+          env: { FORGE_ACTOR: 'skill-ignored-descriptor-owner' },
+          execFileSync: (command, args, options) => {
+            if (args[0] === 'add') staged += 1;
+            return execFileSync(command, args, options);
+          },
+          issueAuthorization: async () => {
+            authorizations += 1;
+            return { success: true, capabilityId: 'must-not-be-issued' };
+          },
+          completeAuthorization: async () => ({ success: true }),
+        })).rejects.toThrow('ignored canonical skill descriptor: skills/orphan/SKILL.md');
+
+        expect(authorizations).toBe(0);
+        expect(staged).toBe(0);
+        expect(fs.existsSync(path.join(root, '.agents/skills/orphan'))).toBe(false);
+        expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/orphan/');
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    }, 30_000);
+  }
+
   const ambiguityMatrix = [
     {
       name: 'staged canonical addition removed from the worktree',
