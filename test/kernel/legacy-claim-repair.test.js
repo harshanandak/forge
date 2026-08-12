@@ -728,6 +728,7 @@ describe('legacy claim repair backup and apply', () => {
 			fixture.config,
 		);
 		expect(receipts).toEqual([]);
+		expect(fs.readdirSync(fixture.root).filter(name => name.includes('.forge-recovery-'))).toEqual([]);
 		fixture.driver.close();
 	});
 
