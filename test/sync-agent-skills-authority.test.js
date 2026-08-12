@@ -565,6 +565,34 @@ describe('command-owned agent skill sync', () => {
     }
   }, 30_000);
 
+  test('ignores symlinks outside canonical skill directories', async () => {
+    const { root } = parityFixture();
+    let authorizations = 0;
+    try {
+      fs.mkdirSync(path.join(root, 'unrelated-skill-metadata'));
+      fs.symlinkSync(
+        path.join(root, 'unrelated-skill-metadata'),
+        path.join(root, 'skills/unrelated'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+
+      const result = await syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-symlink-metadata-owner' },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      });
+
+      expect(result.changed).toEqual([]);
+      expect(authorizations).toBe(0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   const ambiguityMatrix = [
     {
       name: 'staged canonical addition removed from the worktree',

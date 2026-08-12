@@ -67,10 +67,9 @@ function ambiguousCanonicalPaths(root, runGit) {
     .map(entry => entry.slice(2))
     .filter(participatesInMirror));
   const worktree = new Set();
-  walkRegularFiles(path.join(root, 'skills'), (_file, relative) => {
-    const repoPath = `skills/${relative}`;
-    if (participatesInMirror(repoPath)) worktree.add(repoPath);
-  });
+  for (const prefix of canonicalPrefixes) {
+    walkRegularFiles(path.join(root, prefix), (_file, relative) => worktree.add(`${prefix}${relative}`));
+  }
   for (const repoPath of skipWorktree) {
     const mirrorPath = `.agents/${repoPath}`;
     if (!fs.existsSync(path.join(root, repoPath)) && fs.existsSync(path.join(root, mirrorPath))) {
