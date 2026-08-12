@@ -46,11 +46,15 @@ function generatedDriftPaths(root, runGit) {
 }
 
 function unstagedCanonicalPaths(root, runGit) {
-  return new Set(runGit('git', ['diff', '--name-only', '--diff-filter=ACMRDT', '--', 'skills'], {
+  const commands = [
+    ['diff', '--name-only', '--diff-filter=ACMRDT', '--', 'skills'],
+    ['ls-files', '--others', '--exclude-standard', '--', 'skills'],
+  ];
+  return new Set(commands.flatMap(args => runGit('git', args, {
     cwd: root,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-  }).split(/\r?\n/).map(value => value.trim().replace(/\\/g, '/')).filter(Boolean));
+  }).split(/\r?\n/).map(value => value.trim().replace(/\\/g, '/')).filter(Boolean)));
 }
 
 function walkRegularFiles(root, visit, current = root) {

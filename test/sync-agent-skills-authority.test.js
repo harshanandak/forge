@@ -250,6 +250,41 @@ describe('command-owned agent skill sync', () => {
     }
   }, 30_000);
 
+  test('blocks a canonical skill recreated after its staged deletion', async () => {
+    const root = fixture();
+    const run = args => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+    let authorizations = 0;
+    try {
+      fs.writeFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'base canonical bytes\n');
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'base canonical bytes\n');
+      expect(run(['init']).status).toBe(0);
+      expect(run(['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+      expect(run(['config', 'user.name', 'Forge Test']).status).toBe(0);
+      expect(run(['add', '.']).status).toBe(0);
+      expect(run(['commit', '-m', 'base']).status).toBe(0);
+
+      expect(run(['rm', 'skills/review/SKILL.md']).status).toBe(0);
+      fs.mkdirSync(path.join(root, 'skills/review'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'recreated canonical bytes\n');
+
+      await expect(syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-recreated-delete-owner' },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      })).rejects.toThrow('unstaged canonical skill changes');
+
+      expect(authorizations).toBe(0);
+      expect(run(['diff', '--cached', '--name-only']).stdout).toContain('skills/review/SKILL.md');
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/SKILL.md');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   test('real hook accepts one exact sync and denies replay or foreign actor', async () => {
     const root = fixture();
     const actor = 'skill-sync-integration';
