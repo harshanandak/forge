@@ -674,6 +674,7 @@ describe('legacy claim repair backup and apply', () => {
 			actor: 'approved-operator',
 		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
 		fixture.driver.close();
+		fs.rmSync(backupPath);
 		const verificationDriver = createBuiltinSQLiteDriver({ databasePath: fixture.databasePath });
 		const rows = await verificationDriver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
 		expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
