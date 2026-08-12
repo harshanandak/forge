@@ -85,6 +85,25 @@ function changedSkillFiles(root, runGit = execFileSync) {
       });
     }
   });
+  const seen = new Set(changed.map(file => file.path));
+  for (const repoPath of drift) {
+    if (!repoPath.startsWith('.agents/skills/') || seen.has(repoPath)) continue;
+    const relative = repoPath.slice('.agents/skills/'.length);
+    const canonicalPath = path.join(root, 'skills', relative);
+    const mirrorPath = path.join(root, repoPath);
+    if (fs.existsSync(canonicalPath) || fs.existsSync(mirrorPath)) continue;
+    let priorContent;
+    try {
+      priorContent = runGit('git', ['show', `HEAD:${repoPath}`], {
+        cwd: root,
+        encoding: null,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch {
+      continue;
+    }
+    changed.push({ path: repoPath, canonical: priorContent, writeIntent: 'delete' });
+  }
   return changed;
 }
 

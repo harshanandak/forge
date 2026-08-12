@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { syncAgentSkills } = require('../scripts/sync-agent-skills');
+const { changedSkillFiles, syncAgentSkills } = require('../scripts/sync-agent-skills');
 
 const HEAD = 'a'.repeat(40);
 
@@ -170,6 +170,60 @@ describe('command-owned agent skill sync', () => {
         env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: actor },
       });
       expect(check.status).toBe(0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('reauthorizes an absent generated mirror after delete completion fails before staging', async () => {
+    const root = fixture();
+    const actor = 'skill-delete-retry-owner';
+    const checker = path.resolve(__dirname, '../scripts/protected-state-check.js');
+    const run = (args) => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+    let completions = 0;
+    let authorizations = 0;
+    try {
+      expect(run(['init']).status).toBe(0);
+      expect(run(['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+      expect(run(['config', 'user.name', 'Forge Test']).status).toBe(0);
+      expect(run(['add', '.']).status).toBe(0);
+      expect(run(['commit', '-m', 'base']).status).toBe(0);
+      fs.rmSync(path.join(root, 'skills/review'), { recursive: true, force: true });
+      expect(run(['add', '--all', '--', 'skills/review']).status).toBe(0);
+      const options = {
+        root,
+        env: { FORGE_ACTOR: actor },
+        issueAuthorization: async (_root, params) => {
+          authorizations += 1;
+          expect(params.writeIntent).toBe('delete');
+          expect(params.path).toBe('.agents/skills/review/SKILL.md');
+          return { success: true, capabilityId: `delete-capability-${authorizations}` };
+        },
+        completeAuthorization: async () => (
+          ++completions === 1
+            ? { success: false, error: 'forced delete completion failure' }
+            : { success: true }
+        ),
+      };
+
+      await expect(syncAgentSkills(options)).rejects.toThrow('completion failed');
+      expect(fs.existsSync(path.join(root, '.agents/skills/review/SKILL.md'))).toBe(false);
+      expect(run(['diff', '--name-only']).stdout).toContain('.agents/skills/review/SKILL.md');
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/SKILL.md');
+
+      await syncAgentSkills(options);
+      expect(authorizations).toBe(2);
+      expect(run(['diff', '--cached', '--name-only']).stdout).toContain('.agents/skills/review/SKILL.md');
+      expect(spawnSync(process.execPath, [checker], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: actor },
+      }).status).toBe(1); // injected authority seams never mint real Kernel evidence
+
+	  fs.mkdirSync(path.join(root, 'skills/review'), { recursive: true });
+	  fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'canonical reappeared\n');
+	  expect(changedSkillFiles(root).some(file => file.writeIntent === 'delete')).toBe(false);
+	  expect(run(['diff', '--cached', '--name-only']).stdout).toContain('.agents/skills/review/SKILL.md');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
