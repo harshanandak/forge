@@ -16,6 +16,7 @@ const MAX_SNAPSHOT_DEPTH = 10;
 const MAX_SNAPSHOT_NODES = 2_000;
 const MAX_SNAPSHOT_BYTES = 65_536;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 5_000;
+const PROVIDER_DEADLINE_SENTINEL = Symbol('provider-deadline');
 const MAX_PROVIDER_TIMEOUT_MS = 30_000;
 const MAX_TRACE_ROWS = 2;
 const MAX_TRACE_SCAN_ROWS = 128;
@@ -173,7 +174,7 @@ function validateProviderTimeout(timeoutMs) {
   return timeoutMs;
 }
 
-async function invokeWithDeadline(target, method, args, timeoutMs) {
+async function invokeWithDeadline(target, method, args, timeoutMs, options = {}) {
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   const methodArgs = [...args];
   // Cancellation is best-effort for backward compatibility: established provider
@@ -182,18 +183,24 @@ async function invokeWithDeadline(target, method, args, timeoutMs) {
   let timer;
   let timedOut = false;
   const operation = Promise.resolve().then(() => target[method](...methodArgs));
-  const deadline = new Promise((_, reject) => {
+  const deadline = new Promise((resolve, reject) => {
     timer = setTimeout(() => {
       timedOut = true;
-      controller?.abort();
-      reject(new ProviderDeadlineError('provider operation deadline exceeded'));
+      if (options.reconcileOnTimeout) resolve(PROVIDER_DEADLINE_SENTINEL);
+      else {
+        controller?.abort();
+        reject(new ProviderDeadlineError('provider operation deadline exceeded'));
+      }
     }, timeoutMs);
   });
   try {
-    return await Promise.race([operation, deadline]);
+    const result = await Promise.race([operation, deadline]);
+    // Consequential operations must never report a timeout while a write can still
+    // complete later. If cancellation did not settle it, reconcile the actual result.
+    return result === PROVIDER_DEADLINE_SENTINEL ? await operation : result;
   } finally {
     clearTimeout(timer);
-    if (timedOut) controller?.abort();
+    if (timedOut && !options.reconcileOnTimeout) controller?.abort();
   }
 }
 
@@ -204,7 +211,7 @@ async function callMethod(target, method, args, label, options = {}) {
     const invocationArgs = options.sanitize
       ? snapshot(args, `${label} provider input`, { privacy: 'sanitize', allowGitCommonDir: options.allowGitCommonDir })
       : args;
-    result = await invokeWithDeadline(target, method, invocationArgs, timeoutMs);
+    result = await invokeWithDeadline(target, method, invocationArgs, timeoutMs, options);
   } catch (error) {
     if (error instanceof PrLifecycleAuthorityError) throw error;
     fail('PR_LIFECYCLE_UNAVAILABLE', `${label} provider operation failed`, { cause: error });
@@ -240,6 +247,19 @@ async function callProbe(provider, probes, names, args, label, fallbackName, tim
     return callMethod(provider, 'runIssueOperation', [fallbackName, operationArgs, context], label, { timeoutMs, unwrap: true });
   }
   fail('PR_LIFECYCLE_UNAVAILABLE', `${label} live probe is unavailable`);
+}
+
+async function callOwnershipProbe(provider, probes, ownershipArgs, timeoutMs) {
+  if (typeof probes?.readOwnership === 'function') return callMethod(probes, 'readOwnership', [ownershipArgs], 'ownership', { timeoutMs });
+  if (typeof provider.readOwnership === 'function') return callMethod(provider, 'readOwnership', [ownershipArgs], 'ownership', { timeoutMs });
+  const context = { actor: ownershipArgs.actor_id, sessionId: ownershipArgs.session_id };
+  const owns = await callMethod(provider, 'runIssueOperation', ['owns', [ownershipArgs.issue_id], context], 'ownership', { timeoutMs, unwrap: true });
+  if (owns?.owned !== true) return owns;
+  const claims = await callMethod(provider, 'runIssueOperation', ['claims', [], context], 'claims', { timeoutMs, unwrap: true });
+  const matchingClaims = Array.isArray(claims?.claims) ? claims.claims.filter(claim => claim?.issue_id === ownershipArgs.issue_id
+    && claim?.actor === ownershipArgs.actor_id && claim?.session_id === ownershipArgs.session_id) : [];
+  if (matchingClaims.length !== 1) fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'live ownership session evidence is unavailable or ambiguous');
+  return { ...owns, actor_id: owns.actor ?? owns.claimed_by, session_id: matchingClaims[0].session_id };
 }
 
 function providerIssueRevision(issue) {
@@ -605,7 +625,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     const issueRevision = assertLiveIssue(issue, issueId);
     const ownershipArgs = { issue_id: issueId, ...(requestedActor ? { actor_id: requestedActor } : {}), ...(requestedSession ? { session_id: requestedSession } : {}) };
     const ownership = assertOwnership(
-      await callProbe(provider, liveProbes, ['readOwnership'], [ownershipArgs], 'ownership', 'owns', timeoutMs),
+      await callOwnershipProbe(provider, liveProbes, ownershipArgs, timeoutMs),
       { actor_id: requestedActor, session_id: requestedSession },
     );
     const head = await callProbe(provider, liveProbes, ['readHead'], [{ issue_id: issueId, repository_id: repositoryId }], 'head', undefined, timeoutMs);
@@ -673,7 +693,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
         occurred_at: receipt.payload.ended_at ?? receipt.created_at,
         work_packet: packet,
         run_receipt: receipt,
-      }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs });
+      }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true });
       const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs);
       assertTraceLinkage(persistedTrace, linkage, packet, receipt);
     }
@@ -702,10 +722,10 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     const target = packet.payload.target;
     if (typeof provider.mergePr === 'function') {
       const method = 'mergePr';
-      await callMethod(provider, method, [{ packet, receipt, linkage }], 'merge', { sanitize: true, timeoutMs });
+      await callMethod(provider, method, [{ packet, receipt, linkage }], 'merge', { sanitize: true, timeoutMs, reconcileOnTimeout: true });
     } else {
       if (!target || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string' || typeof target.url !== 'string') fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage fields');
-      await callMethod(provider, 'recordPrLinkage', [{ phase: 'merged', git_common_dir: target.git_common_dir, repo: packet.payload.repository_id, number: linkage.pr_number, branch: target.branch, url: target.url, occurred_at: receipt.payload.ended_at ?? receipt.created_at, work_packet: packet, run_receipt: receipt }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs });
+      await callMethod(provider, 'recordPrLinkage', [{ phase: 'merged', git_common_dir: target.git_common_dir, repo: packet.payload.repository_id, number: linkage.pr_number, branch: target.branch, url: target.url, occurred_at: receipt.payload.ended_at ?? receipt.created_at, work_packet: packet, run_receipt: receipt }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true });
     }
     return stableResult('merged', packet, receipt, linkage);
   }

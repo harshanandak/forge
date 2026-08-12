@@ -385,6 +385,42 @@ describe('public PR lifecycle authority', () => {
     await authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
   });
 
+  test('proves session ownership through the Kernel owns and claims fallback', async () => {
+    const base = provider();
+    delete base.readOwnership;
+    base.runIssueOperation = async (operation) => {
+      if (operation === 'owns') return { ok: true, data: { owned: true, actor: 'agent-1', claimed_by: 'agent-1' } };
+      if (operation === 'claims') return { ok: true, data: { claims: [{ issue_id: ISSUE_ID, actor: 'agent-1', session_id: 'session-1' }], count: 1 } };
+      return null;
+    };
+    const authority = createPrLifecycleAuthority({ provider: base });
+    await expect(authority.issueWorkPacket({ issue_id: ISSUE_ID, repository_id: REPOSITORY_ID, actor_id: 'agent-1', session_id: 'session-1' }))
+      .resolves.toHaveProperty('packet');
+    base.runIssueOperation = async (operation) => operation === 'owns'
+      ? { ok: true, data: { owned: true, actor: 'agent-1', claimed_by: 'agent-1' } }
+      : { ok: true, data: { claims: [{ issue_id: ISSUE_ID, actor: 'agent-1', session_id: 'session-2' }], count: 1 } };
+    await expect(authority.issueWorkPacket({ issue_id: ISSUE_ID, repository_id: REPOSITORY_ID, actor_id: 'agent-1', session_id: 'session-1' }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_OWNERSHIP_STALE' });
+  });
+
+  test('reconciles consequential provider completion instead of reporting a false timeout', async () => {
+    let writes = 0;
+    const workPacket = packet();
+    const authority = createPrLifecycleAuthority({
+      provider: provider({ recordPrLinkage: async () => {
+        await new Promise(resolve => setTimeout(resolve, 15));
+        writes += 1;
+        return { ok: true };
+      } }),
+      timeoutMs: 5,
+    });
+    const started = Date.now();
+    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
+      .resolves.toMatchObject({ accepted: true });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(10);
+    expect(writes).toBe(1);
+  });
+
   test('re-probes ownership and exact head at receipt acceptance', async () => {
     const workPacket = packet();
     const runReceipt = receipt(workPacket);
