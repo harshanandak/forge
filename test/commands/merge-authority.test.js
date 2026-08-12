@@ -143,6 +143,20 @@ describe('merge command — mandatory release authority', () => {
     expect(out.error).toContain('terminal linkage failed');
   });
 
+  test('reconciles missing terminal linkage when GitHub already reports the exact PR merged', async () => {
+    let merges = 0;
+    let records = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+      mergePr: async () => { merges += 1; },
+      recordMergeDecision: async () => { records += 1; return { receiptId: 'receipt-recovered' }; },
+    }));
+
+    expect(out).toMatchObject({ success: true, merged: true, recovered: true, receiptId: 'receipt-recovered' });
+    expect(merges).toBe(0);
+    expect(records).toBe(1);
+  });
+
   test('default evidence binds the live issue revision and terminal merged linkage', async () => {
     const decision = await mergeCmd.defaultPrepareMergeDecision({
       issueId: ISSUE,

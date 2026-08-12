@@ -269,17 +269,16 @@ describe('merge command — opt-in conditional auto-merge', () => {
     expect((await mergeCmd.handler(['--auto'], {}, root, {})).success).toBe(false);
   });
 
-  test('pre-flight NO-OP (idempotent) when the PR is already MERGED', async () => {
+  test('pre-flight reconciles terminal evidence without a second merge when the PR is already MERGED', async () => {
     const root = makeProject({ merge: { auto: { enabled: true, rules: ['checks_green'] } } });
     let mergeCalled = false;
     const out = await mergeCmd.handler(mergeArgs('42'), {}, root, {
       ...AUTHORITY_DEPS,
-      fetchPrContext: async () => ({ state: 'MERGED' }),
+      fetchPrContext: async () => authorizedContext({ state: 'MERGED' }),
       mergePr: async () => { mergeCalled = true; },
     });
     expect(out.success).toBe(true);
-    expect(out.merged).toBe(false);
-    expect(out.state).toBe('MERGED');
+    expect(out).toMatchObject({ merged: true, recovered: true, receiptId: 'receipt-1' });
     expect(mergeCalled).toBe(false);
   });
 

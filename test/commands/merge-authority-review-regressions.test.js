@@ -408,7 +408,7 @@ describe('merge authority — exact reviewer regressions', () => {
     expect(mergeCmd.parseMergeArgs(args('42')).pr).toBe('42');
   });
 
-  test('only OPEN proceeds and only MERGED/CLOSED are terminal no-ops on either read', async () => {
+  test('only OPEN proceeds, MERGED reconciles evidence, and CLOSED is a terminal no-op', async () => {
     for (const state of [undefined, null, '', 'UNKNOWN', 'DRAFT', 'BOGUS']) {
       let merges = 0;
       const first = await mergeCmd.handler(args(), {}, process.cwd(), deps({
@@ -432,14 +432,15 @@ describe('merge authority — exact reviewer regressions', () => {
       expect(merges).toBe(0);
     }
 
-    for (const state of ['MERGED', 'CLOSED']) {
-      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
-        fetchPrContext: async () => context({ state }),
-      }));
-      expect(out.success).toBe(true);
-      expect(out.merged).toBe(false);
-      expect(out.state).toBe(state);
-    }
+    const merged = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+    }));
+    expect(merged).toMatchObject({ success: true, merged: true, recovered: true });
+
+    const closed = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({ state: 'CLOSED' }),
+    }));
+    expect(closed).toMatchObject({ success: true, merged: false, state: 'CLOSED' });
   });
 
   test('ownership requires explicit expired=false', async () => {
