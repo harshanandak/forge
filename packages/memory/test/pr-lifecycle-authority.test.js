@@ -135,7 +135,7 @@ function provider(overrides = {}) {
     readCapability: async () => ({ digest: DIGEST, approved: true, available: true, probed: true, expires_at: '2099-01-01T00:00:00.000Z', config_revision: CONFIG_REVISION }),
     readRisk: async () => ({ approved: true, digest: 'c'.repeat(64) }),
     readGates: async () => ({ complete: true, approved: true, ids: ['gate-1'] }),
-    listReadyWork: async () => ([{ id: 'first', rank: 1 }, { id: 'second', rank: 2 }]),
+    listReadyWork: async () => ([{ id: ISSUE_ID, revision: 7, rank: 1 }, { id: 'second', rank: 2 }]),
     ...overrides,
   };
   base.recordPrLinkage = async (value) => {
@@ -369,11 +369,23 @@ describe('public PR lifecycle authority', () => {
 
   test('requires explicit authoritative readiness instead of inferring from open status', async () => {
     const authority = createPrLifecycleAuthority({ provider: provider({
-      readIssue: async () => ({ id: ISSUE_ID, revision: 7, status: 'open', blocked: false }),
+      readIssue: async () => ({ id: ISSUE_ID, revision: 7, status: 'open', ready: true }),
+      listReadyWork: async () => [],
     }) });
     await expect(authority.issueWorkPacket({ issue_id: ISSUE_ID, repository_id: REPOSITORY_ID,
       actor_id: 'agent-1', session_id: 'session-1' }))
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_READINESS_STALE' });
+  });
+
+  test('binds the authoritative ready read to the exact claimant actor and session', async () => {
+    let readyInput;
+    const authority = createPrLifecycleAuthority({ provider: provider({
+      readIssue: async () => ({ id: ISSUE_ID, revision: 7, status: 'open' }),
+      listReadyWork: async input => { readyInput = input; return [{ id: ISSUE_ID, revision: 7 }]; },
+    }) });
+    await expect(authority.issueWorkPacket({ issue_id: ISSUE_ID, repository_id: REPOSITORY_ID,
+      actor_id: 'agent-1', session_id: 'session-1' })).resolves.toHaveProperty('packet');
+    expect(readyInput).toEqual({ issue_id: ISSUE_ID, actor_id: 'agent-1', session_id: 'session-1' });
   });
 
   test('fails closed when ownership is stale at issuance', async () => {
@@ -670,6 +682,40 @@ describe('public PR lifecycle authority', () => {
     }) });
     await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
     expect(recorded).toMatchObject({ phase: 'opened', number: 515, url: 'https://example.test/pull/515' });
+  });
+
+  test('rejects receipt PR evidence that conflicts with the exact packet target before writing', async () => {
+    let writes = 0;
+    const workPacket = packet();
+    for (const evidence of [
+      { kind: 'pr', pr_number: 515, url: 'https://example.test/pull/515' },
+      { kind: 'pr', pr_number: 514, url: 'https://example.test/pull/other' },
+    ]) {
+      const runReceipt = receipt(workPacket, { payload: { evidence_refs: [evidence] } });
+      const authority = createPrLifecycleAuthority({ provider: provider({
+        recordPrLinkage: async () => { writes += 1; return { ok: true }; },
+      }) });
+      await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
+        .rejects.toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
+    }
+    expect(writes).toBe(0);
+  });
+
+  test('preserves only a validated git common directory in projected trace rows', async () => {
+    const gitCommonDir = 'C:\\repo\\.git';
+    const workPacket = packet({ payload: { target: { ...packet().payload.target, git_common_dir: gitCommonDir } } });
+    const runReceipt = receipt(workPacket);
+    let durable = false;
+    const authority = createPrLifecycleAuthority({ provider: provider({
+      recordPrLinkage: async () => { durable = true; return { ok: true }; },
+      readTrace: async () => ({ pull_requests: [{
+        number: 514, repo: REPOSITORY_ID, git_common_dir: gitCommonDir, head_sha: HEAD, issue_id: ISSUE_ID,
+        iterations: durable ? [{ type: 'pr.opened', work_packet_hash: workPacket.content_hash,
+          work_packet_identity: packetIdentity(workPacket), run_receipt_hash: runReceipt.content_hash }] : [],
+      }] }),
+    }) });
+    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
+      .resolves.toMatchObject({ accepted: true });
   });
 
   test('scopes durable evidence and trace targets to the accepted PR', async () => {

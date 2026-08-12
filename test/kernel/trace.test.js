@@ -196,6 +196,26 @@ describe('Kernel receipt-bound PR trace', () => {
 		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([{ n: 2 }]);
 	});
 
+	test('atomically rejects divergent opened evidence across independent brokers', async () => {
+		const secondDriver = createBuiltinSQLiteDriver({ databasePath: config.databasePath });
+		const secondBroker = createLocalBroker({ projectRoot: root, gitCommonDir, databasePath: config.databasePath, driver: secondDriver });
+		await secondBroker.initialize();
+		try {
+			const firstPacket = workPacket();
+			const secondPacket = rehash({ ...structuredClone(firstPacket), object_id: '10000000-0000-4000-8000-000000000099' });
+			const first = linkage('opened', firstPacket, runReceipt(firstPacket));
+			const second = linkage('opened', secondPacket, runReceipt(secondPacket), { number: 515, url: 'https://github.com/owner/forge/pull/515' });
+			const results = await Promise.allSettled([broker.recordPrLinkage(first), secondBroker.recordPrLinkage(second)]);
+			expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+			const rejected = results.find(result => result.status === 'rejected');
+			expect(rejected.reason).toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+			const rows = await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE event_type = 'pr.opened';", config);
+			expect(rows).toEqual([{ n: 1 }]);
+		} finally {
+			secondDriver.close();
+		}
+	});
+
 	test('accepts producer-canonical hashes with mixed-case receipt keys', async () => {
 		const packet = workPacket({ constraints: { Z: 'upper', a: 'lower' } });
 		const receipt = runReceipt(packet);

@@ -221,6 +221,7 @@ async function callMethod(target, method, args, label, options = {}) {
     const projected = typeof options.project === 'function' ? options.project(result) : result;
     const bounded = snapshot(projected, `${label} provider response`, {
       privacy: options.sanitize ? 'sanitize' : undefined,
+      allowGitCommonDir: options.allowGitCommonDir,
     });
     if (options.unwrap && bounded?.ok === true && bounded.data !== undefined) return bounded.data;
     if (options.unwrap && bounded?.ok === false) fail('PR_LIFECYCLE_UNAVAILABLE', `${label} provider rejected operation`);
@@ -283,11 +284,24 @@ function assertLiveIssue(issue, expectedIssueId) {
   const id = issue?.id ?? issue?.issue_id;
   if (id !== expectedIssueId) fail('PR_LIFECYCLE_READINESS_STALE', 'live issue identity does not match packet');
   const revision = providerIssueRevision(issue);
-  const ready = issue.ready === true || issue.is_ready === true || issue.readiness_state === 'ready';
-  if (!ready || issue.blocked === true || issue.blockers > 0) {
+  if (issue.blocked === true || issue.blockers > 0) {
     fail('PR_LIFECYCLE_READINESS_STALE', 'issue is not live-ready');
   }
   return revision;
+}
+
+async function readReadyIssue(provider, issueId, actorId, sessionId, timeoutMs) {
+  const input = { issue_id: issueId, actor_id: actorId, session_id: sessionId };
+  const response = typeof provider.listReadyWork === 'function'
+    ? await callMethod(provider, 'listReadyWork', [input], 'ready', { timeoutMs, project: projectReadyResponse })
+    : await callMethod(provider, 'runIssueOperation', ['ready', [], { actor: actorId, sessionId }], 'ready', {
+      timeoutMs, unwrap: true, project: projectReadyResponse,
+    });
+  const ready = Array.isArray(response) ? response : response?.issues;
+  if (!Array.isArray(ready)) fail('PR_LIFECYCLE_UNAVAILABLE', 'ready provider returned a malformed queue');
+  const matches = ready.filter(issue => (issue?.id ?? issue?.issue_id) === issueId);
+  if (matches.length !== 1) fail('PR_LIFECYCLE_READINESS_STALE', 'issue is absent or ambiguous in the authoritative ready queue');
+  return matches[0];
 }
 
 // 0.1 limitation: LeaseReceipt/lease_epoch is deferred. Same actor/session release and
@@ -507,9 +521,17 @@ function assertPacketLiveBindings(packet, live) {
 
 function deriveLinkage(packet, receipt, gates) {
   const target = packet.payload.target ?? {};
+  const prEvidence = receipt.payload.evidence_refs.filter(entry => Number.isInteger(entry?.pr_number));
+  if (Number.isInteger(target.pr_number) && prEvidence.some(entry => entry.pr_number !== target.pr_number)) {
+    fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt PR number conflicts with packet target');
+  }
   let prNumber = Number.isInteger(target.pr_number) ? target.pr_number : undefined;
-  if (prNumber === undefined) prNumber = receipt.payload.evidence_refs.find((entry) => Number.isInteger(entry?.pr_number))?.pr_number;
-  const evidenceUrl = receipt.payload.evidence_refs.find((entry) => Number(entry?.pr_number) === prNumber && typeof entry?.url === 'string')?.url;
+  if (prNumber === undefined) prNumber = prEvidence[0]?.pr_number;
+  const matchingEvidence = prEvidence.filter(entry => entry.pr_number === prNumber && typeof entry?.url === 'string');
+  if (typeof target.url === 'string' && matchingEvidence.some(entry => entry.url !== target.url)) {
+    fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt PR URL conflicts with packet target');
+  }
+  const evidenceUrl = matchingEvidence[0]?.url;
   return {
     issue_id: packet.payload.issue_id,
     repository_id: packet.payload.repository_id,
@@ -707,6 +729,7 @@ async function readLifecycleTrace(provider, linkage, timeoutMs, gitCommonDir) {
   const target = traceTarget(linkage, gitCommonDir);
   return callMethod(provider, 'readTrace', [target], 'trace', {
     timeoutMs,
+    allowGitCommonDir: true,
     project: value => projectTrace(value, target),
   });
 }
@@ -756,6 +779,11 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
     const requestedSession = requiredString(input.session_id ?? input.sessionId, 'session_id');
     const issue = await callProbe(provider, liveProbes, ['readIssue'], [issueId], 'issue', 'show', timeoutMs, { project: projectIssueResponse });
     const issueRevision = assertLiveIssue(issue, issueId);
+    const readyIssue = await readReadyIssue(provider, issueId, requestedActor, requestedSession, timeoutMs);
+    const readyRevision = readyIssue.revision ?? readyIssue.issue_revision;
+    if (readyRevision !== undefined && readyRevision !== issueRevision) {
+      fail('PR_LIFECYCLE_REVISION_STALE', 'authoritative ready queue revision does not match live issue');
+    }
     const ownershipArgs = { issue_id: issueId, ...(requestedActor ? { actor_id: requestedActor } : {}), ...(requestedSession ? { session_id: requestedSession } : {}) };
     const ownership = assertOwnership(
       await callOwnershipProbe(provider, liveProbes, ownershipArgs, timeoutMs),
