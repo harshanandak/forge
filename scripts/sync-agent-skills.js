@@ -132,7 +132,6 @@ async function syncAgentSkills(options = {}) {
   const changed = changedSkillFiles(root, runGit);
   const unstagedCanonical = unstagedCanonicalPaths(root, runGit);
   const deferred = changed
-    .filter(file => file.writeIntent === 'update')
     .map(file => `skills/${file.path.slice('.agents/skills/'.length)}`)
     .filter(file => unstagedCanonical.has(file));
   if (deferred.length > 0) {
