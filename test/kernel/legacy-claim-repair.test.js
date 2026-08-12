@@ -259,9 +259,10 @@ describe('legacy claim repair backup and apply', () => {
 			{ id: 'claim-future', state: 'active' },
 			{ id: 'claim-terminal', state: 'released' },
 		]);
-		// Unrelated issue activity is outside the approved claim snapshot and must not
-		// make an otherwise exact replay non-idempotent.
+		// A lost-response retry must replay its durable receipt even after normal
+		// claim authority changes the mutable snapshot.
 		await fixture.issue('unrelated-after-repair');
+		await fixture.claim('claim-after-repair', 'unrelated-after-repair');
 		const replay = await fixture.driver.applyLegacyClaimRepair({
 			observedAt: OBSERVED_AT,
 			approvedDigest: preflight.digest,
