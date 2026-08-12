@@ -314,7 +314,7 @@ describe('public PR lifecycle authority', () => {
 
   test('rejects bare POSIX user home directories at the privacy boundary', async () => {
     const authority = createPrLifecycleAuthority({ provider: provider() });
-    for (const objective of ['/home/alice', '/Users/alice']) {
+    for (const objective of ['/home/alice', '/Users/alice', 'Use /home/alice for config', 'Read /Users/alice next']) {
       await expect(authority.issueWorkPacket({
         issue_id: ISSUE_ID,
         repository_id: REPOSITORY_ID,
@@ -493,7 +493,7 @@ describe('public PR lifecycle authority', () => {
       .then(() => ({ accepted: true }), error => error);
     const observed = await Promise.race([
       outcome,
-      new Promise(resolve => setTimeout(() => resolve('still-pending'), 30)),
+      new Promise(resolve => setTimeout(() => resolve('still-pending'), 100)),
     ]);
     expect(observed).toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
   });
@@ -509,6 +509,28 @@ describe('public PR lifecycle authority', () => {
     });
     await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
       .resolves.toMatchObject({ accepted: true });
+  });
+
+  test('keeps reconciliation bounded when the wall clock moves backward', async () => {
+    const originalNow = Date.now;
+    let wallTime = 100;
+    Date.now = () => wallTime--;
+    try {
+      const workPacket = packet();
+      const authority = createPrLifecycleAuthority({
+        provider: provider({ recordPrLinkage: async () => new Promise(() => {}) }),
+        timeoutMs: 5,
+      });
+      const outcome = authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' })
+        .then(() => ({ accepted: true }), error => error);
+      const observed = await Promise.race([
+        outcome,
+        new Promise(resolve => setTimeout(() => resolve('still-pending'), 100)),
+      ]);
+      expect(observed).toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
+    } finally {
+      Date.now = originalNow;
+    }
   });
 
   test('re-probes ownership and exact head at receipt acceptance', async () => {

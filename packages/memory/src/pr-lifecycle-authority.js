@@ -1,6 +1,7 @@
 'use strict';
 
 const { createHash, randomUUID } = require('node:crypto');
+const { performance } = require('node:perf_hooks');
 const { types } = require('node:util');
 const {
   canonicalize,
@@ -31,7 +32,7 @@ const SECRET_PATTERNS = Object.freeze([
   /AKIA[0-9A-Z]{16}/i,
   /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}/i,
 ]);
-const USER_PATH_PATTERN = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+(?:\/|$))/i;
+const USER_PATH_PATTERN = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+(?=\/|\s|$))/i;
 
 // Complete accepted provider capability contract. Live probes may supply the optional reads;
 // runIssueOperation, recordPrLinkage, and readTrace remain mandatory (see authority-provider.js).
@@ -767,19 +768,21 @@ async function readLifecycleTrace(provider, linkage, timeoutMs, gitCommonDir) {
 }
 
 async function reconcileLifecycleTrace(provider, linkage, packet, receipt, timeoutMs, gitCommonDir) {
-  const deadline = Date.now() + Math.max(timeoutMs, 10);
+  const budgetMs = Math.max(timeoutMs, 10);
+  const startedAt = performance.now();
+  const remainingBudget = () => budgetMs - (performance.now() - startedAt);
   let trace;
   do {
-    const remaining = Math.max(1, deadline - Date.now());
+    const remaining = Math.max(1, remainingBudget());
     trace = await readLifecycleTrace(provider, linkage, Math.min(timeoutMs, remaining), gitCommonDir);
     traceLinkageRow(trace, linkage);
     if (durableAcceptance(trace, packet, receipt)) {
       assertTraceLinkage(trace, linkage, packet, receipt);
       return trace;
     }
-    const waitMs = Math.min(5, deadline - Date.now());
+    const waitMs = Math.min(5, remainingBudget());
     if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
-  } while (Date.now() < deadline);
+  } while (remainingBudget() > 0);
   assertTraceLinkage(trace, linkage, packet, receipt);
 }
 
