@@ -43,7 +43,7 @@ describe('command-owned agent skill sync', () => {
         env: { FORGE_ACTOR: 'skill-sync-owner' },
         execFileSync: (_command, args) => {
           if (args[0] === 'rev-parse') return `${HEAD}\n`;
-          if (args[0] === 'ls-files' && args.at(-1) === 'skills') return 'skills/review/SKILL.md\0';
+          if (args[0] === 'ls-files' && args.at(-1) === 'skills') return 'H skills/review/SKILL.md\0';
           if (args[0] === 'ls-files' && args.at(-1).startsWith('skills/')) return `${args.at(-1)}\0`;
           if (args[0] === 'show' && args[1] === ':skills/review/SKILL.md') return Buffer.from('canonical bytes\n');
           if (args[0] === 'diff' || args[0] === 'ls-files') return '';
@@ -85,7 +85,7 @@ describe('command-owned agent skill sync', () => {
         env: { FORGE_ACTOR: 'skill-sync-owner' },
         execFileSync: (_command, args) => {
           if (args[0] === 'rev-parse') return `${HEAD}\n`;
-          if (args[0] === 'ls-files' && args.at(-1) === 'skills') return 'skills/review/SKILL.md\0';
+          if (args[0] === 'ls-files' && args.at(-1) === 'skills') return 'H skills/review/SKILL.md\0';
           if (args[0] === 'ls-files' && args.at(-1).startsWith('skills/')) return `${args.at(-1)}\0`;
           if (args[0] === 'show' && args[1] === ':skills/review/SKILL.md') return Buffer.from('canonical bytes\n');
           if (args[0] === 'diff' || args[0] === 'ls-files') return '';
@@ -399,6 +399,39 @@ describe('command-owned agent skill sync', () => {
       expect(authorizations).toBe(0);
       expect(run(['diff', '--name-only', '--', 'skills/review/SKILL.md']).stdout.trim()).toBe('');
       expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/SKILL.md');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('ignores canonical files omitted by sparse checkout', async () => {
+    const { root, run } = parityFixture();
+    let authorizations = 0;
+    try {
+      fs.mkdirSync(path.join(root, 'skills/ship'), { recursive: true });
+      fs.mkdirSync(path.join(root, '.agents/skills/ship'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'skills/ship/SKILL.md'), 'ship base\n');
+      fs.writeFileSync(path.join(root, '.agents/skills/ship/SKILL.md'), 'ship base\n');
+      expect(run(['add', '.']).status).toBe(0);
+      expect(run(['commit', '-m', 'add ship']).status).toBe(0);
+      expect(run(['sparse-checkout', 'init', '--no-cone']).status).toBe(0);
+      expect(run(['sparse-checkout', 'set', '--no-cone', 'skills/review/', '.agents/skills/review/']).status).toBe(0);
+      expect(fs.existsSync(path.join(root, 'skills/ship/SKILL.md'))).toBe(false);
+
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'review staged\n');
+      expect(run(['add', 'skills/review/SKILL.md']).status).toBe(0);
+      await syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-sparse-owner' },
+        issueAuthorization: async () => ({
+          success: true,
+          capabilityId: `sparse-capability-${++authorizations}`,
+        }),
+        completeAuthorization: async () => ({ success: true }),
+      });
+
+      expect(authorizations).toBe(1);
+      expect(run(['diff', '--cached', '--name-only']).stdout).toContain('.agents/skills/review/SKILL.md');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

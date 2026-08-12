@@ -50,11 +50,15 @@ function generatedDriftPaths(root, runGit) {
 }
 
 function ambiguousCanonicalPaths(root, runGit) {
-  const indexed = new Set(parseGitPaths(runGit('git', ['ls-files', '-z', '--', 'skills'], {
+  const indexedEntries = parseGitPaths(runGit('git', ['ls-files', '-t', '-z', '--', 'skills'], {
     cwd: root,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-  })));
+  }));
+  const indexed = new Set(indexedEntries.map(entry => entry.slice(2)));
+  const skipWorktree = new Set(indexedEntries
+    .filter(entry => entry.startsWith('S '))
+    .map(entry => entry.slice(2)));
   const worktree = new Set();
   walkRegularFiles(path.join(root, 'skills'), (_file, relative) => worktree.add(`skills/${relative}`));
   const paths = new Set([...indexed, ...worktree]);
@@ -68,7 +72,8 @@ function ambiguousCanonicalPaths(root, runGit) {
     }
     return indexedContent === null
       ? worktreeContent !== null
-      : worktreeContent === null || !indexedContent.equals(worktreeContent);
+      : (worktreeContent === null && !skipWorktree.has(repoPath))
+        || (worktreeContent !== null && !indexedContent.equals(worktreeContent));
   }));
 }
 
