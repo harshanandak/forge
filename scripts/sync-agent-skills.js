@@ -45,6 +45,14 @@ function generatedDriftPaths(root, runGit) {
   }
 }
 
+function unstagedCanonicalPaths(root, runGit) {
+  return new Set(runGit('git', ['diff', '--name-only', '--diff-filter=ACMRDT', '--', 'skills'], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).split(/\r?\n/).map(value => value.trim().replace(/\\/g, '/')).filter(Boolean));
+}
+
 function walkRegularFiles(root, visit, current = root) {
   if (!fs.existsSync(current)) return;
   const currentStat = fs.lstatSync(current);
@@ -122,6 +130,15 @@ async function syncAgentSkills(options = {}) {
   if (!/^[0-9a-f]{40}$/.test(sourceHead)) throw new Error('source HEAD is not a full lowercase commit SHA');
 
   const changed = changedSkillFiles(root, runGit);
+  const unstagedCanonical = unstagedCanonicalPaths(root, runGit);
+  const deferred = changed
+    .filter(file => file.writeIntent === 'update')
+    .map(file => `skills/${file.path.slice('.agents/skills/'.length)}`)
+    .filter(file => unstagedCanonical.has(file));
+  if (deferred.length > 0) {
+    console.log(`sync-agent-skills: deferred until canonical index matches working tree (${deferred.join(', ')})`);
+    return { written: [], changed: [], deferred, sourceHead };
+  }
   const authorizations = [];
   for (const file of changed) {
     const authorization = await issueAuthorization(root, {
@@ -158,7 +175,7 @@ async function syncAgentSkills(options = {}) {
     stdio: ['ignore', 'ignore', 'inherit'],
   });
   console.log(`sync-agent-skills: .agents/skills in sync with skills/ (${written.length} skills)`);
-  return { written, changed: changed.map(file => file.path), sourceHead };
+  return { written, changed: changed.map(file => file.path), deferred: [], sourceHead };
 }
 
 async function main() {

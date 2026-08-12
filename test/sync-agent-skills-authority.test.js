@@ -116,6 +116,67 @@ describe('command-owned agent skill sync', () => {
     }
   }, 30_000);
 
+  test('defers sync when staged canonical bytes have a later unstaged edit', async () => {
+    const root = fixture();
+    const run = args => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+    let authorizations = 0;
+    try {
+      fs.writeFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'base canonical bytes\n');
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'base canonical bytes\n');
+      expect(run(['init']).status).toBe(0);
+      expect(run(['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+      expect(run(['config', 'user.name', 'Forge Test']).status).toBe(0);
+      expect(run(['add', '.']).status).toBe(0);
+      expect(run(['commit', '-m', 'base']).status).toBe(0);
+
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'staged canonical bytes\n');
+      expect(run(['add', 'skills/review/SKILL.md']).status).toBe(0);
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'unstaged canonical bytes\n');
+
+      const result = await syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-index-parity-owner' },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      });
+
+      expect(result.deferred).toEqual(['skills/review/SKILL.md']);
+      expect(authorizations).toBe(0);
+      expect(fs.readFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'utf8')).toBe('base canonical bytes\n');
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/SKILL.md');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('fails closed when canonical index parity cannot be inspected', async () => {
+    const root = fixture();
+    let authorizations = 0;
+    try {
+      await expect(syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-index-inspection-owner' },
+        execFileSync: (_command, args) => {
+          if (args[0] === 'rev-parse') return `${HEAD}\n`;
+          if (args.at(-1) === 'skills') throw new Error('forced git inspection failure');
+          if (args[0] === 'diff' || args[0] === 'ls-files') return '';
+          return '';
+        },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+      })).rejects.toThrow('forced git inspection failure');
+      expect(authorizations).toBe(0);
+      expect(fs.readFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'utf8')).toBe('old bytes\n');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('real hook accepts one exact sync and denies replay or foreign actor', async () => {
     const root = fixture();
     const actor = 'skill-sync-integration';
