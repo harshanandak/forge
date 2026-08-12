@@ -133,7 +133,7 @@ describe('command-owned agent skill sync', () => {
       expect(run(['add', 'skills/review/SKILL.md']).status).toBe(0);
       fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'unstaged canonical bytes\n');
 
-      const result = await syncAgentSkills({
+      await expect(syncAgentSkills({
         root,
         env: { FORGE_ACTOR: 'skill-index-parity-owner' },
         issueAuthorization: async () => {
@@ -141,9 +141,8 @@ describe('command-owned agent skill sync', () => {
           return { success: true, capabilityId: 'must-not-be-issued' };
         },
         completeAuthorization: async () => ({ success: true }),
-      });
+      })).rejects.toThrow('canonical index differs from generated mirror index');
 
-      expect(result.deferred).toEqual(['skills/review/SKILL.md']);
       expect(authorizations).toBe(0);
       expect(fs.readFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'utf8')).toBe('base canonical bytes\n');
       expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/SKILL.md');
@@ -194,7 +193,7 @@ describe('command-owned agent skill sync', () => {
       expect(run(['add', 'skills/review/SKILL.md']).status).toBe(0);
       fs.rmSync(path.join(root, 'skills/review'), { recursive: true, force: true });
 
-      const result = await syncAgentSkills({
+      await expect(syncAgentSkills({
         root,
         env: { FORGE_ACTOR: 'skill-delete-index-parity-owner' },
         issueAuthorization: async () => {
@@ -202,9 +201,8 @@ describe('command-owned agent skill sync', () => {
           return { success: true, capabilityId: 'must-not-be-issued' };
         },
         completeAuthorization: async () => ({ success: true }),
-      });
+      })).rejects.toThrow('canonical index differs from generated mirror index');
 
-      expect(result.deferred).toEqual(['skills/review/SKILL.md']);
       expect(authorizations).toBe(0);
       expect(fs.readFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'utf8')).toBe('base canonical bytes\n');
       expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/SKILL.md');

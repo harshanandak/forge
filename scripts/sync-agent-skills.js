@@ -53,6 +53,20 @@ function unstagedCanonicalPaths(root, runGit) {
   }).split(/\r?\n/).map(value => value.trim().replace(/\\/g, '/')).filter(Boolean));
 }
 
+function indexedFile(root, repoPath, runGit) {
+  const tracked = runGit('git', ['ls-files', '--stage', '--', repoPath], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  if (!tracked) return null;
+  return runGit('git', ['show', `:${repoPath}`], {
+    cwd: root,
+    encoding: null,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
 function walkRegularFiles(root, visit, current = root) {
   if (!fs.existsSync(current)) return;
   const currentStat = fs.lstatSync(current);
@@ -135,6 +149,14 @@ async function syncAgentSkills(options = {}) {
     .map(file => `skills/${file.path.slice('.agents/skills/'.length)}`)
     .filter(file => unstagedCanonical.has(file));
   if (deferred.length > 0) {
+    for (const canonicalPath of deferred) {
+      const mirrorPath = `.agents/${canonicalPath}`;
+      const indexedCanonical = indexedFile(root, canonicalPath, runGit);
+      const indexedMirror = indexedFile(root, mirrorPath, runGit);
+      if (indexedCanonical === null ? indexedMirror !== null : indexedMirror === null || !indexedCanonical.equals(indexedMirror)) {
+        throw new Error(`canonical index differs from generated mirror index: ${canonicalPath}`);
+      }
+    }
     console.log(`sync-agent-skills: deferred until canonical index matches working tree (${deferred.join(', ')})`);
     return { written: [], changed: [], deferred, sourceHead };
   }
