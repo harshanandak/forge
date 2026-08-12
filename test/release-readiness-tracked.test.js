@@ -42,7 +42,7 @@ describe('auditBdCallSites is deterministic under working-tree pollution (1d4077
     const source = fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-readiness.js'), 'utf8');
     const gitSpawnLine = source.split(/\r?\n/).find((line) => line.includes("execFileSync('git'"));
 
-    expect(gitSpawnLine).toMatch(/trusted developer tool.*NOSONAR S4036$/);
+    expect(gitSpawnLine).toMatch(/NOSONAR S4036 -- Fixed local Git executable.*trusted repository toolchain boundary\.$/);
   });
 
   test('ignores untracked files dropped under a scan root', () => {
