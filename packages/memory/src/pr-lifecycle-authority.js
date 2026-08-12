@@ -698,7 +698,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     assertContract(packet, WORK_PACKET_SCHEMA, { issueRevision: live.issueRevision, workflowConfigRevision: live.workflowConfigRevision, capabilityManifestDigest: live.capabilityDigest, exactHead: live.head.head });
     assertPacketLiveBindings(packet, live);
     assertContract(receipt, RUN_RECEIPT_SCHEMA, { packetHash: packet.content_hash, workflowConfigRevision: packet.payload.workflow_config_revision, capabilityManifestDigest: packet.payload.capability_manifest_digest, exactHead: packet.payload.target_head });
-    assertReceiptEvidence(packet, receipt);
+    const phase = assertReceiptEvidence(packet, receipt);
     if (receipt.provenance.actor_id !== packet.provenance.actor_id || receipt.provenance.actor_id !== live.ownership.actor_id) {
       fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'RunReceipt provenance actor does not match live ownership');
     }
@@ -712,6 +712,21 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     traceLinkageRow(trace, linkage);
     const durable = durableAcceptance(trace, packet, receipt);
     if (durable) assertTraceLinkage(trace, linkage, packet, receipt);
+    else if (phase === 'opened') {
+      await callMethod(provider, 'recordPrLinkage', [{
+        phase: 'opened',
+        git_common_dir: target.git_common_dir,
+        repo: linkage.repository_id,
+        number: linkage.pr_number,
+        branch: target.branch,
+        url: target.url,
+        occurred_at: receipt.payload.ended_at ?? receipt.created_at,
+        work_packet: packet,
+        run_receipt: receipt,
+      }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true });
+      const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
+      assertTraceLinkage(persistedTrace, linkage, packet, receipt);
+    }
     return stableResult('accepted', packet, receipt, linkage);
   }
 
@@ -728,10 +743,14 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     assertContract(receipt, RUN_RECEIPT_SCHEMA, { packetHash: packet.content_hash, workflowConfigRevision: packet.payload.workflow_config_revision, capabilityManifestDigest: packet.payload.capability_manifest_digest, exactHead: packet.payload.target_head });
     const phase = assertReceiptEvidence(packet, receipt);
     if (phase !== 'merged') fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'merge requires completed pr.merged evidence');
+    if (receipt.provenance.actor_id !== packet.provenance.actor_id || receipt.provenance.actor_id !== live.ownership.actor_id) {
+      fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'RunReceipt provenance actor does not match live ownership');
+    }
     const linkage = deriveLinkage(packet, receipt, live.gates);
+    if (!Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage');
     const trace = await readLifecycleTrace(provider, linkage, timeoutMs, packet.payload.target?.git_common_dir);
-    // Compare durable packet/receipt content before linkage checks so a reused run id with
-    // divergent content fails closed even when the incoming packet omitted a PR number.
+    // The authoritative PR number is validated before trace I/O; the trace then rejects
+    // semantic-identity, packet-hash, and run-id replay conflicts before any merge effect.
     const durable = durableAcceptance(trace, packet, receipt);
     if (durable) {
       assertTraceLinkage(trace, linkage, packet, receipt);

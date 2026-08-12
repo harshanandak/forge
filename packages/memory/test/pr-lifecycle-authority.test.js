@@ -658,6 +658,32 @@ describe('public PR lifecycle authority', () => {
     expect(writes).toBe(1);
   });
 
+  test('persists opened receipt acceptance without recording a premature merge', async () => {
+    const phases = [];
+    const workPacket = packet({ payload: { allowed_mutations: ['pr.opened'] } });
+    const runReceipt = receipt(workPacket, { payload: {
+      mutations_attempted: ['pr.opened'], mutations_authorized: ['pr.opened'],
+    } });
+    const authority = createPrLifecycleAuthority({ provider: provider({
+      recordPrLinkage: async value => { phases.push(value.phase); return { ok: true }; },
+    }) });
+    await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
+    expect(phases).toEqual(['opened']);
+  });
+
+  test('rejects missing PR number and wrong receipt provenance before merge side effects', async () => {
+    let merges = 0;
+    const missingNumber = packet({ payload: { target: { branch: 'codex/test', git_common_dir: '/repo/.git', url: 'https://example.test/pull/514' } } });
+    const wrongActor = packet();
+    const wrongReceipt = receipt(wrongActor, { provenance: { source_kind: 'flow', actor_class: 'agent', actor_id: 'agent-2' } });
+    const authority = createPrLifecycleAuthority({ provider: provider({ mergePr: async () => { merges += 1; return { merged: true }; } }) });
+    await expect(authority.mergeWorkPacket({ packet: missingNumber, receipt: receipt(missingNumber), session_id: 'session-1' }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_UNAVAILABLE' });
+    await expect(authority.mergeWorkPacket({ packet: wrongActor, receipt: wrongReceipt, session_id: 'session-1' }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_OWNERSHIP_STALE' });
+    expect(merges).toBe(0);
+  });
+
   test('fails closed when terminal linkage cannot be written or proved after merge', async () => {
     const workPacket = packet({ payload: {
       target: { pr_number: 514, branch: 'codex/test', git_common_dir: '/repo/.git', url: 'https://example.test/pull/514' },
