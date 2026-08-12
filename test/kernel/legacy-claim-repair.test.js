@@ -14,12 +14,14 @@ const {
 const {
 	cleanupRestoreProofDirectory,
 	createVerifiedClaimRepairBackup,
+	prepareRestoreProofSnapshot,
 	verifyClaimRepairBackup,
 } = require('../../lib/kernel/legacy-claim-repair');
 const { parseArgs, run } = require('../../scripts/legacy-claim-repair');
 
 const OBSERVED_AT = '2026-08-12T08:00:00.000Z';
 const tempDirs = [];
+const hardenPath = filePath => hardenBackupPermissions(filePath);
 
 async function removeDirWithRetry(dir, attempts = 10) {
 	for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -183,6 +185,22 @@ describe('legacy claim repair preflight', () => {
 		expect(cleanupOptions).toMatchObject({ recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	});
 
+	test('hardens the restore-proof directory and copied snapshot before either is opened', () => {
+		const calls = [];
+		const fsApi = {
+			copyFileSync(source, destination, flag) { calls.push(['copy', source, destination, flag]); },
+		};
+		prepareRestoreProofSnapshot('backup.sqlite', 'private-restore', 'private-restore/kernel.sqlite', {
+			fsApi,
+			hardenPath(filePath) { calls.push(['harden', filePath]); },
+		});
+		expect(calls).toEqual([
+			['harden', 'private-restore'],
+			['copy', 'backup.sqlite', 'private-restore/kernel.sqlite', fs.constants.COPYFILE_EXCL],
+			['harden', 'private-restore/kernel.sqlite'],
+		]);
+	});
+
 	test('dry-run reports only a preflight bound to the verified backup snapshot', async () => {
 		const driver = {
 			async preflightLegacyClaimRepair() { return { digest: 'b'.repeat(64) }; },
@@ -288,6 +306,7 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath,
 			observedAt: OBSERVED_AT,
 			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
 		});
 
 		expect(fs.existsSync(backupPath)).toBe(true);
@@ -302,11 +321,13 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath,
 			observedAt: OBSERVED_AT,
 			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
 		})).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_EXISTS' });
 		const verifiedAgain = await verifyClaimRepairBackup({
 			backupPath,
 			observedAt: OBSERVED_AT,
 			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
 		});
 		expect(verifiedAgain).toEqual(proof);
 		fixture.driver.close();
@@ -332,6 +353,7 @@ describe('legacy claim repair backup and apply', () => {
 					close() { restored.close(); },
 				};
 			},
+			hardenPath,
 		})).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
 		fixture.driver.close();
 	});
@@ -350,6 +372,7 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath: racedBackupPath,
 			observedAt: OBSERVED_AT,
 			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
 		})).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_EXISTS' });
 		expect(fs.readFileSync(racedBackupPath, 'utf8')).toBe('racing-writer');
 		fixture.driver.close();
@@ -380,6 +403,7 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath,
 			observedAt: OBSERVED_AT,
 			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
 		});
 		await expect(fixture.driver.applyLegacyClaimRepair({
 			observedAt: OBSERVED_AT,
@@ -444,6 +468,7 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath,
 			observedAt: OBSERVED_AT,
 			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
 		});
 		await fixture.driver.exec("UPDATE kernel_claims SET actor = 'changed-after-approval' WHERE id = 'claim-expired';", fixture.config);
 
@@ -468,6 +493,7 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath,
 			observedAt: OBSERVED_AT,
 			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
 		});
 		await fixture.issue('unrelated-after-backup');
 
@@ -496,6 +522,7 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath,
 			observedAt: OBSERVED_AT,
 			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
 		});
 
 		await expect(fixture.driver.applyLegacyClaimRepair({
