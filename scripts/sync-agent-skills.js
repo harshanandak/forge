@@ -55,6 +55,11 @@ function ambiguousCanonicalPaths(root, runGit) {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }));
+  const mirrorSkipWorktree = new Set(parseGitPaths(runGit('git', ['ls-files', '-t', '-z', '--', '.agents/skills'], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })).filter(entry => entry.startsWith('S ')).map(entry => entry.slice(2)));
   const canonicalPrefixes = new Set(listCanonicalSkills(root).map(({ name }) => `skills/${name}/`));
   for (const entry of indexedEntries) {
     const match = /^skills\/([^/]+)\/SKILL\.md$/.exec(entry.slice(2));
@@ -72,7 +77,8 @@ function ambiguousCanonicalPaths(root, runGit) {
   }
   for (const repoPath of skipWorktree) {
     const mirrorPath = `.agents/${repoPath}`;
-    if (!fs.existsSync(path.join(root, repoPath)) && fs.existsSync(path.join(root, mirrorPath))) {
+    if (!fs.existsSync(path.join(root, repoPath))
+      && (!mirrorSkipWorktree.has(mirrorPath) || fs.existsSync(path.join(root, mirrorPath)))) {
       throw new Error(`asymmetric sparse checkout exposes mirror without canonical: ${repoPath}`);
     }
   }
