@@ -149,18 +149,20 @@ describe('legacy claim repair preflight', () => {
 		const calls = [];
 		hardenBackupPermissions('backup.sqlite', {
 			platform: 'linux',
+			effectiveUserId: 1000,
 			fsApi: {
 				chmodSync(filePath, mode) { calls.push({ filePath, mode }); },
-				statSync() { return { mode: 0o100600 }; },
+				statSync() { return { mode: 0o100600, uid: 1000 }; },
 			},
 		});
 		expect(calls).toEqual([{ filePath: 'backup.sqlite', mode: 0o600 }]);
 		const directoryCalls = [];
 		hardenBackupPermissions('restore-dir', {
 			platform: 'linux',
+			effectiveUserId: 1000,
 			fsApi: {
 				chmodSync(filePath, mode) { directoryCalls.push({ filePath, mode }); },
-				statSync() { return { mode: 0o040700, isDirectory: () => true }; },
+				statSync() { return { mode: 0o040700, uid: 1000, isDirectory: () => true }; },
 			},
 		});
 		expect(directoryCalls).toEqual([{ filePath: 'restore-dir', mode: 0o700 }]);
