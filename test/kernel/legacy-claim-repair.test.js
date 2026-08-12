@@ -705,8 +705,10 @@ describe('legacy claim repair backup and apply', () => {
 		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
 		fixture.driver.close();
 		fs.rmSync(backupPath);
+		const observerPath = path.join(fixture.root, 'rollback-observer.sqlite');
+		fs.copyFileSync(fixture.databasePath, observerPath, fs.constants.COPYFILE_EXCL);
 		const rows = queryRowsInIsolatedProcess(
-			fixture.databasePath,
+			observerPath,
 			'SELECT state FROM kernel_claims ORDER BY id;',
 		);
 		expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
