@@ -192,6 +192,26 @@ describe('merge command — mandatory release authority', () => {
     expect(records).toBe(0);
   });
 
+  test('replays existing terminal evidence after merge without rechecking expired gate authority', async () => {
+    let gateChecks = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+      verifyPrIssueBinding: async () => ({
+        bound: true,
+        terminalEvidence: {
+          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+        },
+      }),
+      verifyMergeGate: async () => { gateChecks += 1; return false; },
+    }));
+
+    expect(out).toMatchObject({
+      success: true, merged: true, recovered: true,
+      decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+    });
+    expect(gateChecks).toBe(0);
+  });
+
   test('reconciles a merged PR without requiring a receipt for a disabled merge gate', async () => {
     let receiptRequirements;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({

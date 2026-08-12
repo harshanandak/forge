@@ -226,6 +226,33 @@ describe('Flow-backed PR monitor authority', () => {
     expect(delivered.at(-1).repo).toBe(repo);
   });
 
+  test('keeps long compatibility event identities collision-resistant', async () => {
+    const store = durableStore();
+    const sharedPrefix = 'check-'.padEnd(80, 'x');
+    let next = snapshot({
+      checks: [
+        { name: `${sharedPrefix}-one`, class: 'green' },
+        { name: `${sharedPrefix}-two`, class: 'green' },
+      ],
+    });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({
+      checks: [
+        { name: `${sharedPrefix}-one`, class: 'failed' },
+        { name: `${sharedPrefix}-two`, class: 'failed' },
+      ],
+    });
+
+    await runFlowMonitorPass(ctx);
+
+    const failures = delivered.filter(record => record.type === 'check.failed');
+    expect(failures).toHaveLength(2);
+    expect(new Set(failures.map(record => record.key)).size).toBe(2);
+    expect(new Set(failures.map(record => record.data.name)).size).toBe(2);
+  });
+
   test('checkpoints non-event snapshot changes so recurring failures are observed', async () => {
     const store = durableStore();
     let next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
