@@ -892,7 +892,11 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
     const method = typeof provider.listReadyWork === 'function' ? 'listReadyWork' : undefined;
     const response = method
       ? await callMethod(provider, method, [input], 'ready', { timeoutMs, project: projectReadyResponse })
-      : await callMethod(provider, 'runIssueOperation', ['ready', [input], {}], 'ready', { timeoutMs, unwrap: true, project: projectReadyResponse });
+      : await callMethod(provider, 'runIssueOperation', ['ready', [], {
+        actor: input.actor_id ?? input.actorId,
+        sessionId: input.session_id ?? input.sessionId,
+        worktreeId: input.worktree_id ?? input.worktreeId,
+      }], 'ready', { timeoutMs, unwrap: true, project: projectReadyResponse });
     const ready = Array.isArray(response) ? response : response?.issues;
     if (!Array.isArray(ready)) fail('PR_LIFECYCLE_UNAVAILABLE', 'ready provider returned a malformed queue');
     return ready;

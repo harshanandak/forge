@@ -1022,4 +1022,16 @@ describe('public PR lifecycle authority', () => {
         .rejects.toMatchObject({ code: 'PR_LIFECYCLE_CAPABILITY_INVALID' });
     }
   });
+
+  test('forwards requester context to the public ready operation', async () => {
+    const base = provider();
+    delete base.listReadyWork;
+    let seen;
+    base.runIssueOperation = async (operation, args, context) => { seen = { operation, args, context }; return { ok: true, data: [] }; };
+    const authority = createPrLifecycleAuthority({ provider: base });
+    await authority.requestNextWork({ actor_id: 'agent-1', session_id: 'session-1', worktree_id: 'worktree-1' });
+    expect(seen).toEqual({ operation: 'ready', args: [], context: {
+      actor: 'agent-1', sessionId: 'session-1', worktreeId: 'worktree-1',
+    } });
+  });
 });

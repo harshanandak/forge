@@ -216,6 +216,16 @@ describe('Kernel receipt-bound PR trace', () => {
 		}
 	});
 
+	test('serializes same-driver linkage turns and releases the queue after failure', async () => {
+		const invalidPacket = workPacket({ target_head: 'f'.repeat(40) });
+		const invalid = linkage('opened', invalidPacket, runReceipt(invalidPacket, { exact_head: HEAD_SHA }));
+		const first = broker.recordPrLinkage(invalid).then(() => null, error => error);
+		const second = broker.recordPrLinkage(linkage());
+		await expect(first).resolves.toBeInstanceOf(Error);
+		await expect(second).resolves.toHaveProperty('iteration');
+		await expect(broker.recordPrLinkage(linkage())).resolves.toHaveProperty('iteration');
+	});
+
 	test('revalidates exact claim ownership inside opened linkage persistence', async () => {
 		await driver.insertKernelClaim({ id: 'claim-1', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
 			state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z' }, {}, config);
