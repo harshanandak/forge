@@ -23,16 +23,20 @@ function snapshot(overrides = {}) {
 function durableStore() {
   const events = [];
   const cursors = new Map();
-  let terminalReceipt = null;
+  const terminalReceipts = new Map();
   let outboxOverflow = false;
   return {
     events,
-    setCursor(target, sequence) { cursors.set(target, sequence); },
+    setCursor(target, sequence, monitorId = 'pr:owner/forge:42') {
+      if (!cursors.has(monitorId)) cursors.set(monitorId, new Map());
+      cursors.get(monitorId).set(target, sequence);
+    },
     setOutboxOverflow(value) { outboxOverflow = value; },
-    get terminalReceipt() { return terminalReceipt; },
+    get terminalReceipt() { return terminalReceipts.values().next().value || null; },
     async appendEvent(event, targets) {
-      const existing = events.find((item) => item.payload.event_id === event.payload.event_id
-        || item.payload.sequence === event.payload.sequence);
+      const existing = events.find((item) => item.payload.monitor_id === event.payload.monitor_id
+        && (item.payload.event_id === event.payload.event_id
+          || item.payload.sequence === event.payload.sequence));
       if (existing) {
         if (existing.content_hash !== event.content_hash) {
           const error = new Error('identity conflict');
@@ -48,8 +52,9 @@ function durableStore() {
       const event = events.find(item => item.payload.event_id === eventId);
       return event ? { envelope_json: JSON.stringify(event) } : null;
     },
-    async readEventTail(_monitorId, { limit }) {
-      const selected = events.slice(-limit);
+    async readEventTail(monitorId, { limit }) {
+      const matching = events.filter(event => event.payload.monitor_id === monitorId);
+      const selected = matching.slice(-limit);
       return {
         events: selected.map(event => ({
           event_id: event.payload.event_id,
@@ -58,33 +63,36 @@ function durableStore() {
           content_hash: event.content_hash,
           envelope_json: JSON.stringify(event),
         })),
-        overflow: events.length > limit,
-        truncated_before_sequence: events.length > limit ? selected[0].payload.sequence : null,
+        overflow: matching.length > limit,
+        truncated_before_sequence: matching.length > limit ? selected[0].payload.sequence : null,
       };
     },
     async readDeliveryState(monitorId) {
       return {
-        cursors: [...cursors.entries()].map(([target, sequence]) => ({ monitor_id: monitorId, target, sequence })),
+        cursors: [...(cursors.get(monitorId) || new Map()).entries()]
+          .map(([target, sequence]) => ({ monitor_id: monitorId, target, sequence })),
         outbox: [],
-        terminal_receipt: terminalReceipt && {
+        terminal_receipt: terminalReceipts.get(monitorId) ? {
           monitor_id: monitorId,
-          content_hash: terminalReceipt.content_hash,
-          envelope_json: JSON.stringify(terminalReceipt),
-        },
+          content_hash: terminalReceipts.get(monitorId).content_hash,
+          envelope_json: JSON.stringify(terminalReceipts.get(monitorId)),
+        } : null,
         overflow: { cursors: false, outbox: outboxOverflow },
       };
     },
     async recordDeliveryReceipt(receipt) {
       const event = events.find(item => item.payload.event_id === receipt.payload.event_id);
-      cursors.set(receipt.payload.target, event.payload.sequence);
+      if (!cursors.has(event.payload.monitor_id)) cursors.set(event.payload.monitor_id, new Map());
+      cursors.get(event.payload.monitor_id).set(receipt.payload.target, event.payload.sequence);
       return { idempotent: false };
     },
     async recordTerminalReceipt(receipt) {
-      if (terminalReceipt && terminalReceipt.content_hash !== receipt.content_hash) {
+      const prior = terminalReceipts.get(receipt.payload.monitor_id);
+      if (prior && prior.content_hash !== receipt.content_hash) {
         throw new Error('monitor receipt conflict');
       }
-      terminalReceipt = structuredClone(receipt);
-      return { idempotent: Boolean(terminalReceipt) };
+      terminalReceipts.set(receipt.payload.monitor_id, structuredClone(receipt));
+      return { idempotent: Boolean(prior) };
     },
   };
 }
@@ -256,6 +264,21 @@ describe('Flow-backed PR monitor authority', () => {
       lease_cleanup: { continuing_authority: false },
     });
     expect(replay.terminalReceiptId).toBe(first.terminalReceiptId);
+  });
+
+  test('starts a new lifecycle when a terminal closed PR is reopened', async () => {
+    const store = durableStore();
+    let next = snapshot({ state: 'CLOSED' });
+    const ctx = context(store, async () => next, async () => {});
+    const closed = await runFlowMonitorPass(ctx);
+    next = snapshot({ state: 'OPEN' });
+
+    const reopened = await runFlowMonitorPass(ctx);
+
+    expect(closed.terminalReceiptId).toBeString();
+    expect(reopened.terminalReceiptId).toBeUndefined();
+    expect(reopened.changed).toBe(true);
+    expect(store.events.some(event => event.payload.monitor_id.includes(':after:'))).toBe(true);
   });
 
   test('rejects a content-corrupted terminal receipt instead of replaying authority', async () => {

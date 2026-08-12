@@ -37,6 +37,17 @@ test('claim markers share one path across worktrees with the same common dir', (
 });
 
 describe('execute — watcher lifecycle', () => {
+	test('processes oversized action sets in bounded resumable batches', async () => {
+		let writes = 0;
+		const actions = Array.from({ length: 130 }, (_, index) => ({
+			type: 'upsertPrRow', row: { number: index + 1 },
+		}));
+		await executor.execute(actions, {
+			broker: { upsertPr: async () => { writes += 1; return true; } },
+			watchers: [],
+		});
+		expect(writes).toBe(128);
+	});
 	test('persists and replays the public Flow process lifecycle across daemon restarts', async () => {
 		const first = await executor.execute(
 			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],

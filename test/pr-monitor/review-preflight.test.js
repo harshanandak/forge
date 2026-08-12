@@ -36,6 +36,28 @@ describe('bounded local review preflight', () => {
     expect(changeSet).toMatchObject({ baseRef: 'origin/release/2.0', changedFiles: ['lib/release.js'] });
   });
 
+  test('deterministic preflight preserves a non-origin resolved base ref', async () => {
+    const originalHandler = preflightCommand.handler;
+    let changeSet;
+    preflightCommand.handler = async (_args, _flags, _root, deps) => {
+      changeSet = deps.resolveChangeSet({ runAll: false });
+      return { success: true, results: [] };
+    };
+    const exec = (_command, args) => {
+      const joined = args.join(' ');
+      if (joined === 'rev-parse --verify --quiet upstream/master') return 'base\n';
+      if (joined === 'merge-base HEAD upstream/master') return 'merge-base\n';
+      if (joined === 'diff --name-only merge-base...HEAD') return 'lib/change.js\n';
+      throw new Error(`unexpected git: ${joined}`);
+    };
+    try {
+      await defaultRunDeterministic({ projectRoot: '/repo', base: 'master', baseRef: 'upstream/master' }, exec);
+    } finally {
+      preflightCommand.handler = originalHandler;
+    }
+    expect(changeSet.baseRef).toBe('upstream/master');
+  });
+
   test('does not review an unrelated local checkout as if it were the PR head', async () => {
     let calls = 0;
     const result = await runLocalReviewPreflight({

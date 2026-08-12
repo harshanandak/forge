@@ -116,6 +116,19 @@ describe('runMonitorPass', () => {
     expect(checkEvents).toEqual([T.CHECK_FAILED, T.CHECK_RECOVERED, T.CHECK_FAILED]);
   });
 
+  test('Memory compatibility redelivery is idempotent after a receipt-write crash', async () => {
+    const store = memoryStore();
+    const recordReceipt = store.recordDeliveryReceipt;
+    store.recordDeliveryReceipt = async () => { throw new Error('receipt crash'); };
+    const ctx = memoryContext(store, async () => snap());
+    await expect(runMonitorPass(ctx)).rejects.toThrow('Monitor durability provider unavailable');
+    expect(journal.readAllEvents(dir)).toHaveLength(1);
+
+    store.recordDeliveryReceipt = recordReceipt;
+    await runMonitorPass(ctx);
+    expect(journal.readAllEvents(dir)).toHaveLength(1);
+  });
+
   test('first pass appends the baseline event and persists the snapshot', async () => {
     const res = await runMonitorPass({ dir, gather: async () => snap(), now });
     expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
