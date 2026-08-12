@@ -79,6 +79,10 @@ Forge Kernel local mode uses a builtin SQLite runtime driver. Driver selection m
 
 The selected driver must pass conformance checks for WAL mode, `busy_timeout`, transactions, WAL checkpointing, backup creation, and FTS5 before Forge claims real local SQLite authority behavior.
 
+Legacy claim contradictions are handled only by the explicit, human-gated
+[legacy claim repair](./LEGACY_CLAIM_REPAIR.md). The broker never starts or applies
+that repair automatically.
+
 ## Team Mode
 
 Team mode requires server authority.
