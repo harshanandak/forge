@@ -72,6 +72,19 @@ describe('execute — watcher lifecycle', () => {
 		expect(restarted).toEqual(first);
 	});
 
+	test('bounds watcher lifecycle identities before a detached child is recorded', async () => {
+		const watchers = await executor.execute(
+			[{ type: 'startWatcher', pr: { repo: `owner/${'r'.repeat(180)}`, number: 42 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000,
+				spawnWatcher: () => ({ pid: 1234 }), writeClaim: () => {}, watchers: [],
+			},
+		);
+
+		expect(watchers[0].lifecycle.processId.length).toBeLessThanOrEqual(128);
+		expect(watchers[0].lifecycle.processId).toMatch(/^watcher:[0-9a-f]{64}$/);
+	});
+
 	test('fails closed before process mutation when a persisted lifecycle checkpoint conflicts', async () => {
 		let killed = false;
 		await expect(executor.execute(

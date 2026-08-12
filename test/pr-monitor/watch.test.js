@@ -70,6 +70,21 @@ describe('watchLoop', () => {
     expect(emitted).toEqual([held, current, terminal]);
     expect(state.pending.size).toBe(0);
   });
+  test('reconciles recovered checks before flushing held failures on a terminal receipt', async () => {
+    const held = { type: T.CHECK_FAILED, key: 'ci', data: { name: 'ci' } };
+    const recovered = { type: T.CHECK_RECOVERED, key: 'ci', data: { name: 'ci' } };
+    const terminal = { type: T.PR_MERGED, key: 'merged', data: {} };
+    const state = { pending: new Map([['ci', held]]) };
+    const emitted = [];
+
+    const result = await runWatchPass(state, {
+      runMonitorPass: async () => ({ events: [recovered, terminal], terminalReceiptId: 'receipt-terminal' }),
+    }, event => emitted.push(event));
+
+    expect(result).toEqual({ terminal: true });
+    expect(emitted).toEqual([terminal]);
+    expect(state.pending.size).toBe(0);
+  });
   test('streams a confirmed check.failed as an emitted event on change', async () => {
     const green = snap({ checks: [{ name: 'ci', class: 'green' }] });
     const failed = snap({ checks: [{ name: 'ci', class: 'failed' }] });

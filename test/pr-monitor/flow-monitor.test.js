@@ -311,6 +311,22 @@ describe('Flow-backed PR monitor authority', () => {
     expect(store.events.some(event => event.payload.type === 'monitor.checkpoint')).toBe(true);
   });
 
+  test('advances delivery authority across more than one bounded tail of advisory checkpoints', async () => {
+    const store = durableStore();
+    let revision = 0;
+    const delivered = [];
+    const ctx = context(store, async () => snapshot({ diagnosticRevision: revision }), async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+
+    for (revision = 1; revision <= 130; revision += 1) await runFlowMonitorPass(ctx);
+
+    const delivery = await store.readDeliveryState(ctx.monitorId);
+    expect(delivery.cursors).toContainEqual(expect.objectContaining({
+      target: 'legacy-journal', sequence: store.events.at(-1).payload.sequence,
+    }));
+    expect(delivered.every(record => record.type !== 'monitor.checkpoint')).toBe(true);
+  }, 15_000);
+
   test('retains transition identity beyond the first three snapshot entries', async () => {
     const store = durableStore();
     let next = snapshot({

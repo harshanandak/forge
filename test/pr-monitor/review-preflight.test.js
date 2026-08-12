@@ -98,6 +98,20 @@ describe('bounded local review preflight', () => {
     expect(calls).toBe(0);
   });
 
+  test('matches validated exact heads case-insensitively', async () => {
+    let calls = 0;
+    const result = await runLocalReviewPreflight({
+      ...EXACT_HEAD_CONTEXT, expectedHead: 'A'.repeat(40), localHead: 'a'.repeat(40),
+    }, {
+      probeCodeRabbit: async () => { calls += 1; return { available: true }; },
+      runCodeRabbit: async () => ({ ok: true, summary: 'clean', findings: [] }),
+      runDeterministic: async () => { calls += 1; return { success: true, results: [] }; },
+    });
+
+    expect(result.status).toBe('PASS');
+    expect(calls).toBe(2);
+  });
+
   test('does not review a checkout when the authoritative PR head is unavailable', async () => {
     let calls = 0;
     const result = await runLocalReviewPreflight({

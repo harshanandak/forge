@@ -228,6 +228,27 @@ describe('merge command — mandatory release authority', () => {
     expect(gateChecks).toBe(0);
   });
 
+  test('replays existing terminal evidence after auto-merge configuration is disabled', async () => {
+    let ownershipChecks = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      loadConfig: () => ({ merge: { auto: { enabled: false } } }),
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+      verifyIssueOwnership: async () => { ownershipChecks += 1; return { owned: false }; },
+      verifyPrIssueBinding: async () => ({
+        bound: true,
+        terminalEvidence: {
+          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+        },
+      }),
+    }));
+
+    expect(out).toMatchObject({
+      success: true, merged: true, recovered: true,
+      decisionId: 'decision-existing', receiptId: 'receipt-existing',
+    });
+    expect(ownershipChecks).toBe(0);
+  });
+
   test('replays existing terminal evidence after the live ownership claim expires', async () => {
     let ownershipChecks = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
@@ -290,6 +311,7 @@ describe('merge command — mandatory release authority', () => {
   });
 
   test('default evidence binds the live issue revision and terminal merged linkage', async () => {
+    let issueEnv;
     const decision = await mergeCmd.defaultPrepareMergeDecision({
       issueId: ISSUE,
       pr: 42,
@@ -301,7 +323,14 @@ describe('merge command — mandatory release authority', () => {
       config: ENABLED,
       projectRoot: process.cwd(),
       now: '2026-08-01T12:00:00.000Z',
-      runIssue: async () => ({ ok: true, data: { revision: 7 } }),
+      env: { PATH: '/trusted/bin', HOME: '/trusted/home', FORGE_ACTOR: 'ambient-actor' },
+      runIssue: async (_operation, _args, _root, options) => {
+        issueEnv = options.env;
+        return { ok: true, data: { revision: 7 } };
+      },
+    });
+    expect(issueEnv).toMatchObject({
+      PATH: '/trusted/bin', HOME: '/trusted/home', FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session',
     });
     expect(decision.packet.payload).toMatchObject({
       issue_id: ISSUE,
