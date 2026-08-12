@@ -101,7 +101,12 @@ async function seedMixedClaims(fixture) {
 
 describe('legacy claim repair preflight', () => {
 	test('operator script requires an explicit mode, database, backup, and apply approval', () => {
+		expect(parseArgs(['--help'])).toEqual({ help: true });
+		expect(parseArgs(['-h'])).toEqual({ help: true });
 		expect(() => parseArgs([])).toThrow('Choose exactly one');
+		expect(() => parseArgs(['--dry-run', '--apply'])).toThrow('Choose exactly one');
+		expect(() => parseArgs(['--unknown'])).toThrow('Unknown argument');
+		expect(() => parseArgs(['--dry-run', '--database', '--backup'])).toThrow('--database requires a value');
 		expect(() => parseArgs(['--dry-run'])).toThrow('Missing required option');
 		expect(() => parseArgs([
 			'--apply', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
@@ -124,6 +129,10 @@ describe('legacy claim repair preflight', () => {
 		});
 		expect(() => parseArgs([
 			'--dry-run', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
+			'--approved-digest', 'a'.repeat(64),
+		])).toThrow('--approved-digest is valid only with --apply');
+		expect(() => parseArgs([
+			'--dry-run', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
 			'constructor', 'ignored',
 		])).toThrow('Unknown argument: constructor');
 	});
@@ -144,6 +153,16 @@ describe('legacy claim repair preflight', () => {
 				chmodSync() {},
 				statSync() { return { mode: 0o100644 }; },
 			},
+		})).toThrow('owner-only permissions');
+		const secured = [];
+		hardenBackupPermissions('backup.sqlite', {
+			platform: 'win32',
+			aclSecurer(filePath) { secured.push(filePath); },
+		});
+		expect(secured).toEqual(['backup.sqlite']);
+		expect(() => hardenBackupPermissions('backup.sqlite', {
+			platform: 'win32',
+			aclSecurer() { throw new Error('ACL remained inherited'); },
 		})).toThrow('owner-only permissions');
 	});
 
@@ -222,7 +241,14 @@ describe('legacy claim repair preflight', () => {
 		await invalidRows.driver.exec("UPDATE kernel_issues SET status = 'finished' WHERE id = 'invalid-row';", invalidRows.config);
 		await expect(invalidRows.driver.preflightLegacyClaimRepair(
 			{ observedAt: OBSERVED_AT }, invalidRows.config,
-		)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_PREFLIGHT_FAILED' });
+		)).rejects.toMatchObject({
+			code: 'CLAIM_REPAIR_PREFLIGHT_FAILED',
+			details: { errors: expect.objectContaining({
+				invalid_issue_state: 1,
+				invalid_claim_state: 1,
+				invalid_expires_at: 1,
+			}) },
+		});
 		invalidRows.driver.close();
 
 		const brokenAuthority = await createFixture();
@@ -234,7 +260,15 @@ describe('legacy claim repair preflight', () => {
 		await brokenAuthority.claim('orphan', 'missing-issue');
 		await expect(brokenAuthority.driver.preflightLegacyClaimRepair(
 			{ observedAt: OBSERVED_AT }, brokenAuthority.config,
-		)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_PREFLIGHT_FAILED' });
+		)).rejects.toMatchObject({
+			code: 'CLAIM_REPAIR_PREFLIGHT_FAILED',
+			details: { errors: expect.objectContaining({
+				foreign_keys_disabled: 1,
+				'index:idx_kernel_claims_active_lease': 1,
+				duplicate_active_claim: 1,
+				orphan_claim: 1,
+			}) },
+		});
 		brokenAuthority.driver.close();
 	});
 });
@@ -271,6 +305,30 @@ describe('legacy claim repair backup and apply', () => {
 			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
 		});
 		expect(verifiedAgain).toEqual(proof);
+		fixture.driver.close();
+	});
+
+	test('rejects a backup changed after the restore snapshot was read', async () => {
+		const fixture = await createFixture();
+		await seedMixedClaims(fixture);
+		const backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		await fixture.driver.backup(backupPath, {}, { noReplace: true });
+
+		await expect(verifyClaimRepairBackup({
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver(databasePath) {
+				const restored = createBuiltinSQLiteDriver({ databasePath });
+				return {
+					async preflightLegacyClaimRepair(input) {
+						const result = await restored.preflightLegacyClaimRepair(input);
+						fs.writeFileSync(backupPath, 'replaced-after-restore');
+						return result;
+					},
+					close() { restored.close(); },
+				};
+			},
+		})).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
 		fixture.driver.close();
 	});
 
@@ -325,16 +383,11 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath: fixture.databasePath,
 			actor: 'approved-operator',
 		}, fixture.config)).rejects.toThrow('must not alias');
+		// Apply accepts only a backupPath and recomputes its proof itself; a
+		// caller-supplied proof cannot bypass this missing-path guard.
 		await expect(fixture.driver.applyLegacyClaimRepair({
 			observedAt: OBSERVED_AT,
 			approvedDigest: preflight.digest,
-			backupProof: {
-				schema_version: 'forge.claim-repair.backup-proof.v1',
-				integrity: 'ok',
-				plan_digest: preflight.digest,
-				restore_digest: preflight.digest,
-				backup_sha256: 'a'.repeat(64),
-			},
 			actor: 'approved-operator',
 		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_PROOF_REQUIRED' });
 
@@ -398,6 +451,30 @@ describe('legacy claim repair backup and apply', () => {
 		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_DIGEST_DRIFT' });
 		const states = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
 		expect(states.filter(row => row.state !== 'active')).toEqual([]);
+		fixture.driver.close();
+	});
+
+	test('rejects unrelated authority writes after backup without mutating claims', async () => {
+		const fixture = await createFixture();
+		await seedMixedClaims(fixture);
+		const backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		await createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+		});
+		await fixture.issue('unrelated-after-backup');
+
+		await expect(fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_DIGEST_DRIFT' });
+		const states = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
+		expect(states).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
 		fixture.driver.close();
 	});
 
