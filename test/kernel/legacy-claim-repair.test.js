@@ -10,6 +10,7 @@ const {
 	createBuiltinSQLiteDriver,
 	hardenBackupPermissions,
 	resolveWindowsPowerShellPath,
+	syncClaimRepairRecoveryDirectory,
 } = require('../../lib/kernel/sqlite-driver');
 const {
 	cleanupRestoreProofDirectory,
@@ -211,6 +212,23 @@ describe('legacy claim repair preflight', () => {
 			['harden', 'private-restore'],
 			['copy', 'backup.sqlite', 'private-restore/kernel.sqlite', fs.constants.COPYFILE_EXCL],
 			['harden', 'private-restore/kernel.sqlite'],
+		]);
+	});
+
+	test('fsyncs the recovery parent directory on POSIX before commit', () => {
+		const calls = [];
+		syncClaimRepairRecoveryDirectory('/private/backups/recovery.sqlite', {
+			platform: 'linux',
+			fsApi: {
+				openSync(directory, mode) { calls.push(['open', directory, mode]); return 17; },
+				fsyncSync(descriptor) { calls.push(['fsync', descriptor]); },
+				closeSync(descriptor) { calls.push(['close', descriptor]); },
+			},
+		});
+		expect(calls).toEqual([
+			['open', '/private/backups', 'r'],
+			['fsync', 17],
+			['close', 17],
 		]);
 	});
 
@@ -944,6 +962,35 @@ describe('legacy claim repair backup and apply', () => {
 		expect(replay.recovery_ref).toMatch(/^[0-9a-f-]{36}$/);
 		expect(typeof replay.recovery_path).toBe('string');
 		expect(fs.existsSync(replay.recovery_path)).toBe(true);
+		fixture.driver.close();
+	});
+
+	test('rejects replay when the retained recovery copy is missing or corrupted', async () => {
+		const fixture = await createFixture();
+		await seedMixedClaims(fixture);
+		const backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		await createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
+		});
+		const applied = await fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config);
+		fs.writeFileSync(applied.recovery_path, 'corrupted recovery');
+
+		await expect(fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_RECOVERY_INVALID' });
 		fixture.driver.close();
 	});
 

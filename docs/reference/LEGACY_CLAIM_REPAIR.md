@@ -98,6 +98,11 @@ named backup and receipt have been independently verified. A human may then
 remove that exact reported recovery path after confirming that no repair
 process is running.
 
+On POSIX the recovery file and its parent directory entry are synced before the
+authority transaction commits. Every receipt replay reopens the retained copy,
+reapplies owner-only permissions, and verifies its exact digest and identity
+before reporting success.
+
 ## Restore boundary
 
 Restore is deliberately not automated. Fence every Kernel writer, stop Forge
