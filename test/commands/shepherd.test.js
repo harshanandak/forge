@@ -289,6 +289,23 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
     expect(closed).toBe(true);
   });
 
+  test('hashes an oversized root monitor identity within the public Memory bound', async () => {
+    const owner = 'o'.repeat(70);
+    const repo = 'r'.repeat(70);
+    const built = await shepherdCmd.buildMonitorContext('7', root, {
+      buildContext: async () => ({
+        pr: '7', owner, repo, base: 'master', baseRef: 'origin/master',
+      }),
+      adapter: new (require('../../lib/adapters/pr-state-adapter').PrStateAdapter)({ gh: () => '', git: () => '' }),
+      resolveGitCommonDir: () => path.join(root, '.git'),
+      buildKernelDeps: async () => ({ kernelDriver: {}, kernelBroker: { close: async () => {} } }),
+      createMonitorStore: () => ({}),
+    });
+
+    expect(built.monitorId.length).toBeLessThanOrEqual(128);
+    expect(built.monitorId).toMatch(/^pr:[0-9a-f]{64}$/);
+  });
+
   test('runs an inline pass and returns NDJSON events since the cursor', async () => {
     const res = await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
       dir, gather: async () => snap(), now, watcherRunning: () => false,
@@ -304,6 +321,21 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
     await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, { dir, gather: async () => snap(), now, watcherRunning: () => false });
     const res = await shepherdCmd.handleEvents(['events', '1', '--since', '1'], root, { dir, gather: async () => snap(), now, watcherRunning: () => false });
     expect(res.events).toEqual([]);
+  });
+
+  test('surfaces a bounded overflow control record when the pull cursor is truncated', async () => {
+    const event = { seq: 13, type: T.VERDICT_CHANGED, key: 'state:13', data: {} };
+    const res = await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
+      dir, gather: async () => snap(),
+      pollEvents: async () => ({ events: [event], since: 0, overflow: true, receiptIds: [] }),
+    });
+
+    expect(res.overflow).toBe(true);
+    const records = res.output.split('\n').map(line => JSON.parse(line));
+    expect(records[0]).toMatchObject({
+      type: 'monitor.overflow', since: 0, firstAvailableSeq: 13,
+    });
+    expect(records[1]).toEqual(event);
   });
 
   test('errors without a PR argument', async () => {

@@ -283,6 +283,17 @@ describe('Flow-backed PR monitor authority', () => {
     expect(resumed.events[0].seq).toBe(before + 1);
   });
 
+  test('continues after acknowledged historical outbox rows exceed the read bound', async () => {
+    const store = durableStore();
+    await seedHistory(store, 129);
+    store.setOutboxOverflow(true);
+    const current = structuredClone(store.events.at(-1).payload.bounded_payload.snapshot);
+
+    const result = await runFlowMonitorPass(context(store, async () => current, async () => {}));
+
+    expect(result.events).toEqual([]);
+  });
+
   test('rejects a truncated restart checkpoint when delivery predates its first retained event', async () => {
     const store = durableStore();
     await seedHistory(store, 129);
@@ -293,13 +304,20 @@ describe('Flow-backed PR monitor authority', () => {
       .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
   });
 
-  test('rejects a bounded replay when the durable delivery outbox was truncated', async () => {
+  test('reconstructs pending delivery from the event tail when historical outbox rows overflow', async () => {
     const store = durableStore();
     await seedHistory(store, 129);
     store.setOutboxOverflow(true);
+    store.setCursor('legacy-journal', 128);
+    const delivered = [];
+    const current = structuredClone(store.events.at(-1).payload.bounded_payload.snapshot);
 
-    await expect(runFlowMonitorPass(context(store, async () => snapshot(), async () => {})))
-      .rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    const result = await runFlowMonitorPass(context(
+      store, async () => current, async record => delivered.push(record),
+    ));
+
+    expect(delivered.map(record => record.seq)).toEqual([129]);
+    expect(result.receiptIds).toHaveLength(1);
   });
 
   test('rejects content-corrupted durable history before provider observation', async () => {
