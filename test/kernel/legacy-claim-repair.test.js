@@ -567,6 +567,53 @@ describe('legacy claim repair backup and apply', () => {
 		fixture.driver.close();
 	});
 
+	test('binds the digest to rowids used for stage-history and recent-memory ordering', async () => {
+		const fixture = await createFixture();
+		await fixture.issue('rowid-ordering');
+		await fixture.driver.exec(`
+			INSERT INTO kernel_stage_runs (
+				id, issue_id, stage, substage, status, started_at, completed_at, evidence_id
+			) VALUES
+				('run-target', 'rowid-ordering', 'dev', NULL, 'done', '${OBSERVED_AT}', '${OBSERVED_AT}', NULL),
+				('run-sentinel', 'rowid-ordering', 'dev', NULL, 'done', '${OBSERVED_AT}', '${OBSERVED_AT}', NULL);
+			INSERT INTO kernel_memories (
+				key, value_json, source_agent, scope, confidence, tags_json,
+				supersedes_json, beads_refs_json, created_at, updated_at
+			) VALUES
+				('memory-target', '{}', 'fixture', NULL, NULL, NULL, NULL, NULL, '${OBSERVED_AT}', '${OBSERVED_AT}'),
+				('memory-sentinel', '{}', 'fixture', NULL, NULL, NULL, NULL, NULL, '${OBSERVED_AT}', '${OBSERVED_AT}');
+		`, fixture.config);
+		const beforeStageReinsert = await fixture.driver.preflightLegacyClaimRepair(
+			{ observedAt: OBSERVED_AT },
+			fixture.config,
+		);
+		await fixture.driver.exec(`
+			DELETE FROM kernel_stage_runs WHERE id = 'run-target';
+			INSERT INTO kernel_stage_runs (
+				id, issue_id, stage, substage, status, started_at, completed_at, evidence_id
+			) VALUES ('run-target', 'rowid-ordering', 'dev', NULL, 'done', '${OBSERVED_AT}', '${OBSERVED_AT}', NULL);
+		`, fixture.config);
+		const afterStageReinsert = await fixture.driver.preflightLegacyClaimRepair(
+			{ observedAt: OBSERVED_AT },
+			fixture.config,
+		);
+		await fixture.driver.exec(`
+			DELETE FROM kernel_memories WHERE key = 'memory-target';
+			INSERT INTO kernel_memories (
+				key, value_json, source_agent, scope, confidence, tags_json,
+				supersedes_json, beads_refs_json, created_at, updated_at
+			) VALUES ('memory-target', '{}', 'fixture', NULL, NULL, NULL, NULL, NULL, '${OBSERVED_AT}', '${OBSERVED_AT}');
+		`, fixture.config);
+		const afterMemoryReinsert = await fixture.driver.preflightLegacyClaimRepair(
+			{ observedAt: OBSERVED_AT },
+			fixture.config,
+		);
+
+		expect(afterStageReinsert.digest).not.toBe(beforeStageReinsert.digest);
+		expect(afterMemoryReinsert.digest).not.toBe(afterStageReinsert.digest);
+		fixture.driver.close();
+	});
+
 	test('rolls back every state change when interrupted before the receipt commit', async () => {
 		const fixture = await createFixture({
 			claimRepairFaultInjector(phase) {
@@ -626,6 +673,40 @@ describe('legacy claim repair backup and apply', () => {
 		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
 		const rows = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
 		expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
+		fixture.driver.close();
+	});
+
+	test('keeps the verified backup fenced through receipt insertion and rolls back late replacement', async () => {
+		let backupPath;
+		const fixture = await createFixture({
+			claimRepairFaultInjector(phase) {
+				if (phase === 'after-receipt-before-commit') fs.writeFileSync(backupPath, 'replaced-late');
+			},
+		});
+		await seedMixedClaims(fixture);
+		backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		await createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
+		});
+
+		await expect(fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
+		const rows = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
+		expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
+		const receipts = await fixture.driver.queryAll(
+			"SELECT * FROM kernel_events WHERE event_type = 'claim.repair';",
+			fixture.config,
+		);
+		expect(receipts).toEqual([]);
 		fixture.driver.close();
 	});
 });
