@@ -198,6 +198,12 @@ function changedSkillFiles(root, runGit = execFileSync, ignoredCanonical = gitIg
       const canonical = fs.readFileSync(sourcePath);
       const mirrorPath = path.join(mirror, name, relative);
       const repoPath = `.agents/skills/${name}/${relative}`;
+      const indexedCanonical = indexedFile(root, canonicalRepoPath, runGit);
+      if (indexedCanonical !== null
+        && gitObjectHash(root, [], indexedCanonical, runGit)
+          !== gitObjectHash(root, [`--path=${repoPath}`], canonical, runGit)) {
+        throw new Error(`canonical and generated mirror clean filters differ: ${canonicalRepoPath}`);
+      }
       try {
         if (canonical.equals(fs.readFileSync(mirrorPath)) && !drift.has(repoPath)) return;
       } catch (error) {

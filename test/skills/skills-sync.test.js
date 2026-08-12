@@ -238,7 +238,6 @@ describe('skills-sync: checkSkillsSync', () => {
     populateAgentSkills({
       sourceRoot: tmp,
       targetSkillsDir: path.join(tmp, '.codex/skills'),
-      excludeRelativePaths: new Set(['plan/editor.tmp']),
     });
 
     const result = checkSkillsSync({ repoRoot: tmp });

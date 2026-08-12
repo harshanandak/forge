@@ -57,6 +57,31 @@ describe('command-owned agent skill sync', () => {
     }
   });
 
+  test('rejects path-specific clean filters that would change mirror index bytes', () => {
+    const root = fixture();
+    let authorizations = 0;
+    try {
+      expect(() => changedSkillFiles(root, (_command, args) => {
+        if (args[0] === 'diff') return '';
+        if (args[0] === 'ls-files' && args.includes('--others')) return '';
+        if (args[0] === 'ls-files' && args.at(-1) === ':(literal)skills/review/SKILL.md') {
+          return 'skills/review/SKILL.md\0';
+        }
+        if (args[0] === 'ls-files') return '';
+        if (args[0] === 'show') return Buffer.from('canonical index bytes\n');
+        if (args[0] === 'hash-object' && args.includes('--path=.agents/skills/review/SKILL.md')) {
+          return `${'c'.repeat(40)}\n`;
+        }
+        if (args[0] === 'hash-object') return `${'b'.repeat(40)}\n`;
+        authorizations += 1;
+        return '';
+      })).toThrow('canonical and generated mirror clean filters differ');
+      expect(authorizations).toBe(0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('accepts a clean canonical checkout after Git CRLF conversion', async () => {
     const { root, run } = parityFixture();
     let authorizations = 0;
