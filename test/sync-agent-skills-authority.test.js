@@ -26,6 +26,7 @@ function parityFixture() {
   if (run(['init']).status !== 0
     || run(['config', 'user.email', 'forge-test@example.invalid']).status !== 0
     || run(['config', 'user.name', 'Forge Test']).status !== 0
+    || run(['config', 'core.autocrlf', 'false']).status !== 0
     || run(['add', '.']).status !== 0
     || run(['commit', '-m', 'base']).status !== 0) {
     throw new Error('failed to initialize parity fixture');
@@ -494,6 +495,44 @@ describe('command-owned agent skill sync', () => {
 
       expect(authorizations).toBe(1);
       expect(run(['diff', '--cached', '--name-only']).stdout).toContain('.agents/skills/review/SKILL.md');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('fails closed when sparse checkout omits canonical but includes mirror', async () => {
+    const { root, run } = parityFixture();
+    let authorizations = 0;
+    let staged = 0;
+    try {
+      fs.mkdirSync(path.join(root, 'skills/ship'), { recursive: true });
+      fs.mkdirSync(path.join(root, '.agents/skills/ship'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'skills/ship/SKILL.md'), 'ship base\n');
+      fs.writeFileSync(path.join(root, '.agents/skills/ship/SKILL.md'), 'ship base\n');
+      expect(run(['add', '.']).status).toBe(0);
+      expect(run(['commit', '-m', 'add ship']).status).toBe(0);
+      expect(run(['sparse-checkout', 'init', '--no-cone']).status).toBe(0);
+      expect(run(['sparse-checkout', 'set', '--no-cone', 'skills/review/', '.agents/skills/review/', '.agents/skills/ship/']).status).toBe(0);
+      expect(fs.existsSync(path.join(root, 'skills/ship/SKILL.md'))).toBe(false);
+      expect(fs.existsSync(path.join(root, '.agents/skills/ship/SKILL.md'))).toBe(true);
+
+      await expect(syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-asymmetric-sparse-owner' },
+        execFileSync: (command, args, options) => {
+          if (args[0] === 'add') staged += 1;
+          return execFileSync(command, args, options);
+        },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      })).rejects.toThrow('asymmetric sparse checkout');
+
+      expect(authorizations).toBe(0);
+      expect(staged).toBe(0);
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/ship/SKILL.md');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

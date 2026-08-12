@@ -61,6 +61,12 @@ function ambiguousCanonicalPaths(root, runGit) {
     .map(entry => entry.slice(2)));
   const worktree = new Set();
   walkRegularFiles(path.join(root, 'skills'), (_file, relative) => worktree.add(`skills/${relative}`));
+  for (const repoPath of skipWorktree) {
+    const mirrorPath = `.agents/${repoPath}`;
+    if (!fs.existsSync(path.join(root, repoPath)) && fs.existsSync(path.join(root, mirrorPath))) {
+      throw new Error(`asymmetric sparse checkout exposes mirror without canonical: ${repoPath}`);
+    }
+  }
   const paths = new Set([...indexed, ...worktree]);
   return new Set([...paths].filter(repoPath => {
     const indexedContent = indexedFile(root, repoPath, runGit);
