@@ -31,8 +31,8 @@ function parseArgs(argv = []) {
 			'--approved-digest': 'approvedDigest',
 			'--actor': 'actor',
 		};
+		if (!Object.hasOwn(names, arg)) throw new Error(`Unknown argument: ${arg}`);
 		const name = names[arg];
-		if (!name) throw new Error(`Unknown argument: ${arg}`);
 		const value = argv[index + 1];
 		if (!value || value.startsWith('--')) throw new Error(`${arg} requires a value`);
 		result[name] = value;

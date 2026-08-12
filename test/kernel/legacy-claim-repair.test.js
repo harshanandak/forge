@@ -11,6 +11,7 @@ const {
 	hardenBackupPermissions,
 } = require('../../lib/kernel/sqlite-driver');
 const {
+	cleanupRestoreProofDirectory,
 	createVerifiedClaimRepairBackup,
 	verifyClaimRepairBackup,
 } = require('../../lib/kernel/legacy-claim-repair');
@@ -121,6 +122,10 @@ describe('legacy claim repair preflight', () => {
 			backupPath: 'backup.sqlite',
 			observedAt: OBSERVED_AT,
 		});
+		expect(() => parseArgs([
+			'--dry-run', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
+			'constructor', 'ignored',
+		])).toThrow('Unknown argument: constructor');
 	});
 
 	test('hardens backup files to owner-only mode and fails closed when permissions remain broad', () => {
@@ -140,6 +145,19 @@ describe('legacy claim repair preflight', () => {
 				statSync() { return { mode: 0o100644 }; },
 			},
 		})).toThrow('owner-only permissions');
+	});
+
+	test('restore-proof cleanup retries Windows file locks without replacing valid proof', () => {
+		let cleanupOptions;
+		expect(() => cleanupRestoreProofDirectory('restore-proof', {
+			rmSync(_directory, options) {
+				cleanupOptions = options;
+				const error = new Error('still locked');
+				error.code = 'EBUSY';
+				throw error;
+			},
+		})).not.toThrow();
+		expect(cleanupOptions).toMatchObject({ recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	});
 
 	test('classifies terminal rows before expiry and emits deterministic privacy-safe counts', async () => {
@@ -255,6 +273,14 @@ describe('legacy claim repair backup and apply', () => {
 			observedAt: OBSERVED_AT,
 			approvedDigest: preflight.digest,
 			backupPath: fixture.databasePath,
+			actor: 'approved-operator',
+		}, fixture.config)).rejects.toThrow('must not alias');
+		const hardlinkPath = path.join(fixture.root, 'kernel-hardlink.sqlite');
+		fs.linkSync(fixture.databasePath, hardlinkPath);
+		await expect(fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath: hardlinkPath,
 			actor: 'approved-operator',
 		}, fixture.config)).rejects.toThrow('must not alias');
 		await expect(fixture.driver.applyLegacyClaimRepair({
