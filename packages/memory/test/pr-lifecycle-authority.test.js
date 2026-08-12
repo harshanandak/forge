@@ -82,7 +82,11 @@ function receipt(workPacket, overrides = {}) {
     executor: { product_id: 'forge-flow', mode: 'test' },
     started_at: NOW,
     ended_at: NOW,
-    evidence_refs: [{ kind: 'terminal', status: 'PASS' }],
+    evidence_refs: [{ kind: 'terminal', status: 'PASS' }, {
+      kind: 'pr',
+      pr_number: workPacket.payload.target?.pr_number ?? 514,
+      url: workPacket.payload.target?.url ?? `https://example.test/pull/${workPacket.payload.target?.pr_number ?? 514}`,
+    }],
     validation: { status: 'PASS', terminal: true },
     cleanup: { status: 'PASS', terminal: true },
     mutations_attempted: ['pr.opened'],
@@ -340,7 +344,8 @@ describe('public PR lifecycle authority', () => {
     let writes = 0;
     const workPacket = packet({ payload: { target: { pr_number: 514, branch: 'codex/test', git_common_dir: '/repo/.git' } } });
     const authority = createPrLifecycleAuthority({ provider: provider({ recordPrLinkage: async () => { writes += 1; } }) });
-    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
+    const runReceipt = receipt(workPacket, { payload: { evidence_refs: [{ kind: 'pr', pr_number: 514, url: null }] } });
+    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_UNAVAILABLE' });
     expect(writes).toBe(0);
 
@@ -714,6 +719,8 @@ describe('public PR lifecycle authority', () => {
       [{ kind: 'pr', pr_number: 514, url: 'https://example.test/pull/514' },
         { kind: 'pr', pr_number: 514, url: 'https://example.test/pull/other' }],
       [{ kind: 'validation', pr_number: 514, url: 'https://example.test/pull/514' }],
+      [{ kind: 'pr', pr_number: 514 }],
+      [{ kind: 'pr', pr_number: 514, url: 'https://example.test/pull/514', repo: 'github.com/other/repo' }],
     ]) {
       const runReceipt = receipt(workPacket, { payload: { evidence_refs } });
       const authority = createPrLifecycleAuthority({ provider: provider({

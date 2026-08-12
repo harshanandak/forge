@@ -523,15 +523,19 @@ function assertPacketLiveBindings(packet, live) {
 function deriveLinkage(packet, receipt, gates) {
   const target = packet.payload.target ?? {};
   const prEvidence = receipt.payload.evidence_refs.filter(entry => entry?.kind === 'pr' && Number.isInteger(entry?.pr_number));
-  const evidenceNumbers = new Set(prEvidence.map(entry => entry.pr_number));
-  if (evidenceNumbers.size > 1) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt contains ambiguous PR numbers');
+  if (prEvidence.length !== 1 || prEvidence[0].pr_number <= 0 || typeof prEvidence[0].url !== 'string') {
+    fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'opened receipt must contain exactly one complete PR evidence reference');
+  }
+  const evidenceRepository = prEvidence[0].repository_id ?? prEvidence[0].repository ?? prEvidence[0].repo;
+  if (evidenceRepository !== undefined && evidenceRepository !== packet.payload.repository_id) {
+    fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt PR repository conflicts with packet authority');
+  }
   if (Number.isInteger(target.pr_number) && prEvidence.some(entry => entry.pr_number !== target.pr_number)) {
     fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt PR number conflicts with packet target');
   }
   let prNumber = Number.isInteger(target.pr_number) ? target.pr_number : undefined;
   if (prNumber === undefined) prNumber = prEvidence[0]?.pr_number;
-  const matchingEvidence = prEvidence.filter(entry => entry.pr_number === prNumber && typeof entry?.url === 'string');
-  if (new Set(matchingEvidence.map(entry => entry.url)).size > 1) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt contains ambiguous PR URLs');
+  const matchingEvidence = prEvidence;
   if (typeof target.url === 'string' && matchingEvidence.some(entry => entry.url !== target.url)) {
     fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt PR URL conflicts with packet target');
   }
@@ -542,6 +546,19 @@ function deriveLinkage(packet, receipt, gates) {
     head: packet.payload.target_head,
     ...(prNumber === undefined ? {} : { pr_number: prNumber }),
     ...(typeof target.url === 'string' || evidenceUrl ? { url: target.url ?? evidenceUrl } : {}),
+    ...(typeof target.git_common_dir === 'string' ? { git_common_dir: target.git_common_dir } : {}),
+    gate_ids: [...gates.ids],
+  };
+}
+
+function packetLinkage(packet, gates) {
+  const target = packet.payload.target ?? {};
+  return {
+    issue_id: packet.payload.issue_id,
+    repository_id: packet.payload.repository_id,
+    head: packet.payload.target_head,
+    ...(Number.isInteger(target.pr_number) ? { pr_number: target.pr_number } : {}),
+    ...(typeof target.url === 'string' ? { url: target.url } : {}),
     ...(typeof target.git_common_dir === 'string' ? { git_common_dir: target.git_common_dir } : {}),
     gate_ids: [...gates.ids],
   };
@@ -822,7 +839,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
     const packet = buildPacket(input, live);
     assertContract(packet, WORK_PACKET_SCHEMA, { issueRevision: live.issueRevision, workflowConfigRevision: live.workflowConfigRevision, capabilityManifestDigest: live.capabilityDigest, exactHead: live.head.head });
     assertPacketLiveBindings(packet, live);
-    return { packet: snapshot(packet, 'WorkPacket', { allowGitCommonDir: 'target' }), linkage: deriveLinkage(packet, { payload: { evidence_refs: [] } }, live.gates) };
+    return { packet: snapshot(packet, 'WorkPacket', { allowGitCommonDir: 'target' }), linkage: packetLinkage(packet, live.gates) };
   }
 
   async function acceptRunReceipt(rawInput = {}) {
