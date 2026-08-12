@@ -518,6 +518,7 @@ function deriveLinkage(packet, receipt, gates) {
     head: packet.payload.target_head,
     ...(prNumber === undefined ? {} : { pr_number: prNumber }),
     ...(typeof target.url === 'string' || evidenceUrl ? { url: target.url ?? evidenceUrl } : {}),
+    ...(typeof target.git_common_dir === 'string' ? { git_common_dir: target.git_common_dir } : {}),
     gate_ids: [...gates.ids],
   };
 }
@@ -661,8 +662,8 @@ function projectTrace(trace, target) {
   if (gapEvidence !== undefined && !Array.isArray(gapEvidence)) fail('PR_LIFECYCLE_INVALID_INPUT', 'public PR trace gap evidence is malformed');
   const gaps = gapEvidence ?? [];
   if (gaps.some(gap => typeof gap === 'string'
-    && (gap === 'pull_requests:overflow' || /^iterations:.*:overflow$/.test(gap)))) {
-    fail('PR_LIFECYCLE_REPLAY_CONFLICT', 'public PR trace is truncated');
+    && (gap === 'pull_requests:overflow' || /^iterations:.*:(?:missing|incomplete|overflow)$/.test(gap)))) {
+    fail('PR_LIFECYCLE_REPLAY_CONFLICT', 'public PR trace authority evidence is incomplete');
   }
   if (requests.length > MAX_TRACE_SCAN_ROWS) {
     fail('PR_LIFECYCLE_INVALID_INPUT', 'public PR trace rows exceed lifecycle bounds');
@@ -681,6 +682,9 @@ function projectTrace(trace, target) {
     matches.push({
       number: dataProperty(request, 'number'),
       repo: dataProperty(request, 'repo'),
+      ...(typeof dataProperty(request, 'git_common_dir') === 'string'
+        ? { git_common_dir: dataProperty(request, 'git_common_dir') }
+        : {}),
       head_sha: dataProperty(request, 'head_sha'),
       issue_id: dataProperty(request, 'issue_id'),
       iterations: iterations.map(projectTraceIteration),
@@ -711,7 +715,10 @@ function traceLinkageRow(trace, linkage) {
   if (!trace || typeof trace !== 'object' || Array.isArray(trace)) fail('PR_LIFECYCLE_UNAVAILABLE', 'public PR trace is unavailable');
   if (!Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage');
   if (!Array.isArray(trace.pull_requests)) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'public PR trace has no durable pull-request linkage');
-  const candidates = trace.pull_requests.filter((entry) => Number(entry?.number) === linkage.pr_number);
+  const numbered = trace.pull_requests.filter((entry) => Number(entry?.number) === linkage.pr_number);
+  const candidates = linkage.git_common_dir !== undefined && numbered.some(entry => typeof entry?.git_common_dir === 'string')
+    ? numbered.filter(entry => entry.git_common_dir === linkage.git_common_dir)
+    : numbered;
   if (candidates.length > 1) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'public PR trace contains ambiguous duplicate PR rows');
   if (candidates.length === 0) return null;
   const match = candidates[0];
@@ -726,18 +733,24 @@ function assertTraceLinkage(trace, linkage, packet, receipt) {
 }
 
 function stableResult(kind, packet, receipt, linkage) {
+  const { git_common_dir: _gitCommonDir, ...publicLinkage } = linkage;
   return kind === 'accepted'
-    ? { accepted: true, packet_hash: packet.content_hash, receipt_hash: receipt.content_hash, run_id: receipt.payload.run_id, attempt_id: receipt.payload.attempt_id, linkage }
-    : { merged: true, packet_hash: packet.content_hash, receipt_hash: receipt.content_hash, run_id: receipt.payload.run_id, linkage };
+    ? { accepted: true, packet_hash: packet.content_hash, receipt_hash: receipt.content_hash, run_id: receipt.payload.run_id, attempt_id: receipt.payload.attempt_id, linkage: publicLinkage }
+    : { merged: true, packet_hash: packet.content_hash, receipt_hash: receipt.content_hash, run_id: receipt.payload.run_id, linkage: publicLinkage };
 }
 
-function mergeTargetKey(linkage) {
+function lifecycleTargetKey(linkage) {
   return createHash('sha256').update(canonicalize({
     issue_id: linkage.issue_id,
     repository_id: linkage.repository_id,
     pr_number: linkage.pr_number,
     head: linkage.head,
+    git_common_dir: linkage.git_common_dir,
   })).digest('hex');
+}
+
+function lifecycleSemanticKey(packet) {
+  return createHash('sha256').update(requiredString(packetSemanticIdentity(packet), 'packet semantic identity')).digest('hex');
 }
 
 function mergeIdempotencyKey(packet, receipt, linkage) {
@@ -748,6 +761,7 @@ function mergeIdempotencyKey(packet, receipt, linkage) {
     repository_id: linkage.repository_id,
     pr_number: linkage.pr_number,
     head: linkage.head,
+    git_common_dir: linkage.git_common_dir,
   })).digest('hex');
   return `pr-merge:${digest}`;
 }
@@ -760,24 +774,27 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
   }
   if (!liveProbes || typeof liveProbes !== 'object' || Array.isArray(liveProbes)) throw new TypeError('liveProbes must be an object');
   if (typeof receiptVerifier !== 'function') throw new TypeError('receiptVerifier must be a function');
-  const mergeTargets = new Map();
+  const lifecycleTurns = new Map();
   const confirmedMerges = new Map();
 
-  async function withMergeTarget(linkage, operation) {
-    const key = mergeTargetKey(linkage);
-    const predecessor = mergeTargets.get(key);
-    if (!predecessor && mergeTargets.size >= MAX_ACTIVE_MERGE_TARGETS) {
-      fail('PR_LIFECYCLE_UNAVAILABLE', 'merge serialization capacity is exhausted');
+  async function withLifecycleCoordination(packet, linkage, operation) {
+    const keys = [...new Set([lifecycleTargetKey(linkage), lifecycleSemanticKey(packet)])].sort();
+    const predecessors = keys.map(key => lifecycleTurns.get(key)).filter(Boolean);
+    const newKeyCount = keys.filter(key => !lifecycleTurns.has(key)).length;
+    if (lifecycleTurns.size + newKeyCount > MAX_ACTIVE_MERGE_TARGETS) {
+      fail('PR_LIFECYCLE_UNAVAILABLE', 'lifecycle serialization capacity is exhausted');
     }
     let release;
     const turn = new Promise(resolve => { release = resolve; });
-    mergeTargets.set(key, turn);
-    if (predecessor) await predecessor;
+    keys.forEach(key => lifecycleTurns.set(key, turn));
+    await Promise.all(predecessors);
     try {
       return await operation();
     } finally {
       release();
-      if (mergeTargets.get(key) === turn) mergeTargets.delete(key);
+      keys.forEach(key => {
+        if (lifecycleTurns.get(key) === turn) lifecycleTurns.delete(key);
+      });
     }
   }
 
@@ -847,26 +864,28 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
       || (phase === 'opened' ? typeof linkage.url !== 'string' : typeof target.url !== 'string')) {
       fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'receipt acceptance requires authoritative PR linkage fields');
     }
-    const trace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
-    traceLinkageRow(trace, linkage);
-    const durable = durableAcceptance(trace, packet, receipt);
-    if (durable) assertTraceLinkage(trace, linkage, packet, receipt);
-    else if (phase === 'opened') {
-      await callMethod(provider, 'recordPrLinkage', [{
-        phase: 'opened',
-        git_common_dir: target.git_common_dir,
-        repo: linkage.repository_id,
-        number: linkage.pr_number,
-        branch: target.branch,
-        url: linkage.url,
-        occurred_at: receipt.payload.ended_at ?? receipt.created_at,
-        work_packet: packet,
-        run_receipt: receipt,
-      }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true });
-      const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
-      assertTraceLinkage(persistedTrace, linkage, packet, receipt);
-    }
-    return stableResult('accepted', packet, receipt, linkage);
+    return withLifecycleCoordination(packet, linkage, async () => {
+      const trace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
+      traceLinkageRow(trace, linkage);
+      const durable = durableAcceptance(trace, packet, receipt);
+      if (durable) assertTraceLinkage(trace, linkage, packet, receipt);
+      else if (phase === 'opened') {
+        await callMethod(provider, 'recordPrLinkage', [{
+          phase: 'opened',
+          git_common_dir: target.git_common_dir,
+          repo: linkage.repository_id,
+          number: linkage.pr_number,
+          branch: target.branch,
+          url: linkage.url,
+          occurred_at: receipt.payload.ended_at ?? receipt.created_at,
+          work_packet: packet,
+          run_receipt: receipt,
+        }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true });
+        const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
+        assertTraceLinkage(persistedTrace, linkage, packet, receipt);
+      }
+      return stableResult('accepted', packet, receipt, linkage);
+    });
   }
 
   async function mergeWorkPacket(rawInput = {}) {
@@ -886,7 +905,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
     await authenticateReceipt(receiptVerifier, packet, receipt, timeoutMs);
     const linkage = deriveLinkage(packet, receipt, live.gates);
     if (!Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage');
-    return withMergeTarget(linkage, async () => {
+    return withLifecycleCoordination(packet, linkage, async () => {
       const trace = await readLifecycleTrace(provider, linkage, timeoutMs, packet.payload.target?.git_common_dir);
       // The authoritative PR number is validated before trace I/O; the trace then rejects
       // semantic-identity, packet-hash, and run-id replay conflicts before any merge effect.
