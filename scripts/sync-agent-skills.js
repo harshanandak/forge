@@ -87,6 +87,7 @@ function ambiguousCanonicalPaths(root, runGit) {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   })).filter(entry => entry.startsWith('S ')).map(entry => normalizedRepoPath(entry.slice(2))));
+  const ignoredWorktree = gitIgnoredCanonicalPaths(root, runGit);
   const filesystemPrefixes = listCanonicalSkills(root).map(({ name }) => `skills/${name}/`);
   const canonicalPrefixKeys = new Set(filesystemPrefixes.map(normalizedRepoPath));
   for (const entry of indexedEntries) {
@@ -103,9 +104,15 @@ function ambiguousCanonicalPaths(root, runGit) {
     .filter(participatesInMirror)) recordNormalizedPath(skipWorktree, repoPath);
   const worktree = new Map();
   for (const prefix of filesystemPrefixes) {
-    walkRegularFiles(path.join(root, prefix), (_file, relative) => recordNormalizedPath(worktree, `${prefix}${relative}`));
+    const sourceRoot = path.join(root, prefix);
+    walkRegularFiles(
+      sourceRoot,
+      (_file, relative) => recordNormalizedPath(worktree, `${prefix}${relative}`),
+      sourceRoot,
+      (relative, entry) => entry.isSymbolicLink()
+        && ignoredWorktree.has(normalizedRepoPath(`${prefix}${relative}`)),
+    );
   }
-  const ignoredWorktree = gitIgnoredCanonicalPaths(root, runGit);
   for (const key of ignoredWorktree) {
     if (!indexed.has(key)) worktree.delete(key);
   }
@@ -149,16 +156,18 @@ function indexedFile(root, repoPath, runGit) {
   });
 }
 
-function walkRegularFiles(root, visit, current = root) {
+function walkRegularFiles(root, visit, current = root, shouldSkip = () => false) {
   if (!fs.existsSync(current)) return;
   const currentStat = fs.lstatSync(current);
   if (!currentStat.isDirectory() || currentStat.isSymbolicLink()) throw new Error(`skill sync path is not a real directory: ${current}`);
   for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
     const entryPath = path.join(current, entry.name);
+    const relative = toRepoPath(path.relative(root, entryPath));
+    if (shouldSkip(relative, entry)) continue;
     const stat = fs.lstatSync(entryPath);
     if (stat.isSymbolicLink()) throw new Error(`skill sync refuses symlink: ${entryPath}`);
-    if (stat.isDirectory()) walkRegularFiles(root, visit, entryPath);
-    else if (stat.isFile()) visit(entryPath, toRepoPath(path.relative(root, entryPath)));
+    if (stat.isDirectory()) walkRegularFiles(root, visit, entryPath, shouldSkip);
+    else if (stat.isFile()) visit(entryPath, relative);
   }
 }
 
@@ -195,7 +204,8 @@ function changedSkillFiles(root, runGit = execFileSync, ignoredCanonical = gitIg
         if (error.code !== 'ENOENT') throw error;
       }
       changed.push({ path: repoPath, canonical, writeIntent: 'update' });
-    });
+    }, sourceRoot, (relative, entry) => entry.isSymbolicLink()
+      && ignoredCanonical.has(normalizedRepoPath(`skills/${name}/${relative}`)));
   }
   walkRegularFiles(mirror, (mirrorPath, relative) => {
     const canonicalPath = path.join(root, 'skills', relative);
@@ -227,6 +237,18 @@ function changedSkillFiles(root, runGit = execFileSync, ignoredCanonical = gitIg
     changed.push({ path: repoPath, canonical: priorContent, writeIntent: 'delete' });
   }
   return changed;
+}
+
+function sameSkillChanges(expected, actual) {
+  if (expected.length !== actual.length) return false;
+  const byPath = new Map(actual.map(file => [normalizedRepoPath(file.path), file]));
+  if (byPath.size !== actual.length) return false;
+  return expected.every(file => {
+    const candidate = byPath.get(normalizedRepoPath(file.path));
+    return candidate
+      && candidate.writeIntent === file.writeIntent
+      && candidate.canonical.equals(file.canonical);
+  });
 }
 
 async function syncAgentSkills(options = {}) {
@@ -271,7 +293,18 @@ async function syncAgentSkills(options = {}) {
     authorizations.push({ ...file, capabilityId: authorization.capabilityId });
   }
 
-  const excludeRelativePaths = new Set([...ignoredCanonical]
+  const refreshedIgnoredCanonical = gitIgnoredCanonicalPaths(root, runGit);
+  rejectIgnoredSkillDescriptors(root, refreshedIgnoredCanonical);
+  const refreshedAmbiguousCanonical = ambiguousCanonicalPaths(root, runGit);
+  if (refreshedAmbiguousCanonical.size > 0) {
+    throw new Error(`canonical skill state changed during authorization: ${[...refreshedAmbiguousCanonical].join(', ')}`);
+  }
+  const refreshedChanged = changedSkillFiles(root, runGit, refreshedIgnoredCanonical);
+  if (!sameSkillChanges(changed, refreshedChanged)) {
+    throw new Error('canonical skill state changed during authorization');
+  }
+
+  const excludeRelativePaths = new Set([...refreshedIgnoredCanonical]
     .map(repoPath => repoPath.slice('skills/'.length)));
   const { written } = populateCodexRepoSkills({
     sourceRoot: root,

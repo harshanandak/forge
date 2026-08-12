@@ -199,6 +199,79 @@ describe('command-owned agent skill sync', () => {
     }
   }, 30_000);
 
+  test('rechecks unselected canonical skills after awaited authorization', async () => {
+    const { root, run } = parityFixture();
+    let authorizations = 0;
+    let completions = 0;
+    try {
+      fs.mkdirSync(path.join(root, 'skills/alpha'), { recursive: true });
+      fs.mkdirSync(path.join(root, '.agents/skills/alpha'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'skills/alpha/SKILL.md'), 'alpha base\n');
+      fs.writeFileSync(path.join(root, '.agents/skills/alpha/SKILL.md'), 'alpha base\n');
+      expect(run(['add', '.']).status).toBe(0);
+      expect(run(['commit', '-m', 'add alpha']).status).toBe(0);
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'review staged\n');
+      expect(run(['add', 'skills/review/SKILL.md']).status).toBe(0);
+
+      await expect(syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-auth-race-owner' },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          fs.writeFileSync(path.join(root, 'skills/alpha/SKILL.md'), 'alpha autosave\n');
+          return { success: true, capabilityId: 'review-capability' };
+        },
+        completeAuthorization: async () => {
+          completions += 1;
+          return { success: true };
+        },
+      })).rejects.toThrow('canonical skill state changed during authorization');
+
+      expect(authorizations).toBe(1);
+      expect(completions).toBe(0);
+      expect(fs.readFileSync(path.join(root, '.agents/skills/alpha/SKILL.md'), 'utf8')).toBe('alpha base\n');
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/alpha/SKILL.md');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('rechecks unselected generated mirrors after awaited authorization', async () => {
+    const { root, run } = parityFixture();
+    let authorizations = 0;
+    let completions = 0;
+    try {
+      fs.mkdirSync(path.join(root, 'skills/alpha'), { recursive: true });
+      fs.mkdirSync(path.join(root, '.agents/skills/alpha'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'skills/alpha/SKILL.md'), 'alpha base\n');
+      fs.writeFileSync(path.join(root, '.agents/skills/alpha/SKILL.md'), 'alpha base\n');
+      expect(run(['add', '.']).status).toBe(0);
+      expect(run(['commit', '-m', 'add alpha']).status).toBe(0);
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'review staged\n');
+      expect(run(['add', 'skills/review/SKILL.md']).status).toBe(0);
+
+      await expect(syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-mirror-race-owner' },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          fs.writeFileSync(path.join(root, '.agents/skills/alpha/SKILL.md'), 'external mirror edit\n');
+          return { success: true, capabilityId: 'review-capability' };
+        },
+        completeAuthorization: async () => {
+          completions += 1;
+          return { success: true };
+        },
+      })).rejects.toThrow('canonical skill state changed during authorization');
+
+      expect(authorizations).toBe(1);
+      expect(completions).toBe(0);
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/alpha/SKILL.md');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   test('defers sync when staged canonical bytes have a later unstaged edit', async () => {
     const root = fixture();
     const run = args => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
@@ -723,6 +796,39 @@ describe('command-owned agent skill sync', () => {
       expect(fs.existsSync(path.join(root, 'skills/review', ignoredName))).toBe(true);
       expect(fs.existsSync(path.join(root, '.agents/skills/review', ignoredName))).toBe(false);
       expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain(`.agents/skills/review/${ignoredName}`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('ignores a Git-ignored symlink inside a canonical skill directory', async () => {
+    const { root, run } = parityFixture();
+    let authorizations = 0;
+    try {
+      fs.writeFileSync(path.join(root, '.gitignore'), '/skills/**/*.tmp\n');
+      expect(run(['add', '.gitignore']).status).toBe(0);
+      expect(run(['commit', '-m', 'ignore temp links']).status).toBe(0);
+      const target = path.join(root, 'ignored-link-target');
+      fs.mkdirSync(target);
+      fs.symlinkSync(target, path.join(root, 'skills/review/editor.tmp'), process.platform === 'win32' ? 'junction' : 'dir');
+
+      const result = await syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-ignored-symlink-owner' },
+        execFileSync: (command, args, options) => {
+          if (args[0] === 'ls-files' && args.includes('--ignored')) return 'skills/review/editor.tmp\0';
+          return execFileSync(command, args, options);
+        },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      });
+
+      expect(result.changed).toEqual([]);
+      expect(authorizations).toBe(0);
+      expect(fs.existsSync(path.join(root, '.agents/skills/review/editor.tmp'))).toBe(false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
