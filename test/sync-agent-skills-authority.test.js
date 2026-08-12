@@ -538,6 +538,33 @@ describe('command-owned agent skill sync', () => {
     }
   }, 30_000);
 
+  test('ignores unstaged metadata outside canonical skill directories', async () => {
+    const { root, run } = parityFixture();
+    let authorizations = 0;
+    try {
+      fs.writeFileSync(path.join(root, 'skills/coverage.json'), '{"base":true}\n');
+      expect(run(['add', 'skills/coverage.json']).status).toBe(0);
+      expect(run(['commit', '-m', 'add coverage metadata']).status).toBe(0);
+      fs.writeFileSync(path.join(root, 'skills/coverage.json'), '{"edited":true}\n');
+
+      const result = await syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-metadata-owner' },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      });
+
+      expect(result.changed).toEqual([]);
+      expect(authorizations).toBe(0);
+      expect(run(['diff', '--name-only']).stdout).toContain('skills/coverage.json');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   const ambiguityMatrix = [
     {
       name: 'staged canonical addition removed from the worktree',

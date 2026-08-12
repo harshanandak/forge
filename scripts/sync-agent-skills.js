@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { populateCodexRepoSkills, resolveCodexRepoSkillsDir } = require('../lib/codex-skills');
-const { listCanonicalSkills } = require('../lib/skills-sync');
+const { isValidSkillName, listCanonicalSkills } = require('../lib/skills-sync');
 const {
   completeGeneratedHarnessSkillAuthorization,
   issueGeneratedHarnessSkillAuthorization,
@@ -55,12 +55,22 @@ function ambiguousCanonicalPaths(root, runGit) {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }));
-  const indexed = new Set(indexedEntries.map(entry => entry.slice(2)));
+  const canonicalPrefixes = new Set(listCanonicalSkills(root).map(({ name }) => `skills/${name}/`));
+  for (const entry of indexedEntries) {
+    const match = /^skills\/([^/]+)\/SKILL\.md$/.exec(entry.slice(2));
+    if (match && isValidSkillName(match[1])) canonicalPrefixes.add(`skills/${match[1]}/`);
+  }
+  const participatesInMirror = repoPath => [...canonicalPrefixes].some(prefix => repoPath.startsWith(prefix));
+  const indexed = new Set(indexedEntries.map(entry => entry.slice(2)).filter(participatesInMirror));
   const skipWorktree = new Set(indexedEntries
     .filter(entry => entry.startsWith('S '))
-    .map(entry => entry.slice(2)));
+    .map(entry => entry.slice(2))
+    .filter(participatesInMirror));
   const worktree = new Set();
-  walkRegularFiles(path.join(root, 'skills'), (_file, relative) => worktree.add(`skills/${relative}`));
+  walkRegularFiles(path.join(root, 'skills'), (_file, relative) => {
+    const repoPath = `skills/${relative}`;
+    if (participatesInMirror(repoPath)) worktree.add(repoPath);
+  });
   for (const repoPath of skipWorktree) {
     const mirrorPath = `.agents/${repoPath}`;
     if (!fs.existsSync(path.join(root, repoPath)) && fs.existsSync(path.join(root, mirrorPath))) {
