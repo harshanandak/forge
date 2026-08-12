@@ -253,7 +253,10 @@ describe('public PR lifecycle authority', () => {
         .then(() => process.exitCode = 2)
         .catch(error => process.stdout.write(error.code));
     `;
-    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 1000 });
+    // GitHub-hosted Windows runners can spend more than a second starting Node and
+    // loading the package; the provider deadline under test is still only 25ms.
+    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 5000 });
+    expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
     expect(result.stdout).toBe('PR_LIFECYCLE_UNAVAILABLE');
   });
