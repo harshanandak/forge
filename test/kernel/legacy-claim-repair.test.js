@@ -458,6 +458,14 @@ describe('legacy claim repair backup and apply', () => {
 			actor: 'approved-operator',
 		}, fixture.config);
 		expect(replay).toEqual({ ...applied, replayed: true });
+		fs.rmSync(backupPath, { force: true });
+		const replayWithoutBackup = await fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config);
+		expect(replayWithoutBackup).toEqual({ ...applied, replayed: true });
 		const receipts = await fixture.driver.queryAll(
 			"SELECT * FROM kernel_events WHERE event_type = 'claim.repair';",
 			fixture.config,
