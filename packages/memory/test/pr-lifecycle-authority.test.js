@@ -1,12 +1,15 @@
 'use strict';
 
 const { describe, expect, test } = require('bun:test');
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
 const {
   computeContentHash,
   validateContractStructure,
 } = require('@forge/memory-contracts');
 const {
   PR_LIFECYCLE_PROVIDER_METHODS,
+  PrLifecycleAuthorityError,
   createPrLifecycleAuthority,
 } = require('../src/pr-lifecycle-authority');
 
@@ -231,6 +234,75 @@ describe('public PR lifecycle authority', () => {
       })).toThrowError(expect.objectContaining({ code: 'PR_LIFECYCLE_INVALID_INPUT' }));
       expect(calls).toBe(0);
     }
+  });
+
+  test('keeps a standalone child alive until an unresponsive provider times out', () => {
+    const sourcePath = path.resolve(__dirname, '../src/pr-lifecycle-authority.js');
+    const script = `
+      const { createPrLifecycleAuthority } = require(${JSON.stringify(sourcePath)});
+      const authority = createPrLifecycleAuthority({
+        provider: {
+          runIssueOperation: async () => null,
+          recordPrLinkage: async () => null,
+          readTrace: async () => ({ pull_requests: [] }),
+          readIssue: async () => new Promise(() => {}),
+        },
+        timeoutMs: 25,
+      });
+      authority.issueWorkPacket({ issue_id: 'issue-1', repository_id: 'github.com/example/forge', actor_id: 'agent-1' })
+        .then(() => process.exitCode = 2)
+        .catch(error => process.stdout.write(error.code));
+    `;
+    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 1000 });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('PR_LIFECYCLE_UNAVAILABLE');
+  });
+
+  test('accepts real home git directories only in the trusted linkage field', async () => {
+    for (const gitCommonDir of ['C:\\Users\\alice\\repo\\.git', '/Users/alice/repo/.git', '/home/alice/repo/.git']) {
+      const workPacket = packet({ payload: { target: { pr_number: 514, branch: 'codex/test', git_common_dir: gitCommonDir, url: 'https://example.test/pull/514' } } });
+      let seenGitCommonDir;
+      const authority = createPrLifecycleAuthority({
+        provider: provider({ recordPrLinkage: async value => { seenGitCommonDir = value.git_common_dir; return { ok: true }; } }),
+      });
+      const accepted = await authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket) });
+      expect(accepted).toMatchObject({ accepted: true });
+      expect(seenGitCommonDir).toBe(gitCommonDir);
+      expect(JSON.stringify(accepted)).not.toContain(gitCommonDir);
+    }
+    const authority = createPrLifecycleAuthority({ provider: provider() });
+    await expect(authority.issueWorkPacket({
+      issue_id: ISSUE_ID,
+      repository_id: REPOSITORY_ID,
+      actor_id: 'agent-1',
+      target: { git_common_dir: '/Users/alice/repo/.git' },
+      objective: '/Users/alice/repo/.git',
+    })).rejects.toMatchObject({ code: 'PR_LIFECYCLE_PRIVACY_REJECTED' });
+  });
+
+  test('preserves stable input errors and rejects missing merge linkage URL before writing', async () => {
+    const stable = createPrLifecycleAuthority({ provider: provider() });
+    const invalid = { ...packet(), payload: { ...packet().payload, receipt_requirements: [] } };
+    invalid.content_hash = computeContentHash(invalid);
+    await expect(stable.acceptRunReceipt({ packet: invalid, receipt: receipt(invalid) }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_CONTRACT_INVALID' });
+
+    let writes = 0;
+    const workPacket = packet({ payload: { target: { pr_number: 514, branch: 'codex/test', git_common_dir: '/repo/.git' } } });
+    const authority = createPrLifecycleAuthority({ provider: provider({ recordPrLinkage: async () => { writes += 1; } }) });
+    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket) }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_UNAVAILABLE' });
+    expect(writes).toBe(0);
+
+    const stableProvider = provider({
+      recordPrLinkage: async () => {
+        throw new PrLifecycleAuthorityError('PR_LIFECYCLE_LINKAGE_CONFLICT', 'stable provider error');
+      },
+    });
+    const stableAuthority = createPrLifecycleAuthority({ provider: stableProvider });
+    const stablePacket = packet();
+    await expect(stableAuthority.acceptRunReceipt({ packet: stablePacket, receipt: receipt(stablePacket) }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
   });
 
   test('issues a hash-valid packet only after live readiness and ownership checks', async () => {

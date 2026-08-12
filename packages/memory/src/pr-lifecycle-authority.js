@@ -43,6 +43,14 @@ const PR_LIFECYCLE_PROVIDER_METHODS = Object.freeze([
   'readTrace',
 ]);
 
+function isCanonicalGitCommonDir(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 512) return false;
+  const normalized = value.replaceAll('\\', '/');
+  return normalized === '/repo/.git'
+    || /^\/(?:Users|home)\/[^/\s]+(?:\/[^/\s]+)+\/\.git$/i.test(normalized)
+    || /^[A-Za-z]:\/Users\/[^/\s]+(?:\/[^/\s]+)+\/\.git$/i.test(normalized);
+}
+
 class PrLifecycleAuthorityError extends Error {
   constructor(code, message, options = {}) {
     super(message, Object.hasOwn(options, 'cause') ? { cause: options.cause } : undefined);
@@ -59,13 +67,21 @@ function containsSecret(value) {
   return typeof value === 'string' && SECRET_PATTERNS.some((pattern) => pattern.test(value));
 }
 
-function containsForbidden(value) {
-  if (typeof value === 'string') return containsSecret(value) || USER_PATH_PATTERN.test(value);
-  if (Array.isArray(value)) return value.some(containsForbidden);
+function containsForbidden(value, options = {}, context = '') {
+  if (typeof value === 'string') {
+    if (context === 'git_common_dir' && isCanonicalGitCommonDir(value)) return false;
+    return containsSecret(value) || USER_PATH_PATTERN.test(value);
+  }
+  if (Array.isArray(value)) return value.some(item => containsForbidden(item, options, context));
   if (value && typeof value === 'object') {
-    return Object.entries(value).some(([key, nested]) => (
-      containsSecret(key) || USER_PATH_PATTERN.test(key) || containsForbidden(nested)
-    ));
+    return Object.entries(value).some(([key, nested]) => {
+      if (containsSecret(key) || USER_PATH_PATTERN.test(key)) return true;
+      const allowsGitCommonDir = key === 'git_common_dir'
+        && (options.allowGitCommonDir === true
+          || options.allowGitCommonDir === 'target' && context === 'target');
+      if (allowsGitCommonDir) return !isCanonicalGitCommonDir(nested);
+      return containsForbidden(nested, options, key === 'target' ? 'target' : '');
+    });
   }
   return false;
 }
@@ -74,13 +90,20 @@ function isForbiddenKey(key) {
   return containsSecret(key) || USER_PATH_PATTERN.test(key);
 }
 
-function redactForbidden(value) {
-  if (typeof value === 'string') return containsForbidden(value) ? '[redacted]' : value;
-  if (Array.isArray(value)) return value.map(redactForbidden);
+function redactForbidden(value, options = {}, context = '') {
+  if (typeof value === 'string') return containsForbidden(value, options, context) ? '[redacted]' : value;
+  if (Array.isArray(value)) return value.map(item => redactForbidden(item, options, context));
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value)
       .filter(([key]) => !isForbiddenKey(key))
-      .map(([key, item]) => [key, redactForbidden(item)]));
+      .map(([key, item]) => {
+        const allowsGitCommonDir = key === 'git_common_dir'
+          && (options.allowGitCommonDir === true
+            || options.allowGitCommonDir === 'target' && context === 'target');
+        return [key, allowsGitCommonDir && isCanonicalGitCommonDir(item)
+          ? item
+          : redactForbidden(item, options, key === 'target' ? 'target' : '')];
+      }));
   }
   return value;
 }
@@ -93,10 +116,10 @@ function snapshot(value, label, options = {}) {
       maxBytes: MAX_SNAPSHOT_BYTES,
     });
     const bounded = JSON.parse(serialized);
-    if (options.privacy !== 'sanitize' && containsForbidden(bounded)) {
+    if (options.privacy !== 'sanitize' && containsForbidden(bounded, options)) {
       fail('PR_LIFECYCLE_PRIVACY_REJECTED', `${label} contains a secret or absolute user path`);
     }
-    return options.privacy === 'sanitize' ? redactForbidden(bounded) : bounded;
+    return options.privacy === 'sanitize' ? redactForbidden(bounded, options) : bounded;
   } catch (error) {
     if (error instanceof PrLifecycleAuthorityError) throw error;
     fail('PR_LIFECYCLE_INVALID_INPUT', `${label} must be bounded plain JSON`, { cause: error });
@@ -152,7 +175,6 @@ async function invokeWithDeadline(target, method, args, timeoutMs) {
       controller?.abort();
       reject(new ProviderDeadlineError('provider operation deadline exceeded'));
     }, timeoutMs);
-    timer.unref?.();
   });
   try {
     return await Promise.race([operation, deadline]);
@@ -167,10 +189,11 @@ async function callMethod(target, method, args, label, options = {}) {
   let result;
   try {
     const invocationArgs = options.sanitize
-      ? snapshot(args, `${label} provider input`, { privacy: 'sanitize' })
+      ? snapshot(args, `${label} provider input`, { privacy: 'sanitize', allowGitCommonDir: options.allowGitCommonDir })
       : args;
     result = await invokeWithDeadline(target, method, invocationArgs, timeoutMs);
   } catch (error) {
+    if (error instanceof PrLifecycleAuthorityError) throw error;
     fail('PR_LIFECYCLE_UNAVAILABLE', `${label} provider operation failed`, { cause: error });
   }
   try {
@@ -519,19 +542,19 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
   }
 
   async function issueWorkPacket(rawInput = {}) {
-    const input = snapshot(rawInput, 'issue input');
+    const input = snapshot(rawInput, 'issue input', { allowGitCommonDir: 'target' });
     requiredString(input.actor_id ?? input.actorId, 'actor_id');
     optionalPlainObjectField(input, 'receipt_requirements');
     const live = await readLive(input);
     const packet = buildPacket(input, live);
     assertContract(packet, WORK_PACKET_SCHEMA, { issueRevision: live.issueRevision, workflowConfigRevision: live.workflowConfigRevision, capabilityManifestDigest: live.capabilityDigest, exactHead: live.head.head });
     assertPacketLiveBindings(packet, live);
-    return { packet: snapshot(packet, 'WorkPacket'), linkage: deriveLinkage(packet, { payload: { evidence_refs: [] } }, live.gates) };
+    return { packet: snapshot(packet, 'WorkPacket', { allowGitCommonDir: 'target' }), linkage: deriveLinkage(packet, { payload: { evidence_refs: [] } }, live.gates) };
   }
 
   async function acceptRunReceipt(rawInput = {}) {
-    const input = snapshot(rawInput, 'receipt input');
-    const packet = snapshot(input.packet, 'WorkPacket');
+    const input = snapshot(rawInput, 'receipt input', { allowGitCommonDir: 'target' });
+    const packet = snapshot(input.packet, 'WorkPacket', { allowGitCommonDir: 'target' });
     const receipt = snapshot(input.receipt, 'RunReceipt');
     assertContract(packet, WORK_PACKET_SCHEMA);
     assertContract(receipt, RUN_RECEIPT_SCHEMA);
@@ -566,7 +589,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
         occurred_at: receipt.payload.ended_at ?? receipt.created_at,
         work_packet: packet,
         run_receipt: receipt,
-      }], 'PR linkage', { sanitize: true, timeoutMs });
+      }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs });
       const persistedTrace = await callMethod(provider, 'readTrace', [traceTarget], 'trace', { timeoutMs });
       assertTraceLinkage(persistedTrace, linkage, packet, receipt);
     }
@@ -574,8 +597,8 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
   }
 
   async function mergeWorkPacket(rawInput = {}) {
-    const input = snapshot(rawInput, 'merge input');
-    const packet = snapshot(input.packet, 'WorkPacket');
+    const input = snapshot(rawInput, 'merge input', { allowGitCommonDir: 'target' });
+    const packet = snapshot(input.packet, 'WorkPacket', { allowGitCommonDir: 'target' });
     const receipt = snapshot(input.receipt, 'RunReceipt');
     assertContract(packet, WORK_PACKET_SCHEMA);
     assertContract(receipt, RUN_RECEIPT_SCHEMA);
@@ -597,8 +620,8 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
       const method = 'mergePr';
       await callMethod(provider, method, [{ packet, receipt, linkage }], 'merge', { sanitize: true, timeoutMs });
     } else {
-      if (!target || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string') fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage fields');
-      await callMethod(provider, 'recordPrLinkage', [{ phase: 'merged', git_common_dir: target.git_common_dir, repo: packet.payload.repository_id, number: linkage.pr_number, branch: target.branch, url: target.url, occurred_at: receipt.payload.ended_at ?? receipt.created_at, work_packet: packet, run_receipt: receipt }], 'PR linkage', { sanitize: true, timeoutMs });
+      if (!target || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string' || typeof target.url !== 'string') fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage fields');
+      await callMethod(provider, 'recordPrLinkage', [{ phase: 'merged', git_common_dir: target.git_common_dir, repo: packet.payload.repository_id, number: linkage.pr_number, branch: target.branch, url: target.url, occurred_at: receipt.payload.ended_at ?? receipt.created_at, work_packet: packet, run_receipt: receipt }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs });
     }
     return stableResult('merged', packet, receipt, linkage);
   }
