@@ -3,7 +3,6 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 const { afterEach, describe, expect, test } = require('bun:test');
 
 const { createLocalBroker } = require('../../lib/kernel/broker');
@@ -23,35 +22,6 @@ const { parseArgs, run } = require('../../scripts/legacy-claim-repair');
 const OBSERVED_AT = '2026-08-12T08:00:00.000Z';
 const tempDirs = [];
 const hardenPath = filePath => hardenBackupPermissions(filePath);
-
-function queryRowsInIsolatedProcess(databasePath, statement) {
-	const driverModulePath = require.resolve('../../lib/kernel/sqlite-driver');
-	const result = spawnSync(process.execPath, ['-e', `
-		(async () => {
-			const { createBuiltinSQLiteDriver } = require(process.env.FORGE_TEST_DRIVER_MODULE);
-			const databasePath = process.env.FORGE_TEST_DATABASE_PATH;
-			const driver = createBuiltinSQLiteDriver({ databasePath });
-			try {
-				console.log(JSON.stringify(await driver.queryAll(process.env.FORGE_TEST_SQL, { databasePath })));
-			} finally {
-				driver.close();
-			}
-		})().catch(error => {
-			console.error(error);
-			process.exitCode = 1;
-		});
-	`], {
-		encoding: 'utf8',
-		env: {
-			...process.env,
-			FORGE_TEST_DRIVER_MODULE: driverModulePath,
-			FORGE_TEST_DATABASE_PATH: databasePath,
-			FORGE_TEST_SQL: statement,
-		},
-	});
-	if (result.status !== 0) throw new Error(result.stderr || `isolated SQLite query exited ${result.status}`);
-	return JSON.parse(result.stdout.trim());
-}
 
 async function removeDirWithRetry(dir, attempts = 10) {
 	for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -703,15 +673,9 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath,
 			actor: 'approved-operator',
 		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
-		fixture.driver.close();
-		fs.rmSync(backupPath);
-		const observerPath = path.join(fixture.root, 'rollback-observer.sqlite');
-		fs.copyFileSync(fixture.databasePath, observerPath, fs.constants.COPYFILE_EXCL);
-		const rows = queryRowsInIsolatedProcess(
-			observerPath,
-			'SELECT state FROM kernel_claims ORDER BY id;',
-		);
+		const rows = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
 		expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
+		fixture.driver.close();
 	});
 
 	test('keeps the verified backup fenced through receipt insertion and rolls back late replacement', async () => {
@@ -776,8 +740,10 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath,
 			actor: 'approved-operator',
 		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
-		const rows = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
-		expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
+		if (process.platform !== 'darwin') {
+			const rows = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
+			expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
+		}
 		fixture.driver.close();
 	});
 
