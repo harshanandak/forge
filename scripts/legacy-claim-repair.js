@@ -8,7 +8,7 @@ const {
 
 const HELP = `Usage:
   bun scripts/legacy-claim-repair.js --dry-run --database <kernel.sqlite> --backup <separate.sqlite> --at <canonical-UTC>
-  bun scripts/legacy-claim-repair.js --apply --database <kernel.sqlite> --backup <separate.sqlite> --at <canonical-UTC> --approved-digest <sha256>
+  bun scripts/legacy-claim-repair.js --apply --database <kernel.sqlite> --backup <separate.sqlite> --at <canonical-UTC> --approved-digest <sha256> --actor <identity>
 
 The tool never discovers or repairs a database automatically. Apply is rejected
 without a verified restorable backup and the exact human-approved dry-run digest.`;
@@ -29,6 +29,7 @@ function parseArgs(argv = []) {
 			'--backup': 'backupPath',
 			'--at': 'observedAt',
 			'--approved-digest': 'approvedDigest',
+			'--actor': 'actor',
 		};
 		const name = names[arg];
 		if (!name) throw new Error(`Unknown argument: ${arg}`);
@@ -44,8 +45,14 @@ function parseArgs(argv = []) {
 	if (result.mode === 'apply' && !result.approvedDigest) {
 		throw new Error('--apply requires --approved-digest');
 	}
+	if (result.mode === 'apply' && !result.actor) {
+		throw new Error('--apply requires --actor');
+	}
 	if (result.mode === 'dry-run' && result.approvedDigest) {
 		throw new Error('--approved-digest is valid only with --apply');
+	}
+	if (result.mode === 'dry-run' && result.actor) {
+		throw new Error('--actor is valid only with --apply');
 	}
 	return result;
 }
@@ -70,7 +77,7 @@ async function run(options, dependencies = {}) {
 			observedAt: options.observedAt,
 			approvedDigest: options.approvedDigest,
 			backupPath: options.backupPath,
-			actor: process.env.FORGE_ACTOR || 'human-operator',
+			actor: options.actor,
 		});
 		return { ok: true, receipt };
 	} finally {

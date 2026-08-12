@@ -11,7 +11,9 @@ claim acquisition, or any background process.
   that literal time for approval and apply.
 - Dry-run does not mutate Kernel authority. It creates a separate SQLite backup,
   restores that backup into an isolated temporary database, and requires the
-  restored snapshot digest to equal the source preflight digest.
+  restored snapshot digest to equal the source preflight digest. On POSIX
+  systems, both the temporary and final backup are forced to owner-only `0600`
+  permissions before the backup is accepted.
 - Preflight fails closed on integrity, foreign-key, schema/index, duplicate-row,
   state, timestamp, or read faults.
 - Apply requires the human-approved exact digest and the verified backup. It
@@ -43,12 +45,12 @@ backup proof. Approval must name the exact `preflight.digest`.
 Do not run this command until the exact dry-run digest is explicitly approved.
 
 ```powershell
-$env:FORGE_ACTOR = '<operator-id>'
 bun scripts/legacy-claim-repair.js --apply `
   --database <absolute-kernel.sqlite> `
   --backup <absolute-separate-backup.sqlite> `
   --at <same-literal-observation-time> `
-  --approved-digest <approved-preflight-digest>
+  --approved-digest <approved-preflight-digest> `
+  --actor <operator-id>
 ```
 
 ## Restore boundary

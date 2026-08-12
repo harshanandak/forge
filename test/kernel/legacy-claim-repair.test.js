@@ -6,7 +6,10 @@ const path = require('node:path');
 const { afterEach, describe, expect, test } = require('bun:test');
 
 const { createLocalBroker } = require('../../lib/kernel/broker');
-const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+const {
+	createBuiltinSQLiteDriver,
+	hardenBackupPermissions,
+} = require('../../lib/kernel/sqlite-driver');
 const {
 	createVerifiedClaimRepairBackup,
 	verifyClaimRepairBackup,
@@ -102,6 +105,14 @@ describe('legacy claim repair preflight', () => {
 		expect(() => parseArgs([
 			'--apply', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
 		])).toThrow('--apply requires --approved-digest');
+		expect(() => parseArgs([
+			'--apply', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
+			'--approved-digest', 'a'.repeat(64),
+		])).toThrow('--apply requires --actor');
+		expect(parseArgs([
+			'--apply', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
+			'--approved-digest', 'a'.repeat(64), '--actor', 'operator@example.com',
+		])).toMatchObject({ mode: 'apply', actor: 'operator@example.com' });
 		expect(parseArgs([
 			'--dry-run', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
 		])).toEqual({
@@ -110,6 +121,25 @@ describe('legacy claim repair preflight', () => {
 			backupPath: 'backup.sqlite',
 			observedAt: OBSERVED_AT,
 		});
+	});
+
+	test('hardens backup files to owner-only mode and fails closed when permissions remain broad', () => {
+		const calls = [];
+		hardenBackupPermissions('backup.sqlite', {
+			platform: 'linux',
+			fsApi: {
+				chmodSync(filePath, mode) { calls.push({ filePath, mode }); },
+				statSync() { return { mode: 0o100600 }; },
+			},
+		});
+		expect(calls).toEqual([{ filePath: 'backup.sqlite', mode: 0o600 }]);
+		expect(() => hardenBackupPermissions('backup.sqlite', {
+			platform: 'linux',
+			fsApi: {
+				chmodSync() {},
+				statSync() { return { mode: 0o100644 }; },
+			},
+		})).toThrow('owner-only permissions');
 	});
 
 	test('classifies terminal rows before expiry and emits deterministic privacy-safe counts', async () => {
