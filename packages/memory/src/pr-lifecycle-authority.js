@@ -508,11 +508,30 @@ function itemReceiptHash(item) {
   return item.run_receipt_hash ?? item.receipt_hash ?? item.receipt?.content_hash;
 }
 
+function packetSemanticIdentity(packet) {
+  const payload = packet?.payload;
+  if (!payload || typeof payload !== 'object') return null;
+  return JSON.stringify([
+    payload.issue_id,
+    payload.expected_issue_revision,
+    payload.packet_id,
+    payload.packet_revision,
+    payload.repository_id,
+    payload.target_head,
+  ]);
+}
+
+function itemPacketIdentity(item) {
+  return item.work_packet_identity ?? item.packet_identity ?? packetSemanticIdentity(item.packet);
+}
+
 function durableAcceptance(trace, packet, receipt) {
   const items = traceItems(trace);
   const exact = items.find((item) => itemPacketHash(item) === packet.content_hash && itemReceiptHash(item) === receipt.content_hash);
   if (exact) return exact;
+  const identity = packetSemanticIdentity(packet);
   const conflict = items.find((item) => itemPacketHash(item) === packet.content_hash
+    || identity && itemPacketIdentity(item) === identity
     || item.receipt?.payload?.run_id === receipt.payload.run_id
     || item.run_id === receipt.payload.run_id);
   if (conflict) fail('PR_LIFECYCLE_REPLAY_CONFLICT', 'durable trace conflicts with accepted content');
@@ -537,10 +556,14 @@ function projectTraceIteration(iteration) {
     ?? dataProperty(iteration, 'receipt_hash')
     ?? dataProperty(receipt, 'content_hash');
   const runId = dataProperty(iteration, 'run_id') ?? dataProperty(receiptPayload, 'run_id');
+  const packetIdentity = dataProperty(iteration, 'work_packet_identity')
+    ?? dataProperty(iteration, 'packet_identity')
+    ?? packetSemanticIdentity(packet);
   return {
     ...(packetHash === undefined ? {} : { work_packet_hash: packetHash }),
     ...(receiptHash === undefined ? {} : { run_receipt_hash: receiptHash }),
     ...(runId === undefined ? {} : { run_id: runId }),
+    ...(packetIdentity === null || packetIdentity === undefined ? {} : { work_packet_identity: packetIdentity }),
   };
 }
 
@@ -586,15 +609,21 @@ async function readLifecycleTrace(provider, linkage, timeoutMs) {
   });
 }
 
-function assertTraceLinkage(trace, linkage, packet, receipt) {
+function traceLinkageRow(trace, linkage) {
   if (!trace || typeof trace !== 'object' || Array.isArray(trace)) fail('PR_LIFECYCLE_UNAVAILABLE', 'public PR trace is unavailable');
   if (!Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage');
   if (!Array.isArray(trace.pull_requests)) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'public PR trace has no durable pull-request linkage');
   const candidates = trace.pull_requests.filter((entry) => Number(entry?.number) === linkage.pr_number);
-  if (candidates.length === 0) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'public PR trace does not contain the accepted PR');
   if (candidates.length > 1) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'public PR trace contains ambiguous duplicate PR rows');
+  if (candidates.length === 0) return null;
   const match = candidates[0];
   if (match.repo !== linkage.repository_id || match.head_sha !== linkage.head || match.issue_id !== linkage.issue_id) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'public PR trace conflicts with accepted linkage');
+  return match;
+}
+
+function assertTraceLinkage(trace, linkage, packet, receipt) {
+  const match = traceLinkageRow(trace, linkage);
+  if (!match) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'public PR trace does not contain the accepted PR');
   if (!durableAcceptance({ pull_requests: [match] }, packet, receipt)) fail('PR_LIFECYCLE_NOT_ACCEPTED', 'public PR trace lacks accepted packet and receipt evidence');
 }
 
@@ -668,7 +697,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     assertContract(packet, WORK_PACKET_SCHEMA, { issueRevision: live.issueRevision, workflowConfigRevision: live.workflowConfigRevision, capabilityManifestDigest: live.capabilityDigest, exactHead: live.head.head });
     assertPacketLiveBindings(packet, live);
     assertContract(receipt, RUN_RECEIPT_SCHEMA, { packetHash: packet.content_hash, workflowConfigRevision: packet.payload.workflow_config_revision, capabilityManifestDigest: packet.payload.capability_manifest_digest, exactHead: packet.payload.target_head });
-    const phase = assertReceiptEvidence(packet, receipt);
+    assertReceiptEvidence(packet, receipt);
     if (receipt.provenance.actor_id !== packet.provenance.actor_id || receipt.provenance.actor_id !== live.ownership.actor_id) {
       fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'RunReceipt provenance actor does not match live ownership');
     }
@@ -679,24 +708,9 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
       fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'receipt acceptance requires authoritative PR linkage fields');
     }
     const trace = await readLifecycleTrace(provider, linkage, timeoutMs);
+    traceLinkageRow(trace, linkage);
     const durable = durableAcceptance(trace, packet, receipt);
-    if (durable) {
-      assertTraceLinkage(trace, linkage, packet, receipt);
-    } else {
-      await callMethod(provider, 'recordPrLinkage', [{
-        phase,
-        git_common_dir: target.git_common_dir,
-        repo: linkage.repository_id,
-        number: linkage.pr_number,
-        branch: target.branch,
-        url: target.url,
-        occurred_at: receipt.payload.ended_at ?? receipt.created_at,
-        work_packet: packet,
-        run_receipt: receipt,
-      }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true });
-      const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs);
-      assertTraceLinkage(persistedTrace, linkage, packet, receipt);
-    }
+    if (durable) assertTraceLinkage(trace, linkage, packet, receipt);
     return stableResult('accepted', packet, receipt, linkage);
   }
 
@@ -717,16 +731,19 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     const trace = await readLifecycleTrace(provider, linkage, timeoutMs);
     // Compare durable packet/receipt content before linkage checks so a reused run id with
     // divergent content fails closed even when the incoming packet omitted a PR number.
-    durableAcceptance(trace, packet, receipt);
-    assertTraceLinkage(trace, linkage, packet, receipt);
-    const target = packet.payload.target;
-    if (typeof provider.mergePr === 'function') {
-      const method = 'mergePr';
-      await callMethod(provider, method, [{ packet, receipt, linkage }], 'merge', { sanitize: true, timeoutMs, reconcileOnTimeout: true });
-    } else {
-      if (!target || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string' || typeof target.url !== 'string') fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage fields');
-      await callMethod(provider, 'recordPrLinkage', [{ phase: 'merged', git_common_dir: target.git_common_dir, repo: packet.payload.repository_id, number: linkage.pr_number, branch: target.branch, url: target.url, occurred_at: receipt.payload.ended_at ?? receipt.created_at, work_packet: packet, run_receipt: receipt }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true });
+    const durable = durableAcceptance(trace, packet, receipt);
+    if (durable) {
+      assertTraceLinkage(trace, linkage, packet, receipt);
+      return stableResult('merged', packet, receipt, linkage);
     }
+    const target = packet.payload.target;
+    if (!target || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string' || typeof target.url !== 'string') fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage fields');
+    if (typeof provider.mergePr !== 'function') fail('PR_LIFECYCLE_UNAVAILABLE', 'merge provider operation is unavailable');
+    const mergeResult = await callMethod(provider, 'mergePr', [{ packet, receipt, linkage }], 'merge', { sanitize: true, timeoutMs, reconcileOnTimeout: true });
+    if (mergeResult?.merged !== true && mergeResult?.success !== true) fail('PR_LIFECYCLE_UNAVAILABLE', 'merge provider did not confirm success');
+    await callMethod(provider, 'recordPrLinkage', [{ phase: 'merged', git_common_dir: target.git_common_dir, repo: packet.payload.repository_id, number: linkage.pr_number, branch: target.branch, url: target.url, occurred_at: receipt.payload.ended_at ?? receipt.created_at, work_packet: packet, run_receipt: receipt }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true });
+    const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs);
+    assertTraceLinkage(persistedTrace, linkage, packet, receipt);
     return stableResult('merged', packet, receipt, linkage);
   }
 

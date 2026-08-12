@@ -101,6 +101,12 @@ function receipt(workPacket, overrides = {}) {
   return value;
 }
 
+function packetIdentity(workPacket) {
+  const payload = workPacket.payload;
+  return JSON.stringify([payload.issue_id, payload.expected_issue_revision, payload.packet_id,
+    payload.packet_revision, payload.repository_id, payload.target_head]);
+}
+
 function provider(overrides = {}) {
   let durable = null;
   const overrideRecordPrLinkage = overrides.recordPrLinkage;
@@ -114,7 +120,8 @@ function provider(overrides = {}) {
         repo: durable.packet.payload.repository_id,
         head_sha: durable.packet.payload.target_head,
         issue_id: durable.packet.payload.issue_id,
-        iterations: [{ work_packet_hash: durable.packet.content_hash, run_receipt_hash: durable.receipt.content_hash }],
+        iterations: [{ type: `pr.${durable.phase ?? 'merged'}`, work_packet_hash: durable.packet.content_hash,
+          work_packet_identity: packetIdentity(durable.packet), run_receipt_hash: durable.receipt.content_hash }],
       }] };
       return { iterations: [{ work_packet_hash: durable.packet.content_hash, run_receipt_hash: durable.receipt.content_hash }] };
     },
@@ -131,7 +138,7 @@ function provider(overrides = {}) {
   base.recordPrLinkage = async (value) => {
     const result = overrideRecordPrLinkage ? await overrideRecordPrLinkage(value) : { accepted: true };
     durable = value.work_packet && value.run_receipt
-      ? { packet: value.work_packet, receipt: value.run_receipt }
+      ? { phase: value.phase, packet: value.work_packet, receipt: value.run_receipt }
       : durable;
     return result;
   };
@@ -271,6 +278,7 @@ describe('public PR lifecycle authority', () => {
       });
       const accepted = await authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' });
       expect(accepted).toMatchObject({ accepted: true });
+      await authority.mergeWorkPacket({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' });
       expect(seenGitCommonDir).toBe(gitCommonDir);
       expect(JSON.stringify(accepted)).not.toContain(gitCommonDir);
     }
@@ -327,7 +335,8 @@ describe('public PR lifecycle authority', () => {
     });
     const stableAuthority = createPrLifecycleAuthority({ provider: stableProvider });
     const stablePacket = packet();
-    await expect(stableAuthority.acceptRunReceipt({ packet: stablePacket, receipt: receipt(stablePacket), session_id: 'session-1' }))
+    await stableAuthority.acceptRunReceipt({ packet: stablePacket, receipt: receipt(stablePacket), session_id: 'session-1' });
+    await expect(stableAuthority.mergeWorkPacket({ packet: stablePacket, receipt: receipt(stablePacket), session_id: 'session-1' }))
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
   });
 
@@ -415,9 +424,9 @@ describe('public PR lifecycle authority', () => {
       timeoutMs: 5,
     });
     const started = Date.now();
-    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
-      .resolves.toMatchObject({ accepted: true });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(10);
+    await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
+      .resolves.toMatchObject({ merged: true });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(5);
     expect(writes).toBe(1);
   });
 
@@ -525,9 +534,26 @@ describe('public PR lifecycle authority', () => {
     const first = await authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' });
     const replay = await authority.acceptRunReceipt({ packet: structuredClone(workPacket), receipt: receipt(workPacket), session_id: 'session-1' });
     expect(replay).toEqual(first);
+    expect(recorded).toBe(0);
+    await authority.mergeWorkPacket({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' });
     expect(recorded).toBe(1);
     const divergent = receipt(workPacket, { payload: { attempt_id: 'attempt-2' } });
     await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: divergent, session_id: 'session-1' }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_REPLAY_CONFLICT' });
+  });
+
+  test('rejects a persisted packet that reuses semantic identity with different content', async () => {
+    const firstPacket = packet({ payload: { allowed_mutations: ['pr.opened'] } });
+    const firstReceipt = receipt(firstPacket, { payload: {
+      mutations_attempted: ['pr.opened'], mutations_authorized: ['pr.opened'], run_id: 'run-old',
+    } });
+    const secondPacket = packet({ payload: { allowed_mutations: ['pr.merged'] } });
+    const authority = createPrLifecycleAuthority({ provider: provider({ readTrace: async () => ({ pull_requests: [{
+      number: 514, repo: REPOSITORY_ID, head_sha: HEAD, issue_id: ISSUE_ID,
+      iterations: [{ type: 'pr.opened', work_packet_hash: firstPacket.content_hash,
+        work_packet_identity: packetIdentity(firstPacket), run_receipt_hash: firstReceipt.content_hash, run_id: 'run-old' }],
+    }] }) }) });
+    await expect(authority.acceptRunReceipt({ packet: secondPacket, receipt: receipt(secondPacket), session_id: 'session-1' }))
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_REPLAY_CONFLICT' });
   });
 
@@ -543,6 +569,39 @@ describe('public PR lifecycle authority', () => {
     expect(result.merged).toBe(true);
     expect(merges).toBe(1);
     expect(result.linkage).toMatchObject({ issue_id: ISSUE_ID, repository_id: REPOSITORY_ID, head: HEAD });
+  });
+
+  test('records terminal linkage only after an explicitly successful merge', async () => {
+    const events = [];
+    let durable;
+    const workPacket = packet();
+    const runReceipt = receipt(workPacket);
+    const authority = createPrLifecycleAuthority({ provider: provider({
+      mergePr: async () => { events.push('merge'); return { merged: true }; },
+      recordPrLinkage: async (value) => { events.push(`record:${value.phase}`); durable = value; return { ok: true }; },
+      readTrace: async () => durable ? { pull_requests: [{
+        number: 514, repo: REPOSITORY_ID, head_sha: HEAD, issue_id: ISSUE_ID,
+        iterations: [{ type: 'pr.merged', work_packet_hash: durable.work_packet.content_hash, run_receipt_hash: durable.run_receipt.content_hash }],
+      }] } : { pull_requests: [] },
+    }) });
+    await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
+    expect(events).toEqual([]);
+    await authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
+    expect(events).toEqual(['merge', 'record:merged']);
+  });
+
+  test('does not record terminal linkage when the merge provider reports failure', async () => {
+    let writes = 0;
+    const workPacket = packet();
+    const runReceipt = receipt(workPacket);
+    const authority = createPrLifecycleAuthority({ provider: provider({
+      mergePr: async () => ({ merged: false }),
+      recordPrLinkage: async () => { writes += 1; return { ok: true }; },
+    }) });
+    await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
+    await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_UNAVAILABLE' });
+    expect(writes).toBe(0);
   });
 
   test('requires a completed merged phase before invoking merge or merged linkage', async () => {
@@ -575,7 +634,7 @@ describe('public PR lifecycle authority', () => {
     expect(merges).toBe(0);
   });
 
-  test('requires durable accepted linkage before returning receipt acceptance', async () => {
+  test('keeps receipt acceptance non-terminal until merge succeeds', async () => {
     let writes = 0;
     let linkageWrite;
     const workPacket = packet({ payload: {
@@ -594,22 +653,26 @@ describe('public PR lifecycle authority', () => {
     });
     const result = await authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' });
     expect(result.accepted).toBe(true);
+    expect(writes).toBe(0);
+    await authority.mergeWorkPacket({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' });
     expect(writes).toBe(1);
   });
 
-  test('fails closed when durable accepted linkage cannot be written or proved', async () => {
+  test('fails closed when terminal linkage cannot be written or proved after merge', async () => {
     const workPacket = packet({ payload: {
       target: { pr_number: 514, branch: 'codex/test', git_common_dir: '/repo/.git', url: 'https://example.test/pull/514' },
     } });
     const writeFails = createPrLifecycleAuthority({
       provider: provider({ recordPrLinkage: async () => { throw new Error('write failed'); } }),
     });
-    await expect(writeFails.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
+    await writeFails.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' });
+    await expect(writeFails.mergeWorkPacket({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_UNAVAILABLE' });
     const traceMissing = createPrLifecycleAuthority({
       provider: provider({ recordPrLinkage: async () => ({ ok: true }), readTrace: async () => ({ pull_requests: [] }) }),
     });
-    await expect(traceMissing.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
+    await traceMissing.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' });
+    await expect(traceMissing.mergeWorkPacket({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
   });
 
@@ -638,6 +701,8 @@ describe('public PR lifecycle authority', () => {
       mutations_authorized: ['pr.merged'],
     } }), session_id: 'session-1' });
     expect(result.accepted).toBe(true);
+    expect(phases).toEqual([]);
+    await authority.mergeWorkPacket({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' });
     expect(phases).toEqual(['merged']);
   });
 
@@ -680,7 +745,8 @@ describe('public PR lifecycle authority', () => {
         },
       }),
     });
-    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
+    await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
+    await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_NOT_ACCEPTED' });
     expect(traceTargetSeen).toEqual({ issue_id: ISSUE_ID, repository_id: REPOSITORY_ID, repo: REPOSITORY_ID, pr_number: 514 });
   });
@@ -740,28 +806,16 @@ describe('public PR lifecycle authority', () => {
 
   test('rejects ambiguous duplicate PR trace rows before merge side effects', async () => {
     let merges = 0;
-    let durable;
-    let traceReads = 0;
     const workPacket = packet();
     const runReceipt = receipt(workPacket);
-    const row = () => ({ number: 514, repo: REPOSITORY_ID, head_sha: HEAD, issue_id: ISSUE_ID, iterations: [{
-      work_packet_hash: durable.work_packet.content_hash,
-      run_receipt_hash: durable.run_receipt.content_hash,
-    }] });
+    const row = () => ({ number: 514, repo: REPOSITORY_ID, head_sha: HEAD, issue_id: ISSUE_ID, iterations: [] });
     const authority = createPrLifecycleAuthority({
       provider: provider({
-        recordPrLinkage: async (value) => { durable = value; return { ok: true }; },
-        readTrace: async () => {
-          traceReads += 1;
-          if (traceReads < 2) return { pull_requests: [] };
-          if (traceReads === 2) return { pull_requests: [row()] };
-          return { pull_requests: [row(), row()] };
-        },
+        readTrace: async () => ({ pull_requests: [row(), row()] }),
         mergePr: async () => { merges += 1; return { merged: true }; },
       }),
     });
-    await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
-    await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
+    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
     expect(merges).toBe(0);
   });
@@ -858,7 +912,7 @@ describe('public PR lifecycle authority', () => {
     expect(result.packet.payload.target_head).toBe(HEAD);
   });
 
-  test('uses the public recordPrLinkage operation for merge persistence', async () => {
+  test('requires an explicit merge provider before public merge persistence', async () => {
     const calls = [];
     const base = provider({
       mergePr: undefined,
@@ -874,12 +928,9 @@ describe('public PR lifecycle authority', () => {
     } });
     const authority = createPrLifecycleAuthority({ provider: base });
     await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
-    await authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
-    expect(calls).toHaveLength(2);
-    expect(calls[0]).toMatchObject({ phase: 'merged', repo: REPOSITORY_ID, number: 514 });
-    expect(calls[1]).toMatchObject({ phase: 'merged', repo: REPOSITORY_ID, number: 514 });
-    expect(calls[1].work_packet).toEqual(workPacket);
-    expect(calls[1].run_receipt).toEqual(runReceipt);
+    await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_UNAVAILABLE' });
+    expect(calls).toHaveLength(0);
   });
 
   test('reads the public trace seam before using accepted linkage for merge', async () => {
@@ -900,8 +951,8 @@ describe('public PR lifecycle authority', () => {
   test('reconstructs replay authority from durable trace across facade instances', async () => {
     let durable = null;
     const durableProvider = provider({
-      recordPrLinkage: async ({ work_packet: acceptedPacket, run_receipt: acceptedReceipt }) => {
-        durable = { packet: acceptedPacket, receipt: acceptedReceipt };
+      recordPrLinkage: async ({ phase, work_packet: acceptedPacket, run_receipt: acceptedReceipt }) => {
+        durable = { phase, packet: acceptedPacket, receipt: acceptedReceipt };
         return { accepted: true };
       },
       readTrace: async () => durable ? {
@@ -911,7 +962,9 @@ describe('public PR lifecycle authority', () => {
           head_sha: durable.packet.payload.target_head,
           issue_id: durable.packet.payload.issue_id,
           iterations: [{
+            type: `pr.${durable.phase}`,
             work_packet_hash: durable.packet.content_hash,
+            work_packet_identity: packetIdentity(durable.packet),
             run_receipt_hash: durable.receipt.content_hash,
             packet: durable.packet,
             receipt: durable.receipt,
@@ -923,6 +976,7 @@ describe('public PR lifecycle authority', () => {
     const runReceipt = receipt(workPacket);
     const first = createPrLifecycleAuthority({ provider: durableProvider });
     await first.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
+    await first.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
     const second = createPrLifecycleAuthority({ provider: durableProvider });
     const replay = await second.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
     expect(replay.accepted).toBe(true);
@@ -973,11 +1027,20 @@ describe('public PR lifecycle authority', () => {
     let merges = 0;
     const workPacket = packet({ payload: { target: { pr_number: 514, branch: 'codex/test', git_common_dir: '/repo/.git', url: 'https://example.test/pull/514' } } });
     const runReceipt = receipt(workPacket);
-    const authority = createPrLifecycleAuthority({ provider: provider({ mergePr: async () => { merges += 1; return { ok: true }; } }) });
+    let durable;
+    const authority = createPrLifecycleAuthority({ provider: provider({
+      mergePr: async () => { merges += 1; return { merged: true }; },
+      recordPrLinkage: async value => { durable = value; return { ok: true }; },
+      readTrace: async () => durable ? { pull_requests: [{ number: 514, repo: REPOSITORY_ID, head_sha: HEAD,
+        issue_id: ISSUE_ID, iterations: [{ type: 'pr.merged', work_packet_hash: durable.work_packet.content_hash,
+          work_packet_identity: packetIdentity(durable.work_packet), run_receipt_hash: durable.run_receipt.content_hash }] }] }
+        : { pull_requests: [] },
+    }) });
     await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
+    await authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
     const divergent = receipt(workPacket, { payload: { validation: { status: 'PASS', note: 'different' } } });
     await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: divergent, session_id: 'session-1' }))
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_REPLAY_CONFLICT' });
-    expect(merges).toBe(0);
+    expect(merges).toBe(1);
   });
 });
