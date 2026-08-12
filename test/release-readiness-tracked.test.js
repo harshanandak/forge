@@ -38,6 +38,13 @@ afterEach(() => {
 });
 
 describe('auditBdCallSites is deterministic under working-tree pollution (1d4077d8)', () => {
+  test('keeps the trusted git PATH suppression on the flagged exec line', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-readiness.js'), 'utf8');
+    const gitSpawnLine = source.split(/\r?\n/).find((line) => line.includes("execFileSync('git'"));
+
+    expect(gitSpawnLine).toMatch(/trusted developer tool.*NOSONAR S4036$/);
+  });
+
   test('ignores untracked files dropped under a scan root', () => {
     const repo = makeRepo();
 
