@@ -28,18 +28,22 @@ function actorFromEnv(env) {
   return env.FORGE_ACTOR || env.USER || env.USERNAME || 'unknown';
 }
 
+function parseGitPaths(output) {
+  return output.split('\0').map(value => value.replace(/\\/g, '/')).filter(Boolean);
+}
+
 function generatedDriftPaths(root, runGit) {
   try {
     const commands = [
-      ['diff', '--cached', '--name-only', '--diff-filter=ACMRDT', '--', '.agents/skills'],
-      ['diff', '--name-only', '--diff-filter=ACMRDT', '--', '.agents/skills'],
-      ['ls-files', '--others', '--exclude-standard', '--', '.agents/skills'],
+      ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMRDT', '--', '.agents/skills'],
+      ['diff', '--name-only', '-z', '--diff-filter=ACMRDT', '--', '.agents/skills'],
+      ['ls-files', '-z', '--others', '--exclude-standard', '--', '.agents/skills'],
     ];
-    return new Set(commands.flatMap(args => runGit('git', args, {
+    return new Set(commands.flatMap(args => parseGitPaths(runGit('git', args, {
       cwd: root,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-    }).split(/\r?\n/).map(value => value.trim().replace(/\\/g, '/')).filter(Boolean)));
+    }))));
   } catch {
     return new Set();
   }
@@ -47,14 +51,14 @@ function generatedDriftPaths(root, runGit) {
 
 function unstagedCanonicalPaths(root, runGit) {
   const commands = [
-    ['diff', '--name-only', '--diff-filter=ACMRDT', '--', 'skills'],
-    ['ls-files', '--others', '--exclude-standard', '--', 'skills'],
+    ['diff', '--name-only', '-z', '--diff-filter=ACMRDT', '--', 'skills'],
+    ['ls-files', '-z', '--others', '--exclude-standard', '--', 'skills'],
   ];
-  return new Set(commands.flatMap(args => runGit('git', args, {
+  return new Set(commands.flatMap(args => parseGitPaths(runGit('git', args, {
     cwd: root,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-  }).split(/\r?\n/).map(value => value.trim().replace(/\\/g, '/')).filter(Boolean)));
+  }))));
 }
 
 function walkRegularFiles(root, visit, current = root) {
