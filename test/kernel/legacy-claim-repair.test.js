@@ -9,6 +9,7 @@ const { createLocalBroker } = require('../../lib/kernel/broker');
 const {
 	createBuiltinSQLiteDriver,
 	hardenBackupPermissions,
+	resolveWindowsPowerShellPath,
 } = require('../../lib/kernel/sqlite-driver');
 const {
 	cleanupRestoreProofDirectory,
@@ -138,6 +139,9 @@ describe('legacy claim repair preflight', () => {
 	});
 
 	test('hardens backup files to owner-only mode and fails closed when permissions remain broad', () => {
+		expect(resolveWindowsPowerShellPath({ SystemRoot: 'C:\\Windows' }))
+			.toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+		expect(() => resolveWindowsPowerShellPath({ SystemRoot: 'relative' })).toThrow('absolute SystemRoot');
 		const calls = [];
 		hardenBackupPermissions('backup.sqlite', {
 			platform: 'linux',
