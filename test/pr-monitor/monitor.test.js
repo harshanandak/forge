@@ -24,6 +24,41 @@ beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'prmon-m-')); di
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('runMonitorPass', () => {
+  test('uses durable Memory as authority when a monitor store is supplied', async () => {
+    const events = [];
+    const cursors = new Map();
+    const store = {
+      async appendEvent(event) { events.push(structuredClone(event)); },
+      async getEvent(id) {
+        const event = events.find(item => item.payload.event_id === id);
+        return event ? { envelope_json: JSON.stringify(event) } : null;
+      },
+      async readEventTail() {
+        return { events: events.map(event => ({ envelope_json: JSON.stringify(event) })), overflow: false, truncated_before_sequence: null };
+      },
+      async readDeliveryState(monitorId) {
+        return { cursors: [...cursors].map(([target, sequence]) => ({ monitor_id: monitorId, target, sequence })), outbox: [], terminal_receipt: null, overflow: { cursors: false, outbox: false } };
+      },
+      async recordDeliveryReceipt(receipt) {
+        const event = events.find(item => item.payload.event_id === receipt.payload.event_id);
+        cursors.set(receipt.payload.target, event.payload.sequence);
+      },
+    };
+    const ctx = {
+      dir, store, gather: async () => snap(), now,
+      monitorId: 'pr:acme-forge:1', ownerRunId: 'run-1', packetId: 'packet-1', subjectId: 'acme-forge#1',
+    };
+
+    const first = await runMonitorPass(ctx);
+    fs.rmSync(journal.snapshotPath(dir));
+    const restarted = await runMonitorPass(ctx);
+
+    expect(first.authority).toBe('memory');
+    expect(restarted.events).toEqual([]);
+    expect(events).toHaveLength(1);
+    expect(journal.readAllEvents(dir)).toHaveLength(1);
+  });
+
   test('first pass appends the baseline event and persists the snapshot', async () => {
     const res = await runMonitorPass({ dir, gather: async () => snap(), now });
     expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);

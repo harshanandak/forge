@@ -145,6 +145,30 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
     }));
   });
 
+  test('live monitor context builds the public Memory authority with stable Flow identity', async () => {
+    const store = { kind: 'monitor-store' };
+    let closed = false;
+    const built = await shepherdCmd.buildMonitorContext('7', root, {
+      buildContext: async () => ({
+        pr: '7', owner: 'acme', repo: 'forge', base: 'master', baseRef: 'origin/master',
+      }),
+      adapter: new (require('../../lib/adapters/pr-state-adapter').PrStateAdapter)({ gh: () => '', git: () => '' }),
+      resolveGitCommonDir: () => path.join(root, '.git'),
+      buildKernelDeps: async () => ({ kernelDriver: {}, kernelBroker: { close: async () => { closed = true; } } }),
+      createMonitorStore: () => store,
+    });
+
+    expect(built).toMatchObject({
+      store,
+      monitorId: 'pr:acme/forge:7',
+      ownerRunId: 'shepherd:acme/forge:7',
+      packetId: 'shepherd-packet:acme/forge:7',
+      subjectId: 'acme/forge#7',
+    });
+    await built.close();
+    expect(closed).toBe(true);
+  });
+
   test('runs an inline pass and returns NDJSON events since the cursor', async () => {
     const res = await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
       dir, gather: async () => snap(), now, watcherRunning: () => false,
