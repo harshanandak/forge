@@ -2,6 +2,7 @@ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const {
   listCanonicalSkills,
@@ -227,6 +228,43 @@ describe('skills-sync: checkSkillsSync', () => {
 
     const result = checkSkillsSync({ repoRoot: tmp });
     expect(result.drift.some((d) => d.skill === 'dev' && d.status === 'missing')).toBe(true);
+  });
+
+  test('ignores Git-ignored canonical artifacts omitted from generated mirrors', () => {
+    execFileSync('git', ['init'], { cwd: tmp, stdio: 'ignore' });
+    write('.gitignore', '/skills/**/*.tmp\n');
+    write('skills/plan/SKILL.md', 'plan');
+    write('skills/plan/editor.tmp', 'scratch');
+    populateAgentSkills({
+      sourceRoot: tmp,
+      targetSkillsDir: path.join(tmp, '.codex/skills'),
+      excludeRelativePaths: new Set(['plan/editor.tmp']),
+    });
+
+    const result = checkSkillsSync({ repoRoot: tmp });
+    expect(result.inSync).toBe(true);
+    expect(result.drift).toEqual([]);
+
+    write('.codex/skills/plan/editor.tmp', 'stale residue');
+    const residue = checkSkillsSync({ repoRoot: tmp });
+    expect(residue.inSync).toBe(false);
+    expect(residue.drift).toContainEqual({
+      agent: '.codex/skills', skill: 'plan', file: 'editor.tmp', status: 'extra',
+    });
+  });
+
+  test('does not exclude an ignored defining skill descriptor from drift', () => {
+    execFileSync('git', ['init'], { cwd: tmp, stdio: 'ignore' });
+    write('.gitignore', '/skills/*/SKILL.md\n');
+    write('skills/orphan/SKILL.md', 'ignored descriptor');
+    write('skills/orphan/README.md', 'sibling');
+    write('.codex/skills/orphan/README.md', 'sibling');
+
+    const result = checkSkillsSync({ repoRoot: tmp });
+    expect(result.inSync).toBe(false);
+    expect(result.drift).toContainEqual({
+      agent: '.codex/skills', skill: 'orphan', file: 'SKILL.md', status: 'missing',
+    });
   });
 
   test('exposes the standard agent skill dirs', () => {

@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { populateCodexRepoSkills, resolveCodexRepoSkillsDir } = require('../lib/codex-skills');
-const { isValidSkillName, listCanonicalSkills } = require('../lib/skills-sync');
+const { gitIgnoredCanonicalPaths, isValidSkillName, listCanonicalSkills } = require('../lib/skills-sync');
 const {
   completeGeneratedHarnessSkillAuthorization,
   issueGeneratedHarnessSkillAuthorization,
@@ -47,16 +47,6 @@ function generatedDriftPaths(root, runGit) {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }))));
-}
-
-function ignoredUntrackedPaths(root, runGit) {
-  return new Set(parseGitPaths(runGit('git', [
-    'ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--', 'skills',
-  ], {
-    cwd: root,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })).map(normalizedRepoPath));
 }
 
 function gitObjectHash(root, args, content, runGit) {
@@ -115,7 +105,7 @@ function ambiguousCanonicalPaths(root, runGit) {
   for (const prefix of filesystemPrefixes) {
     walkRegularFiles(path.join(root, prefix), (_file, relative) => recordNormalizedPath(worktree, `${prefix}${relative}`));
   }
-  const ignoredWorktree = ignoredUntrackedPaths(root, runGit);
+  const ignoredWorktree = gitIgnoredCanonicalPaths(root, runGit);
   for (const key of ignoredWorktree) {
     if (!indexed.has(key)) worktree.delete(key);
   }
@@ -181,7 +171,7 @@ function rejectIgnoredSkillDescriptors(root, ignoredCanonical) {
   }
 }
 
-function changedSkillFiles(root, runGit = execFileSync, ignoredCanonical = ignoredUntrackedPaths(root, runGit)) {
+function changedSkillFiles(root, runGit = execFileSync, ignoredCanonical = gitIgnoredCanonicalPaths(root, runGit)) {
   const mirror = resolveCodexRepoSkillsDir(root);
   const drift = generatedDriftPaths(root, runGit);
   const changed = [];
@@ -253,7 +243,7 @@ async function syncAgentSkills(options = {}) {
   }).trim();
   if (!/^[0-9a-f]{40}$/.test(sourceHead)) throw new Error('source HEAD is not a full lowercase commit SHA');
 
-  const ignoredCanonical = ignoredUntrackedPaths(root, runGit);
+  const ignoredCanonical = gitIgnoredCanonicalPaths(root, runGit);
   rejectIgnoredSkillDescriptors(root, ignoredCanonical);
   const ambiguousCanonical = ambiguousCanonicalPaths(root, runGit);
   for (const canonicalPath of ambiguousCanonical) {
