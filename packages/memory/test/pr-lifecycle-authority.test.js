@@ -533,6 +533,35 @@ describe('public PR lifecycle authority', () => {
     }
   });
 
+  test('retries a timed-out trace probe within the bounded reconciliation budget', async () => {
+    const workPacket = packet();
+    const runReceipt = receipt(workPacket);
+    let recorded = false;
+    let reads = 0;
+    const authority = createPrLifecycleAuthority({
+      provider: provider({
+        recordPrLinkage: async () => {
+          await new Promise(resolve => setTimeout(resolve, 15));
+          recorded = true;
+          return { ok: true };
+        },
+        readTrace: async () => {
+          reads += 1;
+          if (reads === 2) await new Promise(resolve => setTimeout(resolve, 11));
+          return recorded ? { pull_requests: [{
+            number: 514, repo: REPOSITORY_ID, head_sha: HEAD, issue_id: ISSUE_ID,
+            iterations: [{ type: 'pr.opened', work_packet_hash: workPacket.content_hash,
+              work_packet_identity: packetIdentity(workPacket), run_receipt_hash: runReceipt.content_hash }],
+          }] } : { pull_requests: [] };
+        },
+      }),
+      timeoutMs: 10,
+    });
+    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
+      .resolves.toMatchObject({ accepted: true });
+    expect(reads).toBeGreaterThanOrEqual(3);
+  });
+
   test('re-probes ownership and exact head at receipt acceptance', async () => {
     const workPacket = packet();
     const runReceipt = receipt(workPacket);

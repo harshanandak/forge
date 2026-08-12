@@ -768,17 +768,23 @@ async function readLifecycleTrace(provider, linkage, timeoutMs, gitCommonDir) {
 }
 
 async function reconcileLifecycleTrace(provider, linkage, packet, receipt, timeoutMs, gitCommonDir) {
-  const budgetMs = Math.max(timeoutMs, 10);
+  const budgetMs = Math.max(timeoutMs * 2, 10);
   const startedAt = performance.now();
   const remainingBudget = () => budgetMs - (performance.now() - startedAt);
   let trace;
   do {
     const remaining = Math.max(1, remainingBudget());
-    trace = await readLifecycleTrace(provider, linkage, Math.min(timeoutMs, remaining), gitCommonDir);
-    traceLinkageRow(trace, linkage);
-    if (durableAcceptance(trace, packet, receipt)) {
-      assertTraceLinkage(trace, linkage, packet, receipt);
-      return trace;
+    try {
+      trace = await readLifecycleTrace(provider, linkage, Math.min(timeoutMs, remaining), gitCommonDir);
+      traceLinkageRow(trace, linkage);
+      if (durableAcceptance(trace, packet, receipt)) {
+        assertTraceLinkage(trace, linkage, packet, receipt);
+        return trace;
+      }
+    } catch (error) {
+      if (!(error instanceof PrLifecycleAuthorityError)
+        || error.code !== 'PR_LIFECYCLE_UNAVAILABLE' || remainingBudget() <= 0) throw error;
+      continue;
     }
     const waitMs = Math.min(5, remainingBudget());
     if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
