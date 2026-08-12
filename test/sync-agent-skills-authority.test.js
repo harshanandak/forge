@@ -4,8 +4,8 @@ const { describe, expect, test } = require('bun:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
-const { changedSkillFiles, syncAgentSkills } = require('../scripts/sync-agent-skills');
+const { execFileSync, spawnSync } = require('node:child_process');
+const { changedSkillFiles, parseGitPaths, syncAgentSkills } = require('../scripts/sync-agent-skills');
 
 const HEAD = 'a'.repeat(40);
 
@@ -34,6 +34,39 @@ function parityFixture() {
 }
 
 describe('command-owned agent skill sync', () => {
+  test('preserves literal backslashes in NUL-delimited Git paths', () => {
+    expect(parseGitPaths('skills/review/notes\\guide.md\0')).toEqual(['skills/review/notes\\guide.md']);
+  });
+
+  if (path.sep === '/') {
+    test('syncs a literal-backslash sibling filename on supported platforms', async () => {
+      const root = parityFixture();
+      const canonicalPath = path.join(root.root, 'skills/review/notes\\guide.md');
+      const mirrorPath = path.join(root.root, '.agents/skills/review/notes\\guide.md');
+      try {
+        fs.writeFileSync(canonicalPath, 'canonical backslash bytes\n');
+        fs.writeFileSync(mirrorPath, 'old backslash bytes\n');
+        expect(root.run(['add', '.']).status).toBe(0);
+        expect(root.run(['commit', '-m', 'add backslash sibling']).status).toBe(0);
+        fs.writeFileSync(canonicalPath, 'updated backslash bytes\n');
+        expect(root.run(['add', 'skills/review/notes\\guide.md']).status).toBe(0);
+        let authorizedPath;
+        await syncAgentSkills({
+          root: root.root,
+          env: { FORGE_ACTOR: 'skill-backslash-owner' },
+          issueAuthorization: async (_root, params) => {
+            authorizedPath = params.path;
+            return { success: true, capabilityId: 'backslash-capability' };
+          },
+          completeAuthorization: async () => ({ success: true }),
+        });
+        expect(authorizedPath).toBe('.agents/skills/review/notes\\guide.md');
+      } finally {
+        fs.rmSync(root.root, { recursive: true, force: true });
+      }
+    }, 30_000);
+  }
+
   test('authorizes before writing, proves exact bytes, completes, then stages', async () => {
     const root = fixture();
     const calls = [];
@@ -196,6 +229,35 @@ describe('command-owned agent skill sync', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('fails closed when generated mirror drift inspection fails', async () => {
+    const { root, run } = parityFixture();
+    let authorizations = 0;
+    let staged = 0;
+    try {
+      await expect(syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-drift-inspection-owner' },
+        execFileSync: (command, args, options) => {
+          if (args[0] === 'diff' && args.at(-1) === '.agents/skills') {
+            throw new Error('forced generated drift inspection failure');
+          }
+          if (args[0] === 'add') staged += 1;
+          return execFileSync(command, args, options);
+        },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      })).rejects.toThrow('forced generated drift inspection failure');
+      expect(authorizations).toBe(0);
+      expect(staged).toBe(0);
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/SKILL.md');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   test('defers mirror deletion after an unstaged canonical deletion', async () => {
     const root = fixture();

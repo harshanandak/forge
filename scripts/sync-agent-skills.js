@@ -29,24 +29,24 @@ function actorFromEnv(env) {
 }
 
 function parseGitPaths(output) {
-  return output.split('\0').map(value => value.replace(/\\/g, '/')).filter(Boolean);
+  return output.split('\0').filter(Boolean);
+}
+
+function toRepoPath(value) {
+  return path.sep === '\\' ? value.replace(/\\/g, '/') : value;
 }
 
 function generatedDriftPaths(root, runGit) {
-  try {
-    const commands = [
-      ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMRDT', '--', '.agents/skills'],
-      ['diff', '--name-only', '-z', '--diff-filter=ACMRDT', '--', '.agents/skills'],
-      ['ls-files', '-z', '--others', '--exclude-standard', '--', '.agents/skills'],
-    ];
-    return new Set(commands.flatMap(args => parseGitPaths(runGit('git', args, {
-      cwd: root,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }))));
-  } catch {
-    return new Set();
-  }
+  const commands = [
+    ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMRDT', '--', '.agents/skills'],
+    ['diff', '--name-only', '-z', '--diff-filter=ACMRDT', '--', '.agents/skills'],
+    ['ls-files', '-z', '--others', '--exclude-standard', '--', '.agents/skills'],
+  ];
+  return new Set(commands.flatMap(args => parseGitPaths(runGit('git', args, {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }))));
 }
 
 function ambiguousCanonicalPaths(root, runGit) {
@@ -100,7 +100,7 @@ function walkRegularFiles(root, visit, current = root) {
     const stat = fs.lstatSync(entryPath);
     if (stat.isSymbolicLink()) throw new Error(`skill sync refuses symlink: ${entryPath}`);
     if (stat.isDirectory()) walkRegularFiles(root, visit, entryPath);
-    else if (stat.isFile()) visit(entryPath, path.relative(root, entryPath).replace(/\\/g, '/'));
+    else if (stat.isFile()) visit(entryPath, toRepoPath(path.relative(root, entryPath)));
   }
 }
 
@@ -230,4 +230,4 @@ async function main() {
 
 if (require.main === module) main();
 
-module.exports = { actorFromEnv, changedSkillFiles, syncAgentSkills };
+module.exports = { actorFromEnv, changedSkillFiles, parseGitPaths, syncAgentSkills };
