@@ -631,6 +631,37 @@ describe('public PR lifecycle authority', () => {
     expect(merges).toBe(1);
   });
 
+  test('binds cross-instance provider coordination to semantic identity', async () => {
+    const keys = [];
+    const durable = new Map();
+    const sharedProvider = provider({
+      readTrace: async target => {
+        const value = durable.get(target.pr_number);
+        return value ? { pull_requests: [{ number: value.number, repo: REPOSITORY_ID, head_sha: HEAD,
+          issue_id: ISSUE_ID, git_common_dir: value.git_common_dir,
+          iterations: [{ type: 'pr.merged', work_packet_hash: value.work_packet.content_hash,
+            work_packet_identity: packetIdentity(value.work_packet), run_receipt_hash: value.run_receipt.content_hash }] }] }
+          : { pull_requests: [] };
+      },
+      recordPrLinkage: async value => { durable.set(value.number, value); return { ok: true }; },
+      mergePr: async input => {
+        keys.push({ idempotency: input.idempotency_key, operation: input.operation_key });
+        return { merged: true };
+      },
+    });
+    const firstPacket = packet();
+    const secondPacket = packet({ payload: {
+      target: { pr_number: 515, branch: 'codex/other', git_common_dir: '/other/.git', url: 'https://example.test/pull/515' },
+    } });
+    const first = createPrLifecycleAuthority({ provider: sharedProvider });
+    const second = createPrLifecycleAuthority({ provider: sharedProvider });
+    await first.mergeWorkPacket({ packet: firstPacket, receipt: receipt(firstPacket), session_id: 'session-1' });
+    await second.mergeWorkPacket({ packet: secondPacket, receipt: receipt(secondPacket), session_id: 'session-1' });
+    expect(keys).toHaveLength(2);
+    expect(keys[0].idempotency).toBe(keys[1].idempotency);
+    expect(keys[0].operation).not.toBe(keys[1].operation);
+  });
+
   test('serializes concurrent opened acceptance across target clones by semantic identity', async () => {
     let durable;
     let writes = 0;
@@ -708,7 +739,8 @@ describe('public PR lifecycle authority', () => {
     const authority = createPrLifecycleAuthority({ provider: provider({
       mergePr: async input => {
         merges += 1;
-        expect(input.idempotency_key).toMatch(/^pr-merge:[0-9a-f]{64}$/);
+        expect(input.idempotency_key).toMatch(/^pr-merge-identity:[0-9a-f]{64}$/);
+        expect(input.operation_key).toMatch(/^pr-merge:[0-9a-f]{64}$/);
         await new Promise(resolve => { releaseMerge = resolve; });
         return { merged: true };
       },
@@ -1035,6 +1067,20 @@ describe('public PR lifecycle authority', () => {
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_REPLAY_CONFLICT' });
   });
 
+  test('rejects a trace whose requested PR is linked to another issue', async () => {
+    let merges = 0;
+    let writes = 0;
+    const workPacket = packet();
+    const authority = createPrLifecycleAuthority({ provider: provider({
+      readTrace: async () => ({ gaps: ['pull_requests:pr-1:unlinked_issue'], pull_requests: [] }),
+      mergePr: async () => { merges += 1; return { merged: true }; },
+      recordPrLinkage: async () => { writes += 1; return { ok: true }; },
+    }) });
+    await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_REPLAY_CONFLICT' });
+    expect({ merges, writes }).toEqual({ merges: 0, writes: 0 });
+  });
+
   test('selects the requested clone while retaining other clone replay evidence', async () => {
     const workPacket = packet();
     const runReceipt = receipt(workPacket);
@@ -1201,6 +1247,26 @@ describe('public PR lifecycle authority', () => {
       receipt: receipt(workPacket, { payload: { mutations_attempted: ['pr.merge'], mutations_authorized: ['pr.merge', 'files'] } }),
       session_id: 'session-1',
     })).rejects.toMatchObject({ code: 'PR_LIFECYCLE_MUTATION_UNAUTHORIZED' });
+  });
+
+  test('compares mutation evidence as unique unordered sets', async () => {
+    const workPacket = packet({ payload: { allowed_mutations: ['pr.opened', 'pr.merged'] } });
+    const authority = createPrLifecycleAuthority({ provider: provider() });
+    await expect(authority.acceptRunReceipt({
+      packet: workPacket,
+      receipt: receipt(workPacket, { payload: {
+        mutations_attempted: ['pr.opened', 'pr.merged'],
+        mutations_authorized: ['pr.merged', 'pr.opened'],
+      } }),
+      session_id: 'session-1',
+    })).resolves.toMatchObject({ accepted: true });
+    for (const payload of [
+      { mutations_attempted: ['pr.merged', 'pr.merged'], mutations_authorized: ['pr.merged'] },
+      { mutations_attempted: ['pr.merged'], mutations_authorized: ['pr.merged', 'pr.merged'] },
+    ]) {
+      await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket, { payload }), session_id: 'session-1' }))
+        .rejects.toMatchObject({ code: 'PR_LIFECYCLE_MUTATION_UNAUTHORIZED' });
+    }
   });
 
   test('rejects pr.merge-only evidence before durable linkage', async () => {

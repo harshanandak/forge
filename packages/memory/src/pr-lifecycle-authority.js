@@ -449,8 +449,13 @@ function assertReceiptEvidence(packet, receipt) {
   const authorized = receipt.payload.mutations_authorized ?? [];
   const allowed = packet.payload.allowed_mutations ?? [];
   const prohibited = packet.payload.prohibited_actions ?? [];
-  const sameMutations = attempted.length === authorized.length
-    && attempted.every((mutation, index) => mutation === authorized[index]);
+  const attemptedSet = new Set(attempted);
+  const authorizedSet = new Set(authorized);
+  const sameMutations = attemptedSet.size === attempted.length
+    && authorizedSet.size === authorized.length
+    && attemptedSet.size === authorizedSet.size
+    && attemptedSet.size > 0
+    && [...attemptedSet].every(mutation => authorizedSet.has(mutation));
   const satisfied = ['opened', 'merged'].filter((candidate) => {
     const candidateMutation = `pr.${candidate}`;
     return allowed.includes(candidateMutation)
@@ -662,7 +667,9 @@ function projectTrace(trace, target) {
   if (gapEvidence !== undefined && !Array.isArray(gapEvidence)) fail('PR_LIFECYCLE_INVALID_INPUT', 'public PR trace gap evidence is malformed');
   const gaps = gapEvidence ?? [];
   if (gaps.some(gap => typeof gap === 'string'
-    && (gap === 'pull_requests:overflow' || /^iterations:.*:(?:missing|incomplete|overflow)$/.test(gap)))) {
+    && (gap === 'pull_requests:overflow'
+      || /^pull_requests:.*:unlinked_issue$/.test(gap)
+      || /^iterations:.*:(?:missing|incomplete|overflow)$/.test(gap)))) {
     fail('PR_LIFECYCLE_REPLAY_CONFLICT', 'public PR trace authority evidence is incomplete');
   }
   if (requests.length > MAX_TRACE_SCAN_ROWS) {
@@ -764,6 +771,13 @@ function mergeIdempotencyKey(packet, receipt, linkage) {
     git_common_dir: linkage.git_common_dir,
   })).digest('hex');
   return `pr-merge:${digest}`;
+}
+
+function mergeCoordinationKey(packet) {
+  const digest = createHash('sha256')
+    .update(requiredString(packetSemanticIdentity(packet), 'packet semantic identity'))
+    .digest('hex');
+  return `pr-merge-identity:${digest}`;
 }
 
 function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier, timeoutMs = DEFAULT_PROVIDER_TIMEOUT_MS } = {}) {
@@ -922,7 +936,15 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
         if (confirmedMerges.size >= MAX_ACTIVE_MERGE_TARGETS) {
           fail('PR_LIFECYCLE_UNAVAILABLE', 'confirmed merge reconciliation capacity is exhausted');
         }
-        const mergeResult = await callMethod(provider, 'mergePr', [{ packet, receipt, linkage, idempotency_key: idempotencyKey }], 'merge', { sanitize: true, timeoutMs, reconcileOnTimeout: true });
+        const mergeResult = await callMethod(provider, 'mergePr', [{
+          packet,
+          receipt,
+          linkage,
+          // Providers use the semantic key as their cross-process atomic idempotency
+          // boundary and the operation key to distinguish exact retries from conflicts.
+          idempotency_key: mergeCoordinationKey(packet),
+          operation_key: idempotencyKey,
+        }], 'merge', { sanitize: true, timeoutMs, reconcileOnTimeout: true });
         if (mergeResult?.merged !== true && mergeResult?.success !== true) fail('PR_LIFECYCLE_UNAVAILABLE', 'merge provider did not confirm success');
         confirmedMerges.set(idempotencyKey, true);
       }
