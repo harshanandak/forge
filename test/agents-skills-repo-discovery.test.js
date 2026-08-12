@@ -2,6 +2,7 @@ const { describe, expect, test } = require('bun:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const {
   AGENT_SKILL_DIRS,
@@ -76,6 +77,25 @@ describe('codex repo-local .agents/skills discovery', () => {
       }
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('populateCodexRepoSkills preserves automatic ignored-path exclusions', () => {
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-agents-source-'));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-agents-project-'));
+    try {
+      execFileSync('git', ['init'], { cwd: source, stdio: 'ignore' });
+      fs.mkdirSync(path.join(source, 'skills/plan'), { recursive: true });
+      fs.writeFileSync(path.join(source, '.gitignore'), '/skills/**/*.tmp\n');
+      fs.writeFileSync(path.join(source, 'skills/plan/SKILL.md'), 'plan\n');
+      fs.writeFileSync(path.join(source, 'skills/plan/editor.tmp'), 'scratch\n');
+
+      const { targetSkillsDir } = populateCodexRepoSkills({ sourceRoot: source, projectRoot: project });
+      expect(fs.existsSync(path.join(targetSkillsDir, 'plan/SKILL.md'))).toBe(true);
+      expect(fs.existsSync(path.join(targetSkillsDir, 'plan/editor.tmp'))).toBe(false);
+    } finally {
+      fs.rmSync(source, { recursive: true, force: true });
+      fs.rmSync(project, { recursive: true, force: true });
     }
   });
 

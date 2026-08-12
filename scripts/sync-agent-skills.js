@@ -7,11 +7,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { populateCodexRepoSkills, resolveCodexRepoSkillsDir } = require('../lib/codex-skills');
-const { listCanonicalSkills } = require('../lib/skills-sync');
+const { gitIgnoredCanonicalPaths, isValidSkillName, listCanonicalSkills } = require('../lib/skills-sync');
 const {
   completeGeneratedHarnessSkillAuthorization,
   issueGeneratedHarnessSkillAuthorization,
 } = require('../lib/protected-state-authority');
+
+function strictIgnoredCanonicalPaths(root, runGit) {
+  return gitIgnoredCanonicalPaths(root, runGit, { strict: true });
+}
 
 function repoRoot() {
   try {
@@ -28,52 +32,190 @@ function actorFromEnv(env) {
   return env.FORGE_ACTOR || env.USER || env.USERNAME || 'unknown';
 }
 
-function generatedDriftPaths(root, runGit) {
-  try {
-    const commands = [
-      ['diff', '--cached', '--name-only', '--diff-filter=ACMRDT', '--', '.agents/skills'],
-      ['diff', '--name-only', '--diff-filter=ACMRDT', '--', '.agents/skills'],
-      ['ls-files', '--others', '--exclude-standard', '--', '.agents/skills'],
-    ];
-    return new Set(commands.flatMap(args => runGit('git', args, {
-      cwd: root,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).split(/\r?\n/).map(value => value.trim().replace(/\\/g, '/')).filter(Boolean)));
-  } catch {
-    return new Set();
-  }
+function parseGitPaths(output) {
+  return output.split('\0').filter(Boolean);
 }
 
-function walkRegularFiles(root, visit, current = root) {
+function toRepoPath(value) {
+  return path.sep === '\\' ? value.replace(/\\/g, '/') : value;
+}
+
+function generatedDriftPaths(root, runGit) {
+  const commands = [
+    ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMRDT', '--', '.agents/skills'],
+    ['diff', '--name-only', '-z', '--diff-filter=ACMRDT', '--', '.agents/skills'],
+    ['ls-files', '-z', '--others', '--exclude-standard', '--', '.agents/skills'],
+  ];
+  return new Set(commands.flatMap(args => parseGitPaths(runGit('git', args, {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }))));
+}
+
+function gitObjectHash(root, args, content, runGit) {
+  const hash = runGit('git', ['hash-object', ...args, '--stdin'], {
+    cwd: root,
+    encoding: 'utf8',
+    input: content,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  }).trim();
+  if (!/^[0-9a-f]{40,64}$/.test(hash)) throw new Error('Git returned an invalid object hash while inspecting canonical skill parity');
+  return hash;
+}
+
+function worktreeMatchesIndex(root, repoPath, indexedContent, worktreeContent, runGit) {
+  return gitObjectHash(root, [], indexedContent, runGit)
+    === gitObjectHash(root, [`--path=${repoPath}`], worktreeContent, runGit);
+}
+
+function normalizedRepoPath(repoPath) {
+  return repoPath.normalize('NFC');
+}
+
+function recordNormalizedPath(paths, repoPath) {
+  const key = normalizedRepoPath(repoPath);
+  const existing = paths.get(key);
+  if (existing && existing !== repoPath) throw new Error(`Unicode-equivalent canonical skill paths are ambiguous: ${existing}, ${repoPath}`);
+  paths.set(key, repoPath);
+}
+
+function ambiguousCanonicalPaths(root, runGit) {
+  const indexedEntries = parseGitPaths(runGit('git', ['ls-files', '-t', '-z', '--', 'skills'], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }));
+  const mirrorSkipWorktree = new Set(parseGitPaths(runGit('git', ['ls-files', '-t', '-z', '--', '.agents/skills'], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })).filter(entry => entry.startsWith('S ')).map(entry => normalizedRepoPath(entry.slice(2))));
+  const ignoredWorktree = strictIgnoredCanonicalPaths(root, runGit);
+  const filesystemPrefixes = listCanonicalSkills(root).map(({ name }) => `skills/${name}/`);
+  const canonicalPrefixKeys = new Set(filesystemPrefixes.map(normalizedRepoPath));
+  for (const entry of indexedEntries) {
+    const match = /^skills\/([^/]+)\/SKILL\.md$/.exec(entry.slice(2));
+    if (match && isValidSkillName(match[1])) canonicalPrefixKeys.add(normalizedRepoPath(`skills/${match[1]}/`));
+  }
+  const participatesInMirror = repoPath => [...canonicalPrefixKeys].some(prefix => normalizedRepoPath(repoPath).startsWith(prefix));
+  const indexed = new Map();
+  for (const repoPath of indexedEntries.map(entry => entry.slice(2)).filter(participatesInMirror)) recordNormalizedPath(indexed, repoPath);
+  const skipWorktree = new Map();
+  for (const repoPath of indexedEntries
+    .filter(entry => entry.startsWith('S '))
+    .map(entry => entry.slice(2))
+    .filter(participatesInMirror)) recordNormalizedPath(skipWorktree, repoPath);
+  const worktree = new Map();
+  for (const prefix of filesystemPrefixes) {
+    const sourceRoot = path.join(root, prefix);
+    walkRegularFiles(
+      sourceRoot,
+      (_file, relative) => recordNormalizedPath(worktree, `${prefix}${relative}`),
+      sourceRoot,
+      (relative, entry) => entry.isSymbolicLink()
+        && ignoredWorktree.has(normalizedRepoPath(`${prefix}${relative}`)),
+    );
+  }
+  for (const key of ignoredWorktree) {
+    if (!indexed.has(key)) worktree.delete(key);
+  }
+  for (const repoPath of skipWorktree.values()) {
+    const mirrorPath = `.agents/${repoPath}`;
+    if (!fs.existsSync(path.join(root, repoPath))
+      && (!mirrorSkipWorktree.has(normalizedRepoPath(mirrorPath)) || fs.existsSync(path.join(root, mirrorPath)))) {
+      throw new Error(`asymmetric sparse checkout exposes mirror without canonical: ${repoPath}`);
+    }
+  }
+  const paths = new Set([...indexed.keys(), ...worktree.keys()]);
+  return new Set([...paths].filter(key => {
+    const indexedPath = indexed.get(key);
+    const worktreePath = worktree.get(key);
+    const indexedContent = indexedPath ? indexedFile(root, indexedPath, runGit) : null;
+    let worktreeContent = null;
+    try {
+      if (worktreePath) worktreeContent = fs.readFileSync(path.join(root, worktreePath));
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    return indexedContent === null
+      ? worktreeContent !== null
+      : (worktreeContent === null && !skipWorktree.has(key))
+        || (worktreeContent !== null && !worktreeMatchesIndex(root, indexedPath, indexedContent, worktreeContent, runGit));
+  }).map(key => indexed.get(key) || worktree.get(key)));
+}
+
+function indexedFile(root, repoPath, runGit) {
+  const tracked = parseGitPaths(runGit('git', ['ls-files', '-z', '--', `:(literal)${repoPath}`], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }));
+  const trackedPath = tracked.find(candidate => normalizedRepoPath(candidate) === normalizedRepoPath(repoPath));
+  if (!trackedPath) return null;
+  return runGit('git', ['show', `:${trackedPath}`], {
+    cwd: root,
+    encoding: null,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function walkRegularFiles(root, visit, current = root, shouldSkip = () => false) {
   if (!fs.existsSync(current)) return;
   const currentStat = fs.lstatSync(current);
   if (!currentStat.isDirectory() || currentStat.isSymbolicLink()) throw new Error(`skill sync path is not a real directory: ${current}`);
   for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
     const entryPath = path.join(current, entry.name);
+    const relative = toRepoPath(path.relative(root, entryPath));
+    if (shouldSkip(relative, entry)) continue;
     const stat = fs.lstatSync(entryPath);
     if (stat.isSymbolicLink()) throw new Error(`skill sync refuses symlink: ${entryPath}`);
-    if (stat.isDirectory()) walkRegularFiles(root, visit, entryPath);
-    else if (stat.isFile()) visit(entryPath, path.relative(root, entryPath).replace(/\\/g, '/'));
+    if (stat.isDirectory()) walkRegularFiles(root, visit, entryPath, shouldSkip);
+    else if (stat.isFile()) visit(entryPath, relative);
   }
 }
 
-function changedSkillFiles(root, runGit = execFileSync) {
+function rejectIgnoredSkillDescriptors(root, ignoredCanonical) {
+  for (const { name } of listCanonicalSkills(root)) {
+    const descriptorRepoPath = `skills/${name}/SKILL.md`;
+    if (ignoredCanonical.has(normalizedRepoPath(descriptorRepoPath))) {
+      throw new Error(`ignored canonical skill descriptor: ${descriptorRepoPath}`);
+    }
+  }
+}
+
+function changedSkillFiles(root, runGit = execFileSync, ignoredCanonical = strictIgnoredCanonicalPaths(root, runGit)) {
   const mirror = resolveCodexRepoSkillsDir(root);
   const drift = generatedDriftPaths(root, runGit);
   const changed = [];
+  rejectIgnoredSkillDescriptors(root, ignoredCanonical);
   for (const { name, sourcePath: sourceRoot } of listCanonicalSkills(root)) {
     walkRegularFiles(sourceRoot, (sourcePath, relative) => {
+      const canonicalRepoPath = `skills/${name}/${relative}`;
+      if (ignoredCanonical.has(normalizedRepoPath(canonicalRepoPath))) {
+        const mirrorRepoPath = `.agents/${canonicalRepoPath}`;
+        if (indexedFile(root, mirrorRepoPath, runGit) !== null || fs.existsSync(path.join(root, mirrorRepoPath))) {
+          throw new Error(`ignored canonical skill path still has a mirror: ${canonicalRepoPath}`);
+        }
+        return;
+      }
       const canonical = fs.readFileSync(sourcePath);
       const mirrorPath = path.join(mirror, name, relative);
       const repoPath = `.agents/skills/${name}/${relative}`;
+      const indexedCanonical = indexedFile(root, canonicalRepoPath, runGit);
+      if (indexedCanonical !== null
+        && gitObjectHash(root, [], indexedCanonical, runGit)
+          !== gitObjectHash(root, [`--path=${repoPath}`], canonical, runGit)) {
+        throw new Error(`canonical and generated mirror clean filters differ: ${canonicalRepoPath}`);
+      }
       try {
         if (canonical.equals(fs.readFileSync(mirrorPath)) && !drift.has(repoPath)) return;
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }
       changed.push({ path: repoPath, canonical, writeIntent: 'update' });
-    });
+    }, sourceRoot, (relative, entry) => entry.isSymbolicLink()
+      && ignoredCanonical.has(normalizedRepoPath(`skills/${name}/${relative}`)));
   }
   walkRegularFiles(mirror, (mirrorPath, relative) => {
     const canonicalPath = path.join(root, 'skills', relative);
@@ -107,6 +249,18 @@ function changedSkillFiles(root, runGit = execFileSync) {
   return changed;
 }
 
+function sameSkillChanges(expected, actual) {
+  if (expected.length !== actual.length) return false;
+  const byPath = new Map(actual.map(file => [normalizedRepoPath(file.path), file]));
+  if (byPath.size !== actual.length) return false;
+  return expected.every(file => {
+    const candidate = byPath.get(normalizedRepoPath(file.path));
+    return candidate
+      && candidate.writeIntent === file.writeIntent
+      && candidate.canonical.equals(file.canonical);
+  });
+}
+
 async function syncAgentSkills(options = {}) {
   const root = options.root || repoRoot();
   const env = options.env || process.env;
@@ -121,7 +275,21 @@ async function syncAgentSkills(options = {}) {
   }).trim();
   if (!/^[0-9a-f]{40}$/.test(sourceHead)) throw new Error('source HEAD is not a full lowercase commit SHA');
 
-  const changed = changedSkillFiles(root, runGit);
+  const ignoredCanonical = strictIgnoredCanonicalPaths(root, runGit);
+  rejectIgnoredSkillDescriptors(root, ignoredCanonical);
+  const ambiguousCanonical = ambiguousCanonicalPaths(root, runGit);
+  for (const canonicalPath of ambiguousCanonical) {
+    const indexedCanonical = indexedFile(root, canonicalPath, runGit);
+    const indexedMirror = indexedFile(root, `.agents/${canonicalPath}`, runGit);
+    if (indexedCanonical === null ? indexedMirror !== null : indexedMirror === null || !indexedCanonical.equals(indexedMirror)) {
+      throw new Error(`canonical index differs from generated mirror index: ${canonicalPath}`);
+    }
+  }
+  if (ambiguousCanonical.size > 0) {
+    throw new Error(`unstaged canonical skill changes must be reconciled before mirror sync: ${[...ambiguousCanonical].join(', ')}`);
+  }
+
+  const changed = changedSkillFiles(root, runGit, ignoredCanonical);
   const authorizations = [];
   for (const file of changed) {
     const authorization = await issueAuthorization(root, {
@@ -135,7 +303,25 @@ async function syncAgentSkills(options = {}) {
     authorizations.push({ ...file, capabilityId: authorization.capabilityId });
   }
 
-  const { written } = populateCodexRepoSkills({ sourceRoot: root, projectRoot: root, clean: true });
+  const refreshedIgnoredCanonical = strictIgnoredCanonicalPaths(root, runGit);
+  rejectIgnoredSkillDescriptors(root, refreshedIgnoredCanonical);
+  const refreshedAmbiguousCanonical = ambiguousCanonicalPaths(root, runGit);
+  if (refreshedAmbiguousCanonical.size > 0) {
+    throw new Error(`canonical skill state changed during authorization: ${[...refreshedAmbiguousCanonical].join(', ')}`);
+  }
+  const refreshedChanged = changedSkillFiles(root, runGit, refreshedIgnoredCanonical);
+  if (!sameSkillChanges(changed, refreshedChanged)) {
+    throw new Error('canonical skill state changed during authorization');
+  }
+
+  const excludeRelativePaths = new Set([...refreshedIgnoredCanonical]
+    .map(repoPath => repoPath.slice('skills/'.length)));
+  const { written } = populateCodexRepoSkills({
+    sourceRoot: root,
+    projectRoot: root,
+    clean: true,
+    excludeRelativePaths,
+  });
   for (const file of authorizations) {
     const mirrorExists = fs.existsSync(path.join(root, file.path));
     if (file.writeIntent === 'delete' ? mirrorExists : !file.canonical.equals(fs.readFileSync(path.join(root, file.path)))) {
@@ -158,7 +344,7 @@ async function syncAgentSkills(options = {}) {
     stdio: ['ignore', 'ignore', 'inherit'],
   });
   console.log(`sync-agent-skills: .agents/skills in sync with skills/ (${written.length} skills)`);
-  return { written, changed: changed.map(file => file.path), sourceHead };
+  return { written, changed: changed.map(file => file.path), deferred: [], sourceHead };
 }
 
 async function main() {
@@ -172,4 +358,4 @@ async function main() {
 
 if (require.main === module) main();
 
-module.exports = { actorFromEnv, changedSkillFiles, syncAgentSkills };
+module.exports = { actorFromEnv, changedSkillFiles, parseGitPaths, syncAgentSkills };

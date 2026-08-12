@@ -2,9 +2,11 @@ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const {
   listCanonicalSkills,
+  gitIgnoredCanonicalPaths,
   populateAgentSkills,
   diffSkillDir,
   checkSkillsSync,
@@ -72,6 +74,15 @@ describe('skills-sync: listCanonicalSkills', () => {
   });
 });
 
+describe('skills-sync: gitIgnoredCanonicalPaths', () => {
+  test('is tolerant for setup callers and strict for authority callers', () => {
+    fs.mkdirSync(path.join(tmp, '.git'));
+    const failingGit = () => { throw new Error('git unavailable'); };
+    expect(gitIgnoredCanonicalPaths(tmp, failingGit)).toEqual(new Set());
+    expect(() => gitIgnoredCanonicalPaths(tmp, failingGit, { strict: true })).toThrow('git unavailable');
+  });
+});
+
 describe('skills-sync: populateAgentSkills', () => {
   test('copies every canonical skill (recursively) into the target dir', () => {
     write('skills/plan/SKILL.md', 'plan body');
@@ -84,6 +95,21 @@ describe('skills-sync: populateAgentSkills', () => {
     expect(written.sort()).toEqual(['plan', 'research']);
     expect(fs.readFileSync(path.join(target, 'plan/SKILL.md'), 'utf8')).toBe('plan body');
     expect(fs.readFileSync(path.join(target, 'research/evals/evals.json'), 'utf8')).toBe('{"a":1}');
+  });
+
+  test('removes a previously generated file when it becomes Git-ignored', () => {
+    execFileSync('git', ['init'], { cwd: tmp, stdio: 'ignore' });
+    write('skills/plan/SKILL.md', 'plan');
+    write('skills/plan/editor.tmp', 'previously generated');
+    const target = path.join(tmp, '.codex/skills');
+    populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target });
+    expect(fs.existsSync(path.join(target, 'plan/editor.tmp'))).toBe(true);
+
+    write('.gitignore', '/skills/**/*.tmp\n');
+    populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target });
+
+    expect(fs.existsSync(path.join(target, 'plan/editor.tmp'))).toBe(false);
+    expect(fs.readFileSync(path.join(target, 'plan/SKILL.md'), 'utf8')).toBe('plan');
   });
 
   test('clean removes stale managed dirs but leaves canonical ones', () => {
@@ -227,6 +253,54 @@ describe('skills-sync: checkSkillsSync', () => {
 
     const result = checkSkillsSync({ repoRoot: tmp });
     expect(result.drift.some((d) => d.skill === 'dev' && d.status === 'missing')).toBe(true);
+  });
+
+  test('ignores Git-ignored canonical artifacts omitted from generated mirrors', () => {
+    execFileSync('git', ['init'], { cwd: tmp, stdio: 'ignore' });
+    write('.gitignore', '/skills/**/*.tmp\n');
+    write('skills/plan/SKILL.md', 'plan');
+    write('skills/plan/editor.tmp', 'scratch');
+    populateAgentSkills({
+      sourceRoot: tmp,
+      targetSkillsDir: path.join(tmp, '.codex/skills'),
+    });
+
+    const result = checkSkillsSync({ repoRoot: tmp });
+    expect(result.inSync).toBe(true);
+    expect(result.drift).toEqual([]);
+
+    write('.codex/skills/plan/editor.tmp', 'stale residue');
+    const residue = checkSkillsSync({ repoRoot: tmp });
+    expect(residue.inSync).toBe(false);
+    expect(residue.drift).toContainEqual({
+      agent: '.codex/skills', skill: 'plan', file: 'editor.tmp', status: 'extra',
+    });
+  });
+
+  test('does not exclude an ignored defining skill descriptor from drift', () => {
+    execFileSync('git', ['init'], { cwd: tmp, stdio: 'ignore' });
+    write('.gitignore', '/skills/*/SKILL.md\n');
+    write('skills/orphan/SKILL.md', 'ignored descriptor');
+    write('skills/orphan/README.md', 'sibling');
+    write('.codex/skills/orphan/README.md', 'sibling');
+
+    const result = checkSkillsSync({ repoRoot: tmp });
+    expect(result.inSync).toBe(false);
+    expect(result.drift).toContainEqual({
+      agent: '.codex/skills', skill: 'orphan', file: 'SKILL.md', status: 'missing',
+    });
+  });
+
+  test('excludes an ignored nested SKILL.md artifact from drift', () => {
+    execFileSync('git', ['init'], { cwd: tmp, stdio: 'ignore' });
+    write('.gitignore', '/skills/*/references/SKILL.md\n');
+    write('skills/plan/SKILL.md', 'defining descriptor');
+    write('skills/plan/references/SKILL.md', 'ignored nested descriptor');
+    write('.codex/skills/plan/SKILL.md', 'defining descriptor');
+
+    const result = checkSkillsSync({ repoRoot: tmp });
+    expect(result.inSync).toBe(true);
+    expect(result.drift).toEqual([]);
   });
 
   test('exposes the standard agent skill dirs', () => {
