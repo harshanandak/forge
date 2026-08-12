@@ -312,6 +312,18 @@ describe('public PR lifecycle authority', () => {
     })).rejects.toMatchObject({ code: 'PR_LIFECYCLE_PRIVACY_REJECTED' });
   });
 
+  test('rejects bare POSIX user home directories at the privacy boundary', async () => {
+    const authority = createPrLifecycleAuthority({ provider: provider() });
+    for (const objective of ['/home/alice', '/Users/alice', 'Use /home/alice for config', 'Read /Users/alice next']) {
+      await expect(authority.issueWorkPacket({
+        issue_id: ISSUE_ID,
+        repository_id: REPOSITORY_ID,
+        actor_id: 'agent-1', session_id: 'session-1',
+        objective,
+      })).rejects.toMatchObject({ code: 'PR_LIFECYCLE_PRIVACY_REJECTED' });
+    }
+  });
+
   test('rejects traversal, encoded traversal, and secret-bearing trusted path segments before linkage', async () => {
     for (const gitCommonDir of [
       '/home/alice/../repo/.git',
@@ -450,27 +462,104 @@ describe('public PR lifecycle authority', () => {
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_OWNERSHIP_STALE' });
   });
 
-  test('reconciles consequential provider completion instead of reporting a false timeout', async () => {
-    let writes = 0;
-    let releaseWrite;
-    const writeGate = new Promise(resolve => { releaseWrite = resolve; });
+  test('reconciles durable consequential writes whose acknowledgement never settles', async () => {
+    let recorded;
+    const workPacket = packet();
+    const authority = createPrLifecycleAuthority({
+      provider: provider({
+        recordPrLinkage: async value => {
+          recorded = value;
+          return new Promise(() => {});
+        },
+        readTrace: async () => recorded ? { pull_requests: [{
+          number: 514, repo: REPOSITORY_ID, head_sha: HEAD, issue_id: ISSUE_ID,
+          iterations: [{ type: 'pr.opened', work_packet_hash: workPacket.content_hash,
+            work_packet_identity: packetIdentity(workPacket), run_receipt_hash: recorded.run_receipt.content_hash }],
+        }] } : { pull_requests: [] },
+      }),
+      timeoutMs: 5,
+    });
+    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
+      .resolves.toMatchObject({ accepted: true });
+  });
+
+  test('bounds fail-closed reconciliation when opened linkage persistence never settles', async () => {
+    const workPacket = packet();
+    const authority = createPrLifecycleAuthority({
+      provider: provider({ recordPrLinkage: async () => new Promise(() => {}) }),
+      timeoutMs: 5,
+    });
+    const outcome = authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' })
+      .then(() => ({ accepted: true }), error => error);
+    const observed = await Promise.race([
+      outcome,
+      new Promise(resolve => setTimeout(() => resolve('still-pending'), 100)),
+    ]);
+    expect(observed).toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
+  });
+
+  test('polls bounded trace reconciliation when a timed-out opened write commits shortly afterward', async () => {
     const workPacket = packet();
     const authority = createPrLifecycleAuthority({
       provider: provider({ recordPrLinkage: async () => {
-        await writeGate;
-        writes += 1;
+        await new Promise(resolve => setTimeout(resolve, 150));
         return { ok: true };
       } }),
-      timeoutMs: 5,
+      timeoutMs: 100,
     });
-    let settled = false;
-    const merge = authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' })
-      .finally(() => { settled = true; });
-    await new Promise(resolve => setTimeout(resolve, 15));
-    expect(settled).toBe(false);
-    releaseWrite();
-    await expect(merge).resolves.toMatchObject({ accepted: true });
-    expect(writes).toBe(1);
+    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
+      .resolves.toMatchObject({ accepted: true });
+  });
+
+  test('keeps reconciliation bounded when the wall clock moves backward', async () => {
+    const originalNow = Date.now;
+    let wallTime = 100;
+    Date.now = () => wallTime--;
+    try {
+      const workPacket = packet();
+      const authority = createPrLifecycleAuthority({
+        provider: provider({ recordPrLinkage: async () => new Promise(() => {}) }),
+        timeoutMs: 5,
+      });
+      const outcome = authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' })
+        .then(() => ({ accepted: true }), error => error);
+      const observed = await Promise.race([
+        outcome,
+        new Promise(resolve => setTimeout(() => resolve('still-pending'), 100)),
+      ]);
+      expect(observed).toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  test('retries a timed-out trace probe within the bounded reconciliation budget', async () => {
+    const workPacket = packet();
+    const runReceipt = receipt(workPacket);
+    let recorded = false;
+    let reads = 0;
+    const authority = createPrLifecycleAuthority({
+      provider: provider({
+        recordPrLinkage: async () => {
+          await new Promise(resolve => setTimeout(resolve, 150));
+          recorded = true;
+          return { ok: true };
+        },
+        readTrace: async () => {
+          reads += 1;
+          if (reads === 2) await new Promise(resolve => setTimeout(resolve, 110));
+          return recorded ? { pull_requests: [{
+            number: 514, repo: REPOSITORY_ID, head_sha: HEAD, issue_id: ISSUE_ID,
+            iterations: [{ type: 'pr.opened', work_packet_hash: workPacket.content_hash,
+              work_packet_identity: packetIdentity(workPacket), run_receipt_hash: runReceipt.content_hash }],
+          }] } : { pull_requests: [] };
+        },
+      }),
+      timeoutMs: 100,
+    });
+    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
+      .resolves.toMatchObject({ accepted: true });
+    expect(reads).toBeGreaterThanOrEqual(3);
   });
 
   test('re-probes ownership and exact head at receipt acceptance', async () => {

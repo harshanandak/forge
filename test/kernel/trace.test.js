@@ -16,6 +16,7 @@ const RISK_DIGEST = 'b'.repeat(64);
 const MANIFEST_DIGEST = 'c'.repeat(64);
 const GATE_ID = 'gate.merge';
 const GATE_RECEIPT = 'gate.approved:issue-trace:gate.merge:maintainer';
+const LIFECYCLE_CONTEXT = { actor: 'agent-1', sessionId: 'session-1', now: '2026-08-11T00:10:00.000Z' };
 
 function rehash(envelope) {
 	const copy = structuredClone(envelope);
@@ -94,6 +95,8 @@ describe('Kernel receipt-bound PR trace', () => {
 	let gitCommonDir;
 	let branch;
 	let workFolder;
+	let rawRecordPrLinkage;
+	let brokerNow;
 
 	beforeEach(async () => {
 		root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-trace-'));
@@ -103,7 +106,9 @@ describe('Kernel receipt-bound PR trace', () => {
 		fs.mkdirSync(gitCommonDir, { recursive: true });
 		config = { databasePath: path.join(root, 'kernel.sqlite') };
 		driver = createBuiltinSQLiteDriver({ databasePath: config.databasePath });
-		broker = createLocalBroker({ projectRoot: root, gitCommonDir, databasePath: config.databasePath, driver });
+		brokerNow = '2026-08-11T00:10:00.000Z';
+		broker = createLocalBroker({ projectRoot: root, gitCommonDir, databasePath: config.databasePath, driver,
+			now: () => brokerNow });
 		await broker.initialize();
 		await driver.exec(
 			"INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-trace', 'Trace', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');",
@@ -134,6 +139,12 @@ describe('Kernel receipt-bound PR trace', () => {
 			payload: { gate: GATE_ID, expires_at: null, generation: 0 },
 			created_at: '2026-08-11T00:04:00.000Z',
 		}, {}, config);
+		await driver.insertKernelClaim({
+			id: 'claim-1', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
+			state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z',
+		}, {}, config);
+		rawRecordPrLinkage = broker.recordPrLinkage.bind(broker);
+		broker.recordPrLinkage = (input, context = LIFECYCLE_CONTEXT) => rawRecordPrLinkage(input, context);
 	});
 
 	afterEach(() => {
@@ -201,7 +212,8 @@ describe('Kernel receipt-bound PR trace', () => {
 	test('shares initialized Kernel state with an isolated linkage transaction for an in-memory database', async () => {
 		const memoryConfig = { databasePath: ':memory:' };
 		const memoryDriver = createBuiltinSQLiteDriver({});
-		const memoryBroker = createLocalBroker({ projectRoot: root, gitCommonDir, ...memoryConfig, driver: memoryDriver });
+		const memoryBroker = createLocalBroker({ projectRoot: root, gitCommonDir, ...memoryConfig, driver: memoryDriver,
+			now: () => '2026-08-11T00:10:00.000Z' });
 		await memoryBroker.initialize();
 		try {
 			await memoryDriver.exec(
@@ -242,7 +254,7 @@ describe('Kernel receipt-bound PR trace', () => {
 			const secondPacket = rehash({ ...structuredClone(firstPacket), object_id: '10000000-0000-4000-8000-000000000099' });
 			const first = linkage('opened', firstPacket, runReceipt(firstPacket));
 			const second = linkage('opened', secondPacket, runReceipt(secondPacket), { number: 515, url: 'https://github.com/owner/forge/pull/515' });
-			const results = await Promise.allSettled([broker.recordPrLinkage(first), secondBroker.recordPrLinkage(second)]);
+			const results = await Promise.allSettled([broker.recordPrLinkage(first), secondBroker.recordPrLinkage(second, LIFECYCLE_CONTEXT)]);
 			expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
 			const rejected = results.find(result => result.status === 'rejected');
 			expect(rejected.reason).toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
@@ -299,7 +311,7 @@ describe('Kernel receipt-bound PR trace', () => {
 			return fork;
 		};
 		await broker.recordPrLinkage(linkage());
-		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-1', sessionId: 'session-1' }))
+		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-2', sessionId: 'session-2' }))
 			.rejects.toBeInstanceOf(Error);
 		expect(closes).toBe(2);
 		driver.forkConnection = originalFork;
@@ -359,8 +371,6 @@ describe('Kernel receipt-bound PR trace', () => {
 	});
 
 	test('revalidates exact claim ownership inside opened linkage persistence', async () => {
-		await driver.insertKernelClaim({ id: 'claim-1', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
-			state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z' }, {}, config);
 		const context = { actor: 'agent-1', sessionId: 'session-1', now: '2026-08-11T00:10:00.000Z' };
 		await expect(broker.recordOpenedPrLinkage(linkage(), context)).resolves.toHaveProperty('iteration');
 		await driver.updateKernelClaimState('claim-1', 'released', {}, config);
@@ -368,8 +378,23 @@ describe('Kernel receipt-bound PR trace', () => {
 		await driver.insertKernelClaim({ id: 'claim-2', issue_id: 'issue-trace', actor: 'agent-2', session_id: 'session-2',
 			state: 'active', claimed_at: '2026-08-11T00:11:00.000Z', expires_at: '2026-08-11T00:12:00.000Z' }, {}, config);
 		await expect(broker.recordOpenedPrLinkage(linkage(), context)).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+		brokerNow = '2026-08-11T00:13:00.000Z';
 		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-2', sessionId: 'session-2', now: '2026-08-11T00:13:00.000Z' }))
 			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+	});
+
+	test('enforces exact claim ownership on the exported opened linkage writer', async () => {
+		await expect(rawRecordPrLinkage(linkage()))
+			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
+		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
+	});
+
+	test('uses broker time instead of caller time to reject expired opened linkage ownership', async () => {
+		brokerNow = '2026-08-11T01:01:00.000Z';
+		await expect(rawRecordPrLinkage(linkage(), {
+			actor: 'agent-1', sessionId: 'session-1', now: '2026-08-11T00:10:00.000Z',
+		})).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
 	});
 
 	test('rejects a foreign issue PR binding inside the linkage transaction', async () => {

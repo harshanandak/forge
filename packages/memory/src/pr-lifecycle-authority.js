@@ -1,6 +1,7 @@
 'use strict';
 
 const { createHash, randomUUID } = require('node:crypto');
+const { performance } = require('node:perf_hooks');
 const { types } = require('node:util');
 const {
   canonicalize,
@@ -31,7 +32,7 @@ const SECRET_PATTERNS = Object.freeze([
   /AKIA[0-9A-Z]{16}/i,
   /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}/i,
 ]);
-const USER_PATH_PATTERN = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+\/)/i;
+const USER_PATH_PATTERN = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+(?=\/|\s|$))/i;
 
 // Complete accepted provider capability contract. Live probes may supply the optional reads;
 // runIssueOperation, recordPrLinkage, and readTrace remain mandatory (see authority-provider.js).
@@ -197,9 +198,7 @@ async function invokeWithDeadline(target, method, args, timeoutMs, options = {})
   });
   try {
     const result = await Promise.race([operation, deadline]);
-    // Consequential operations must never report a timeout while a write can still
-    // complete later. If cancellation did not settle it, reconcile the actual result.
-    return result === PROVIDER_DEADLINE_SENTINEL ? await operation : result;
+    return result;
   } finally {
     clearTimeout(timer);
     if (timedOut && !options.reconcileOnTimeout) controller?.abort();
@@ -218,6 +217,9 @@ async function callMethod(target, method, args, label, options = {}) {
     if (error instanceof PrLifecycleAuthorityError) throw error;
     fail('PR_LIFECYCLE_UNAVAILABLE', `${label} provider operation failed`, { cause: error });
   }
+  // Consequential writes reconcile this private deadline through a bounded,
+  // authoritative trace read instead of waiting on an unacknowledged write.
+  if (result === PROVIDER_DEADLINE_SENTINEL) return result;
   try {
     const projected = typeof options.project === 'function' ? options.project(result) : result;
     const bounded = snapshot(projected, `${label} provider response`, {
@@ -765,6 +767,31 @@ async function readLifecycleTrace(provider, linkage, timeoutMs, gitCommonDir) {
   });
 }
 
+async function reconcileLifecycleTrace(provider, linkage, packet, receipt, timeoutMs, gitCommonDir) {
+  const budgetMs = Math.max(timeoutMs * 2, 10);
+  const startedAt = performance.now();
+  const remainingBudget = () => budgetMs - (performance.now() - startedAt);
+  let trace;
+  do {
+    const remaining = Math.max(1, remainingBudget());
+    try {
+      trace = await readLifecycleTrace(provider, linkage, Math.min(timeoutMs, remaining), gitCommonDir);
+      traceLinkageRow(trace, linkage);
+      if (durableAcceptance(trace, packet, receipt)) {
+        assertTraceLinkage(trace, linkage, packet, receipt);
+        return trace;
+      }
+    } catch (error) {
+      if (!(error instanceof PrLifecycleAuthorityError)
+        || error.code !== 'PR_LIFECYCLE_UNAVAILABLE' || remainingBudget() <= 0) throw error;
+      continue;
+    }
+    const waitMs = Math.min(5, remainingBudget());
+    if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
+  } while (remainingBudget() > 0);
+  assertTraceLinkage(trace, linkage, packet, receipt);
+}
+
 function traceLinkageRow(trace, linkage) {
   if (!trace || typeof trace !== 'object' || Array.isArray(trace)) fail('PR_LIFECYCLE_UNAVAILABLE', 'public PR trace is unavailable');
   if (!Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage');
@@ -875,7 +902,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
     const durable = durableAcceptance(trace, packet, receipt);
     if (durable) assertTraceLinkage(trace, linkage, packet, receipt);
     else {
-      await callMethod(provider, 'recordOpenedPrLinkage', [{
+      const persistence = await callMethod(provider, 'recordOpenedPrLinkage', [{
         phase: 'opened',
         git_common_dir: target.git_common_dir,
         repo: linkage.repository_id,
@@ -888,8 +915,12 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
       }, { actor: packet.provenance.actor_id, sessionId: input.session_id ?? input.sessionId }], 'PR linkage', {
         sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true,
       });
-      const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
-      assertTraceLinkage(persistedTrace, linkage, packet, receipt);
+      if (persistence === PROVIDER_DEADLINE_SENTINEL) {
+        await reconcileLifecycleTrace(provider, linkage, packet, receipt, timeoutMs, target.git_common_dir);
+      } else {
+        const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
+        assertTraceLinkage(persistedTrace, linkage, packet, receipt);
+      }
     }
     return stableResult('accepted', packet, receipt, linkage);
   }
