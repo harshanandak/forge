@@ -309,13 +309,18 @@ describe('legacy claim repair backup and apply', () => {
 		const fixture = await createFixture();
 		await seedMixedClaims(fixture);
 		const backupPath = path.join(fixture.root, 'backups', 'claims-before.sqlite');
+		const hardenedPaths = [];
+		const trackingHardener = filePath => {
+			hardenedPaths.push(filePath);
+			hardenPath(filePath);
+		};
 
 		const proof = await createVerifiedClaimRepairBackup({
 			sourceDriver: fixture.driver,
 			backupPath,
 			observedAt: OBSERVED_AT,
 			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
-			hardenPath,
+			hardenPath: trackingHardener,
 		});
 
 		expect(fs.existsSync(backupPath)).toBe(true);
@@ -325,6 +330,7 @@ describe('legacy claim repair backup and apply', () => {
 		});
 		expect(proof.backup_sha256).toMatch(/^[0-9a-f]{64}$/);
 		expect(proof.plan_digest).toBe(proof.restore_digest);
+		expect(hardenedPaths.filter(filePath => filePath === backupPath)).toHaveLength(1);
 		await expect(createVerifiedClaimRepairBackup({
 			sourceDriver: fixture.driver,
 			backupPath,
@@ -707,6 +713,35 @@ describe('legacy claim repair backup and apply', () => {
 			fixture.config,
 		);
 		expect(receipts).toEqual([]);
+		fixture.driver.close();
+	});
+
+	test('restores owner-only backup permissions immediately before commit', async () => {
+		if (process.platform === 'win32') return;
+		let backupPath;
+		const fixture = await createFixture({
+			claimRepairFaultInjector(phase) {
+				if (phase === 'after-receipt-before-commit') fs.chmodSync(backupPath, 0o644);
+			},
+		});
+		await seedMixedClaims(fixture);
+		backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		await createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
+		});
+
+		await expect(fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config)).resolves.toMatchObject({ replayed: false });
+		expect(fs.statSync(backupPath).mode & 0o077).toBe(0);
 		fixture.driver.close();
 	});
 });
