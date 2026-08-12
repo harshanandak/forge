@@ -42,14 +42,19 @@ describe('execute — watcher lifecycle', () => {
 	});
 	test('processes oversized action sets in bounded resumable batches', async () => {
 		let writes = 0;
+		const diagnostics = [];
 		const actions = Array.from({ length: 130 }, (_, index) => ({
 			type: 'upsertPrRow', row: { number: index + 1 },
 		}));
 		await executor.execute(actions, {
 			broker: { upsertPr: async () => { writes += 1; return true; } },
 			watchers: [],
+			recordDiagnostic: entry => diagnostics.push(entry),
 		});
 		expect(writes).toBe(128);
+		expect(diagnostics).toContainEqual(expect.objectContaining({
+			kind: 'actions-truncated', requested: 130, processed: 128,
+		}));
 	});
 	test('persists and replays the public Flow process lifecycle across daemon restarts', async () => {
 		const first = await executor.execute(

@@ -622,6 +622,27 @@ describe('merge authority — exact reviewer regressions', () => {
     expect(result.terminalEvidence.receiptId).toMatch(/^[0-9a-f-]{36}$/);
   });
 
+  test('retired binding errors report a wrong issue without claiming the row must be open', async () => {
+    const result = await mergeCmd.defaultVerifyPrIssueBinding({
+      issueId: ISSUE,
+      pr: '42',
+      projectRoot: process.cwd(),
+      prContext: context({ state: 'MERGED' }),
+      allowRetired: true,
+      buildBroker: async () => ({
+        gitCommonDir: '/repo/.git',
+        broker: { readTrace: async () => ({ pull_requests: [{
+          repo: 'acme/forge', number: 42, issue_id: 'wrong-issue', state: 'closed', iterations: [],
+        }] }) },
+        driver: { close() {} },
+      }),
+    });
+
+    expect(result.bound).toBe(false);
+    expect(result.error).toMatch(/different issue/i);
+    expect(result.error).not.toMatch(/not open/i);
+  });
+
   test('merge recovery rejects a malformed expected head before matching terminal trace evidence', async () => {
     const result = await mergeCmd.defaultVerifyPrIssueBinding({
       issueId: ISSUE,

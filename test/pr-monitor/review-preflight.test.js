@@ -35,6 +35,7 @@ describe('bounded local review preflight', () => {
     for (const output of ['', 'No issues found', JSON.stringify({ type: 'status', phase: 'reviewing' })]) {
       const result = await defaultRunCodeRabbit({ projectRoot: '/repo', base: 'master' }, () => output);
       expect(result.ok).toBe(false);
+      if (output === '') expect(result.findings).toEqual(['CodeRabbit agent output was malformed or incomplete']);
     }
   });
 
@@ -92,7 +93,7 @@ describe('bounded local review preflight', () => {
       runDeterministic: async () => { calls += 1; },
     });
 
-    expect(result).toMatchObject({ status: 'INCOMPLETE', blocking: false });
+    expect(result).toMatchObject({ status: 'INCOMPLETE', blocking: true });
     expect(result.providers.coderabbit.status).toBe('NOT_APPLICABLE');
     expect(calls).toBe(0);
   });
@@ -106,7 +107,7 @@ describe('bounded local review preflight', () => {
       runDeterministic: async () => { calls += 1; },
     });
 
-    expect(result).toMatchObject({ status: 'INCOMPLETE', blocking: false });
+    expect(result).toMatchObject({ status: 'INCOMPLETE', blocking: true });
     expect(result.providers.coderabbit).toMatchObject({
       status: 'NOT_APPLICABLE', summary: 'PR head is unavailable',
     });
@@ -138,7 +139,7 @@ describe('bounded local review preflight', () => {
     });
 
     expect(result.status).toBe('INCOMPLETE');
-    expect(result.blocking).toBe(false);
+    expect(result.blocking).toBe(true);
     expect(result.providers.coderabbit).toMatchObject({ status: 'UNAVAILABLE', ok: false });
   });
 
@@ -168,7 +169,7 @@ describe('bounded local review preflight', () => {
     });
 
     expect(result.status).toBe('INCOMPLETE');
-    expect(result.blocking).toBe(false);
+    expect(result.blocking).toBe(true);
     expect(result.providers.coderabbit).toMatchObject({ status: 'UNAVAILABLE', ok: false });
   });
 });

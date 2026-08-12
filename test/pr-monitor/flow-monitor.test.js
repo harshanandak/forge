@@ -177,6 +177,30 @@ describe('Flow-backed PR monitor authority', () => {
     expect(deliveries).toBe(0);
   });
 
+  test('preserves the provider root cause when durable history is unavailable', async () => {
+    const store = durableStore();
+    const cause = new Error('socket closed');
+    store.readEventTail = async () => { throw cause; };
+
+    try {
+      await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
+      throw new Error('expected durable history failure');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'PROVIDER_UNAVAILABLE', cause });
+    }
+  });
+
+  test('maps malformed getEvent persistence JSON to incomplete durable history', async () => {
+    const store = durableStore();
+    store.getEvent = async () => ({ envelope_json: '{broken-json' });
+    store.events.push({
+      payload: { monitor_id: 'pr:owner/forge:42', event_id: 'a'.repeat(64), sequence: 1 },
+    });
+
+    await expect(runFlowMonitorPass(context(store, async () => snapshot(), async () => {})))
+      .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+  });
+
   test('bounds high-cardinality snapshots before Flow validation and durable persistence', async () => {
     const store = durableStore();
     const large = snapshot({
@@ -417,6 +441,17 @@ describe('Flow-backed PR monitor authority', () => {
     expect(reopened.terminalReceiptId).toBeUndefined();
     expect(reopened.changed).toBe(true);
     expect(store.events.some(event => event.payload.monitor_id !== ctx.monitorId)).toBe(true);
+  });
+
+  test('fails closed when reopened lifecycle depth exceeds the bounded chain', async () => {
+    const store = durableStore();
+    let next = snapshot({ state: 'CLOSED' });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ state: 'OPEN' });
+
+    await expect(runFlowMonitorPass(ctx, 8))
+      .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
   });
 
   test('preserves raw display fields while routing observations through a reopened lifecycle', async () => {

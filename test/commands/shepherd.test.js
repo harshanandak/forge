@@ -181,6 +181,55 @@ describe('shepherd command handler', () => {
     expect(out.handoff).toBeUndefined();
   });
 
+  test('forces an authoritative inline monitor pass even when a watcher is active', async () => {
+    const head = 'a'.repeat(40);
+    let observedWatcherRunning;
+    const evidence = await shepherdCmd.collectConvergenceEvidence({
+      args: ['7'], pr: '7', projectRoot: process.cwd(),
+      context: { pr: '7', owner: 'o', repo: 'r', headSha: head },
+      adapter: { readState: async () => ({ headSha: head }) },
+      deps: {
+        dir: 'journal-dir', gather: async () => ({}), store: {},
+        monitorId: 'pr:o/r:7', ownerRunId: 'run-7', packetId: 'packet-7', subjectId: 'o/r#7',
+        watcherRunning: () => true,
+        pollEvents: async input => {
+          observedWatcherRunning = input.watcherRunning(input.dir);
+          return { events: [], overflow: false, receiptIds: [], ranPass: !observedWatcherRunning };
+        },
+      },
+    });
+
+    expect(observedWatcherRunning).toBe(false);
+    expect(evidence.exactHead).toBe(head);
+  });
+
+  test('compares exact heads case-insensitively at evidence and handoff fences', async () => {
+    const lowerHead = 'abcdef0123456789abcdef0123456789abcdef01';
+    const upperHead = lowerHead.toUpperCase();
+    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
+      runPass: async () => ({ state: 'MERGE_READY', actions: [], reason: 'ready', expectedHead: upperHead }),
+      collectConvergenceEvidence: shepherdCmd.collectConvergenceEvidence,
+      pollEvents: async () => ({ events: [], overflow: false, receiptIds: [], ranPass: true }),
+      buildContext: async () => ({
+        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+        headSha: upperHead, localHead: upperHead,
+      }),
+      adapter: {
+        id: 'test', kind: 'pr-state', name: 'test',
+        readState: async () => ({ headSha: lowerHead }),
+        readRequiredChecks: async () => [], readComments: async () => [],
+        readDivergence: async () => ({}), detectConflicts: async () => false,
+        rerunFailedChecks: async () => {}, replyToThread: async () => {},
+      },
+      store: {}, monitorId: 'pr:o/r:7', ownerRunId: 'run-7', packetId: 'packet-7', subjectId: 'o/r#7',
+      git: () => '',
+    });
+
+    expect(out).toMatchObject({ success: true, state: 'MERGE_READY' });
+    expect(out.handoff.command).toContain(`--expect-head ${lowerHead}`);
+  });
+
   test('fails closed when a merge-ready pass moved beyond the locally reviewed head', async () => {
     const oldHead = 'a'.repeat(40);
     const newHead = 'b'.repeat(40);
@@ -305,6 +354,21 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
     expect(built.error).toBeUndefined();
     expect(built.store).toBeUndefined();
     expect(built.dir).toBeString();
+  });
+
+  test('fails closed when forced Memory authority initialization fails', async () => {
+    const built = await shepherdCmd.buildMonitorContext('7', root, {
+      forceAuthority: true,
+      buildContext: async () => ({
+        pr: '7', owner: 'acme', repo: 'forge', base: 'master', baseRef: 'origin/master',
+      }),
+      adapter: new (require('../../lib/adapters/pr-state-adapter').PrStateAdapter)({ gh: () => '', git: () => '' }),
+      resolveGitCommonDir: () => path.join(root, '.git'),
+      buildKernelDeps: async () => { throw new Error('kernel unavailable'); },
+    });
+
+    expect(built.error).toMatch(/durable monitor authority.*unavailable/i);
+    expect(built.store).toBeUndefined();
   });
 
   test('hashes an oversized root monitor identity within the public Memory bound', async () => {

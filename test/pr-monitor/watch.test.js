@@ -55,6 +55,21 @@ describe('watchLoop', () => {
     expect(emitted).toEqual([failure]);
     expect(state.pending.size).toBe(0);
   });
+  test('stops on a terminal receipt even when replay also returns events', async () => {
+    const held = { type: T.CHECK_FAILED, key: 'held', data: { name: 'held' } };
+    const current = { type: T.CHECK_FAILED, key: 'current', data: { name: 'current' } };
+    const terminal = { type: T.PR_MERGED, key: 'merged', data: {} };
+    const state = { pending: new Map([['held', held]]) };
+    const emitted = [];
+
+    const result = await runWatchPass(state, {
+      runMonitorPass: async () => ({ events: [current, terminal], terminalReceiptId: 'receipt-terminal' }),
+    }, event => emitted.push(event));
+
+    expect(result).toEqual({ terminal: true });
+    expect(emitted).toEqual([held, current, terminal]);
+    expect(state.pending.size).toBe(0);
+  });
   test('streams a confirmed check.failed as an emitted event on change', async () => {
     const green = snap({ checks: [{ name: 'ci', class: 'green' }] });
     const failed = snap({ checks: [{ name: 'ci', class: 'failed' }] });
