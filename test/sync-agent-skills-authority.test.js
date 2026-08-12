@@ -434,6 +434,43 @@ describe('command-owned agent skill sync', () => {
     }
   }, 30_000);
 
+  test('matches decomposed filesystem skill paths to precomposed Git paths', async () => {
+    const { root, run } = parityFixture();
+    const decomposed = 'cafe\u0301';
+    const precomposed = decomposed.normalize('NFC');
+    let authorizations = 0;
+    try {
+      fs.mkdirSync(path.join(root, 'skills', decomposed));
+      fs.mkdirSync(path.join(root, '.agents/skills', decomposed));
+      fs.writeFileSync(path.join(root, 'skills', decomposed, 'SKILL.md'), 'unicode base\n');
+      fs.writeFileSync(path.join(root, '.agents/skills', decomposed, 'SKILL.md'), 'unicode base\n');
+      expect(run(['add', '.']).status).toBe(0);
+      expect(run(['commit', '-m', 'add decomposed skill']).status).toBe(0);
+
+      const result = await syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-unicode-normalization-owner' },
+        execFileSync: (command, args, options) => {
+          const translated = args.map(arg => typeof arg === 'string' ? arg.replaceAll(precomposed, decomposed) : arg);
+          const output = execFileSync(command, translated, options);
+          return typeof output === 'string' && args[0] === 'ls-files'
+            ? output.replaceAll(decomposed, precomposed)
+            : output;
+        },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      });
+
+      expect(result.changed).toEqual([]);
+      expect(authorizations).toBe(0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   test('blocks staged canonical bytes when the worktree is restored to mirror bytes', async () => {
     const root = fixture();
     const run = args => spawnSync('git', args, { cwd: root, encoding: 'utf8' });

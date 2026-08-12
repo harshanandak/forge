@@ -65,6 +65,17 @@ function worktreeMatchesIndex(root, repoPath, indexedContent, worktreeContent, r
     === gitObjectHash(root, [`--path=${repoPath}`], worktreeContent, runGit);
 }
 
+function normalizedRepoPath(repoPath) {
+  return repoPath.normalize('NFC');
+}
+
+function recordNormalizedPath(paths, repoPath) {
+  const key = normalizedRepoPath(repoPath);
+  const existing = paths.get(key);
+  if (existing && existing !== repoPath) throw new Error(`Unicode-equivalent canonical skill paths are ambiguous: ${existing}, ${repoPath}`);
+  paths.set(key, repoPath);
+}
+
 function ambiguousCanonicalPaths(root, runGit) {
   const indexedEntries = parseGitPaths(runGit('git', ['ls-files', '-t', '-z', '--', 'skills'], {
     cwd: root,
@@ -75,43 +86,48 @@ function ambiguousCanonicalPaths(root, runGit) {
     cwd: root,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-  })).filter(entry => entry.startsWith('S ')).map(entry => entry.slice(2)));
-  const canonicalPrefixes = new Set(listCanonicalSkills(root).map(({ name }) => `skills/${name}/`));
+  })).filter(entry => entry.startsWith('S ')).map(entry => normalizedRepoPath(entry.slice(2))));
+  const filesystemPrefixes = listCanonicalSkills(root).map(({ name }) => `skills/${name}/`);
+  const canonicalPrefixKeys = new Set(filesystemPrefixes.map(normalizedRepoPath));
   for (const entry of indexedEntries) {
     const match = /^skills\/([^/]+)\/SKILL\.md$/.exec(entry.slice(2));
-    if (match && isValidSkillName(match[1])) canonicalPrefixes.add(`skills/${match[1]}/`);
+    if (match && isValidSkillName(match[1])) canonicalPrefixKeys.add(normalizedRepoPath(`skills/${match[1]}/`));
   }
-  const participatesInMirror = repoPath => [...canonicalPrefixes].some(prefix => repoPath.startsWith(prefix));
-  const indexed = new Set(indexedEntries.map(entry => entry.slice(2)).filter(participatesInMirror));
-  const skipWorktree = new Set(indexedEntries
+  const participatesInMirror = repoPath => [...canonicalPrefixKeys].some(prefix => normalizedRepoPath(repoPath).startsWith(prefix));
+  const indexed = new Map();
+  for (const repoPath of indexedEntries.map(entry => entry.slice(2)).filter(participatesInMirror)) recordNormalizedPath(indexed, repoPath);
+  const skipWorktree = new Map();
+  for (const repoPath of indexedEntries
     .filter(entry => entry.startsWith('S '))
     .map(entry => entry.slice(2))
-    .filter(participatesInMirror));
-  const worktree = new Set();
-  for (const prefix of canonicalPrefixes) {
-    walkRegularFiles(path.join(root, prefix), (_file, relative) => worktree.add(`${prefix}${relative}`));
+    .filter(participatesInMirror)) recordNormalizedPath(skipWorktree, repoPath);
+  const worktree = new Map();
+  for (const prefix of filesystemPrefixes) {
+    walkRegularFiles(path.join(root, prefix), (_file, relative) => recordNormalizedPath(worktree, `${prefix}${relative}`));
   }
-  for (const repoPath of skipWorktree) {
+  for (const repoPath of skipWorktree.values()) {
     const mirrorPath = `.agents/${repoPath}`;
     if (!fs.existsSync(path.join(root, repoPath))
-      && (!mirrorSkipWorktree.has(mirrorPath) || fs.existsSync(path.join(root, mirrorPath)))) {
+      && (!mirrorSkipWorktree.has(normalizedRepoPath(mirrorPath)) || fs.existsSync(path.join(root, mirrorPath)))) {
       throw new Error(`asymmetric sparse checkout exposes mirror without canonical: ${repoPath}`);
     }
   }
-  const paths = new Set([...indexed, ...worktree]);
-  return new Set([...paths].filter(repoPath => {
-    const indexedContent = indexedFile(root, repoPath, runGit);
+  const paths = new Set([...indexed.keys(), ...worktree.keys()]);
+  return new Set([...paths].filter(key => {
+    const indexedPath = indexed.get(key);
+    const worktreePath = worktree.get(key);
+    const indexedContent = indexedPath ? indexedFile(root, indexedPath, runGit) : null;
     let worktreeContent = null;
     try {
-      worktreeContent = fs.readFileSync(path.join(root, repoPath));
+      if (worktreePath) worktreeContent = fs.readFileSync(path.join(root, worktreePath));
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
     return indexedContent === null
       ? worktreeContent !== null
-      : (worktreeContent === null && !skipWorktree.has(repoPath))
-        || (worktreeContent !== null && !worktreeMatchesIndex(root, repoPath, indexedContent, worktreeContent, runGit));
-  }));
+      : (worktreeContent === null && !skipWorktree.has(key))
+        || (worktreeContent !== null && !worktreeMatchesIndex(root, indexedPath, indexedContent, worktreeContent, runGit));
+  }).map(key => indexed.get(key) || worktree.get(key)));
 }
 
 function indexedFile(root, repoPath, runGit) {
@@ -120,8 +136,9 @@ function indexedFile(root, repoPath, runGit) {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }));
-  if (!tracked.includes(repoPath)) return null;
-  return runGit('git', ['show', `:${repoPath}`], {
+  const trackedPath = tracked.find(candidate => normalizedRepoPath(candidate) === normalizedRepoPath(repoPath));
+  if (!trackedPath) return null;
+  return runGit('git', ['show', `:${trackedPath}`], {
     cwd: root,
     encoding: null,
     stdio: ['ignore', 'pipe', 'pipe'],
