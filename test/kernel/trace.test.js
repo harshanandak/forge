@@ -200,7 +200,7 @@ describe('Kernel receipt-bound PR trace', () => {
 
 	test('shares initialized Kernel state with an isolated linkage transaction for an in-memory database', async () => {
 		const memoryConfig = { databasePath: ':memory:' };
-		const memoryDriver = createBuiltinSQLiteDriver(memoryConfig);
+		const memoryDriver = createBuiltinSQLiteDriver({});
 		const memoryBroker = createLocalBroker({ projectRoot: root, gitCommonDir, ...memoryConfig, driver: memoryDriver });
 		await memoryBroker.initialize();
 		try {
@@ -338,6 +338,24 @@ describe('Kernel receipt-bound PR trace', () => {
 			.rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
 		expect(closes).toBe(2);
 		driver.forkConnection = originalFork;
+	});
+
+	test('rejects missing, malformed, or oversized run identities before linkage writes', async () => {
+		for (const [field, value] of [
+			['run_id', undefined], ['run_id', ''], ['run_id', 'x'.repeat(513)], ['run_id', 'run\u0000id'],
+			['attempt_id', undefined], ['attempt_id', ''], ['attempt_id', 'x'.repeat(513)], ['attempt_id', 'attempt\nid'],
+		]) {
+			const packet = workPacket();
+			const candidate = runReceipt(packet);
+			if (value === undefined) delete candidate.payload[field];
+			else candidate.payload[field] = value;
+			const invalidReceipt = rehash(candidate);
+			await expect(broker.recordPrLinkage(linkage('opened', packet, invalidReceipt)))
+				.rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
+		}
+		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE entity_type = 'pr';", config))
+			.toEqual([{ n: 0 }]);
+		expect(await driver.queryAll('SELECT COUNT(*) AS n FROM kernel_pr;', config)).toEqual([{ n: 0 }]);
 	});
 
 	test('revalidates exact claim ownership inside opened linkage persistence', async () => {
