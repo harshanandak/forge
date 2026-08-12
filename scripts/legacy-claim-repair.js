@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
+const path = require('node:path');
+
 const { createBuiltinSQLiteDriver, hardenBackupPermissions } = require('../lib/kernel/sqlite-driver');
 const {
 	ClaimRepairError,
@@ -42,6 +44,11 @@ function parseArgs(argv = []) {
 	if (!result.mode) throw new Error('Choose exactly one of --dry-run or --apply');
 	for (const required of ['databasePath', 'backupPath', 'observedAt']) {
 		if (!result[required]) throw new Error(`Missing required option: ${required}`);
+	}
+	for (const requiredPath of ['databasePath', 'backupPath']) {
+		if (!path.isAbsolute(result[requiredPath])) {
+			throw new Error(`${requiredPath} must be an absolute path`);
+		}
 	}
 	if (result.mode === 'apply' && !result.approvedDigest) {
 		throw new Error('--apply requires --approved-digest');

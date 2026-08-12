@@ -104,6 +104,8 @@ async function seedMixedClaims(fixture) {
 
 describe('legacy claim repair preflight', () => {
 	test('operator script requires an explicit mode, database, backup, and apply approval', () => {
+		const databasePath = path.resolve('kernel.sqlite');
+		const backupPath = path.resolve('backup.sqlite');
 		expect(parseArgs(['--help'])).toEqual({ help: true });
 		expect(parseArgs(['-h'])).toEqual({ help: true });
 		expect(() => parseArgs([])).toThrow('Choose exactly one');
@@ -113,29 +115,29 @@ describe('legacy claim repair preflight', () => {
 		expect(() => parseArgs(['--dry-run'])).toThrow('Missing required option');
 		expect(() => parseArgs([
 			'--apply', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
-		])).toThrow('--apply requires --approved-digest');
+		])).toThrow('databasePath must be an absolute path');
 		expect(() => parseArgs([
-			'--apply', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
+			'--apply', '--database', databasePath, '--backup', backupPath, '--at', OBSERVED_AT,
 			'--approved-digest', 'a'.repeat(64),
 		])).toThrow('--apply requires --actor');
 		expect(parseArgs([
-			'--apply', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
+			'--apply', '--database', databasePath, '--backup', backupPath, '--at', OBSERVED_AT,
 			'--approved-digest', 'a'.repeat(64), '--actor', 'operator@example.com',
 		])).toMatchObject({ mode: 'apply', actor: 'operator@example.com' });
 		expect(parseArgs([
-			'--dry-run', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
+			'--dry-run', '--database', databasePath, '--backup', backupPath, '--at', OBSERVED_AT,
 		])).toEqual({
 			mode: 'dry-run',
-			databasePath: 'kernel.sqlite',
-			backupPath: 'backup.sqlite',
+			databasePath,
+			backupPath,
 			observedAt: OBSERVED_AT,
 		});
 		expect(() => parseArgs([
-			'--dry-run', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
+			'--dry-run', '--database', databasePath, '--backup', backupPath, '--at', OBSERVED_AT,
 			'--approved-digest', 'a'.repeat(64),
 		])).toThrow('--approved-digest is valid only with --apply');
 		expect(() => parseArgs([
-			'--dry-run', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
+			'--dry-run', '--database', databasePath, '--backup', backupPath, '--at', OBSERVED_AT,
 			'constructor', 'ignored',
 		])).toThrow('Unknown argument: constructor');
 	});
@@ -707,6 +709,39 @@ describe('legacy claim repair backup and apply', () => {
 			fixture.config,
 		);
 		expect(receipts).toEqual([]);
+		fixture.driver.close();
+	});
+
+	test('rejects a backup replaced by a source alias at the commit-fence seam', async () => {
+		let backupPath;
+		let databasePath;
+		const fixture = await createFixture({
+			claimRepairFaultInjector(phase) {
+				if (phase !== 'before-backup-commit-check') return;
+				fs.rmSync(backupPath);
+				fs.linkSync(databasePath, backupPath);
+			},
+		});
+		await seedMixedClaims(fixture);
+		backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		databasePath = fixture.databasePath;
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		await createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: restoredPath => createBuiltinSQLiteDriver({ databasePath: restoredPath }),
+			hardenPath,
+		});
+
+		await expect(fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
+		const rows = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
+		expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
 		fixture.driver.close();
 	});
 
