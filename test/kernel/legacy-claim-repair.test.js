@@ -673,9 +673,11 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath,
 			actor: 'approved-operator',
 		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
-		const rows = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
-		expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
 		fixture.driver.close();
+		const verificationDriver = createBuiltinSQLiteDriver({ databasePath: fixture.databasePath });
+		const rows = await verificationDriver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
+		expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
+		verificationDriver.close();
 	});
 
 	test('keeps the verified backup fenced through receipt insertion and rolls back late replacement', async () => {
