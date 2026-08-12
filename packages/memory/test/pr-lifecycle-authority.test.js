@@ -748,7 +748,7 @@ describe('public PR lifecycle authority', () => {
     await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
     await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_NOT_ACCEPTED' });
-    expect(traceTargetSeen).toEqual({ issue_id: ISSUE_ID, repository_id: REPOSITORY_ID, repo: REPOSITORY_ID, pr_number: 514 });
+    expect(traceTargetSeen).toEqual({ issue_id: ISSUE_ID, repository_id: REPOSITORY_ID, repo: REPOSITORY_ID, pr_number: 514, git_common_dir: '/repo/.git' });
   });
 
   test('bounds provider trace row scanning before lifecycle projection', async () => {

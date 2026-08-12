@@ -592,17 +592,18 @@ function projectTrace(trace, target) {
   return { pull_requests: matches };
 }
 
-function traceTarget(linkage) {
+function traceTarget(linkage, gitCommonDir) {
   return {
     issue_id: linkage.issue_id,
     repository_id: linkage.repository_id,
     repo: linkage.repository_id,
     ...(Number.isInteger(linkage.pr_number) ? { pr_number: linkage.pr_number } : {}),
+    ...(typeof gitCommonDir === 'string' ? { git_common_dir: gitCommonDir } : {}),
   };
 }
 
-async function readLifecycleTrace(provider, linkage, timeoutMs) {
-  const target = traceTarget(linkage);
+async function readLifecycleTrace(provider, linkage, timeoutMs, gitCommonDir) {
+  const target = traceTarget(linkage, gitCommonDir);
   return callMethod(provider, 'readTrace', [target], 'trace', {
     timeoutMs,
     project: value => projectTrace(value, target),
@@ -707,7 +708,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
       || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string' || typeof target.url !== 'string') {
       fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'receipt acceptance requires authoritative PR linkage fields');
     }
-    const trace = await readLifecycleTrace(provider, linkage, timeoutMs);
+    const trace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
     traceLinkageRow(trace, linkage);
     const durable = durableAcceptance(trace, packet, receipt);
     if (durable) assertTraceLinkage(trace, linkage, packet, receipt);
@@ -728,7 +729,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     const phase = assertReceiptEvidence(packet, receipt);
     if (phase !== 'merged') fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'merge requires completed pr.merged evidence');
     const linkage = deriveLinkage(packet, receipt, live.gates);
-    const trace = await readLifecycleTrace(provider, linkage, timeoutMs);
+    const trace = await readLifecycleTrace(provider, linkage, timeoutMs, packet.payload.target?.git_common_dir);
     // Compare durable packet/receipt content before linkage checks so a reused run id with
     // divergent content fails closed even when the incoming packet omitted a PR number.
     const durable = durableAcceptance(trace, packet, receipt);
@@ -742,7 +743,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     const mergeResult = await callMethod(provider, 'mergePr', [{ packet, receipt, linkage }], 'merge', { sanitize: true, timeoutMs, reconcileOnTimeout: true });
     if (mergeResult?.merged !== true && mergeResult?.success !== true) fail('PR_LIFECYCLE_UNAVAILABLE', 'merge provider did not confirm success');
     await callMethod(provider, 'recordPrLinkage', [{ phase: 'merged', git_common_dir: target.git_common_dir, repo: packet.payload.repository_id, number: linkage.pr_number, branch: target.branch, url: target.url, occurred_at: receipt.payload.ended_at ?? receipt.created_at, work_packet: packet, run_receipt: receipt }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true });
-    const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs);
+    const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
     assertTraceLinkage(persistedTrace, linkage, packet, receipt);
     return stableResult('merged', packet, receipt, linkage);
   }
