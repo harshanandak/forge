@@ -259,6 +259,7 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
         pr: '1', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
       }),
       resolveGitCommonDir: () => gitCommonDir,
+      buildKernelDeps: async () => { throw new Error('journal fallback'); },
     });
     expect(built.dir).toBe(journal.journalDir({
       root: mainRoot, gitCommonDir, repo: 'r', pr: '1',
@@ -287,6 +288,23 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
     });
     await built.close();
     expect(closed).toBe(true);
+  });
+
+  test('falls back to the per-root journal when Memory authority initialization fails', async () => {
+    let attempted = 0;
+    const built = await shepherdCmd.buildMonitorContext('7', root, {
+      buildContext: async () => ({
+        pr: '7', owner: 'acme', repo: 'forge', base: 'master', baseRef: 'origin/master',
+      }),
+      adapter: new (require('../../lib/adapters/pr-state-adapter').PrStateAdapter)({ gh: () => '', git: () => '' }),
+      resolveGitCommonDir: () => path.join(root, '.git'),
+      buildKernelDeps: async () => { attempted += 1; throw new Error('kernel unavailable'); },
+    });
+
+    expect(attempted).toBe(1);
+    expect(built.error).toBeUndefined();
+    expect(built.store).toBeUndefined();
+    expect(built.dir).toBeString();
   });
 
   test('hashes an oversized root monitor identity within the public Memory bound', async () => {

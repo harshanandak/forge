@@ -4,6 +4,7 @@ const { describe, expect, test } = require('bun:test');
 
 const preflightCommand = require('../../lib/commands/preflight');
 const {
+  defaultRunCodeRabbit,
   defaultRunDeterministic,
   runLocalReviewPreflight,
 } = require('../../lib/pr-monitor/review-preflight');
@@ -13,6 +14,30 @@ const EXACT_HEAD_CONTEXT = {
 };
 
 describe('bounded local review preflight', () => {
+  test('accepts only a structured terminal CodeRabbit result with zero findings', async () => {
+    const result = await defaultRunCodeRabbit({ projectRoot: '/repo', base: 'master' }, () => [
+      JSON.stringify({ type: 'status', phase: 'reviewing' }),
+      JSON.stringify({ type: 'complete', status: 'review_completed', findings: 0 }),
+    ].join('\n'));
+    expect(result).toMatchObject({ ok: true, findings: [] });
+  });
+
+  test('does not mistake finding text that says no issues for a clean review', async () => {
+    const result = await defaultRunCodeRabbit({ projectRoot: '/repo', base: 'master' }, () => [
+      JSON.stringify({ type: 'finding', severity: 'minor', codegenInstructions: 'No issues found in the fallback text' }),
+      JSON.stringify({ type: 'complete', status: 'review_completed', findings: 1 }),
+    ].join('\n'));
+    expect(result.ok).toBe(false);
+    expect(result.findings).toHaveLength(1);
+  });
+
+  test('fails closed for malformed or unterminated CodeRabbit agent output', async () => {
+    for (const output of ['', 'No issues found', JSON.stringify({ type: 'status', phase: 'reviewing' })]) {
+      const result = await defaultRunCodeRabbit({ projectRoot: '/repo', base: 'master' }, () => output);
+      expect(result.ok).toBe(false);
+    }
+  });
+
   test('deterministic preflight resolves changes against the PR target branch', async () => {
     const originalHandler = preflightCommand.handler;
     let changeSet;

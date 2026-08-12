@@ -111,6 +111,22 @@ describe('merge command — mandatory release authority', () => {
     expect(out).toMatchObject({ success: true, merged: true, decisionId: 'decision-42', receiptId: 'receipt-42' });
   });
 
+  test('provider merge metadata cannot overwrite authoritative terminal evidence', async () => {
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      mergePr: async () => ({
+        merged: true, success: false, enabled: false, allowed: false,
+        reason: 'provider override', decisionId: 'provider-decision', receiptId: 'provider-receipt',
+      }),
+      prepareMergeDecision: async () => ({ decisionId: 'authority-decision' }),
+      recordMergeDecision: async () => ({ receiptId: 'authority-receipt', receiptHash: 'f'.repeat(64) }),
+    }));
+
+    expect(out).toMatchObject({
+      success: true, merged: true, enabled: true, allowed: true,
+      reason: 'all merge rules passed', decisionId: 'authority-decision', receiptId: 'authority-receipt',
+    });
+  });
+
   test('never writes terminal linkage when the external merge fails', async () => {
     let receipts = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
@@ -210,6 +226,51 @@ describe('merge command — mandatory release authority', () => {
       decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
     });
     expect(gateChecks).toBe(0);
+  });
+
+  test('replays existing terminal evidence after the live ownership claim expires', async () => {
+    let ownershipChecks = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      verifyIssueOwnership: async () => {
+        ownershipChecks += 1;
+        return {
+          owned: false, actor: 'release-actor', claimedBy: 'release-actor',
+          sessionId: 'release-session', expired: true,
+        };
+      },
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+      verifyPrIssueBinding: async () => ({
+        bound: true,
+        terminalEvidence: {
+          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+        },
+      }),
+    }));
+
+    expect(out).toMatchObject({
+      success: true, merged: true, recovered: true,
+      decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+    });
+    expect(ownershipChecks).toBe(0);
+  });
+
+  test('requires live ownership before repairing missing terminal evidence', async () => {
+    let decisions = 0;
+    let records = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      verifyIssueOwnership: async () => ({
+        owned: false, actor: 'release-actor', claimedBy: 'release-actor',
+        sessionId: 'release-session', expired: true,
+      }),
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+      prepareMergeDecision: async () => { decisions += 1; },
+      recordMergeDecision: async () => { records += 1; },
+    }));
+
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(out.error).toMatch(/ownership|claim/i);
+    expect(decisions).toBe(0);
+    expect(records).toBe(0);
   });
 
   test('reconciles a merged PR without requiring a receipt for a disabled merge gate', async () => {
@@ -336,7 +397,7 @@ describe('merge command — mandatory release authority', () => {
     }
   });
 
-  test('requires an active Kernel claim owned by the resolved lane actor', async () => {
+  test('requires an active Kernel claim after the read-only terminal replay check', async () => {
     let fetchCalls = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
       verifyIssueOwnership: async () => ({
@@ -349,7 +410,7 @@ describe('merge command — mandatory release authority', () => {
     expect(out.success).toBe(false);
     expect(out.merged).toBe(false);
     expect(out.error).toMatch(/ownership|claim/i);
-    expect(fetchCalls).toBe(0);
+    expect(fetchCalls).toBe(1);
   });
 
   test('requires the live claim to carry the exact merge session before mutation', async () => {

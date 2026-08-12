@@ -175,6 +175,7 @@ same verb (or `forge shepherd events`) on its own cadence.
 | `MERGE_READY` | Required checks are green and the branch is up to date. The shepherd hands off — **a human merges in the GitHub UI.** |
 | `ESCALATE`    | A Tier-C condition (conflict, unreadable required set, persistent failure, oscillation, budget exhaustion). Context is posted to the PR. |
 | `PENDING`     | A Tier-A action was taken, or checks are still pending. Exit and await the next scheduled pass. |
+| `INCOMPLETE`  | Exact-head local review or durable convergence evidence is unavailable. Fail closed and retry after evidence is restored. |
 | `HARD_STOP`   | A permanent auth/scope failure that retrying cannot fix. Escalate to a human to widen token scope. |
 
 ## Action ladder

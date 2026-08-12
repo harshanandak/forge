@@ -44,6 +44,17 @@ describe('watchLoop', () => {
     }, () => {});
     expect(result).toEqual({ terminal: true });
   });
+  test('flushes a held failure before stopping on an empty terminal replay', async () => {
+    const failure = { type: T.CHECK_FAILED, key: 'ci:head', data: { name: 'ci' } };
+    const state = { pending: new Map([['ci', failure]]) };
+    const emitted = [];
+    const result = await runWatchPass(state, {
+      runMonitorPass: async () => ({ events: [], terminalReceiptId: 'receipt-terminal' }),
+    }, event => emitted.push(event));
+    expect(result).toEqual({ terminal: true });
+    expect(emitted).toEqual([failure]);
+    expect(state.pending.size).toBe(0);
+  });
   test('streams a confirmed check.failed as an emitted event on change', async () => {
     const green = snap({ checks: [{ name: 'ci', class: 'green' }] });
     const failed = snap({ checks: [{ name: 'ci', class: 'failed' }] });

@@ -72,6 +72,7 @@ it were authoritative.
 | --- | --- |
 | `MERGE_READY` | Required checks green, branch up to date — hand off to a human to merge. |
 | `PENDING` | A Tier-A action was taken, or checks are still running — await the next tick/pass. |
+| `INCOMPLETE` | Exact-head local review or durable convergence evidence is unavailable — fail closed and retry after evidence is restored. |
 | `BLOCKED` | Something actionable blocks merge (failing/missing/skipped required check, conflict, behind, unresolved threads, changes requested). Read `blockers[]`. |
 | `CI_DEAD_HEAD` | The head has no required checks running (e.g. an auto-update authored by `GITHUB_TOKEN` never re-triggered CI). Recovery is an **escalation, not an autonomous Tier-A rerun**: it needs a maintainer-provided `FORGE_PR_TOKEN` (contents + pull-requests + checks) to re-author the push so CI re-triggers. |
 | `ESCALATE` | A Tier-C condition (conflict, unreadable required set, persistent failure, oscillation, budget exhaustion). Context is posted to the PR. |

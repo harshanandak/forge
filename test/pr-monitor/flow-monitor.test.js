@@ -211,6 +211,25 @@ describe('Flow-backed PR monitor authority', () => {
     expect(Buffer.byteLength(JSON.stringify(store.events.at(-1).payload.bounded_payload))).toBeLessThanOrEqual(16_384);
   });
 
+  test('preserves valid enriched job URLs longer than the generic snapshot text bound', async () => {
+    const store = durableStore();
+    let next = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
+    const jobUrl = `https://github.com/owner/forge/actions/runs/${'1234567890'.repeat(10)}/job/987654321`;
+    ctx.enrich = async records => {
+      records.find(record => record.type === 'check.failed').data.jobUrl = jobUrl;
+    };
+
+    await runFlowMonitorPass(ctx);
+
+    const failure = delivered.find(record => record.type === 'check.failed');
+    expect(failure.data.jobUrl).toBe(jobUrl);
+    expect(store.events.at(-1).payload.bounded_payload.record.data.jobUrl).toBe(jobUrl);
+  });
+
   test('preserves long repository identity in bounded durable and compatibility records', async () => {
     const store = durableStore();
     const repo = `owner/${'repository'.repeat(10)}`;
@@ -357,6 +376,16 @@ describe('Flow-backed PR monitor authority', () => {
     }, async () => {}))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
   });
 
+  test('rejects malformed compact snapshot evidence as incomplete history', async () => {
+    const store = durableStore();
+    await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
+    store.events[0].payload.bounded_payload.snapshot._snapshotEvidence = 'not-gzip-evidence';
+    store.events[0].content_hash = computeContentHash(store.events[0]);
+
+    await expect(runFlowMonitorPass(context(store, async () => snapshot(), async () => {})))
+      .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+  });
+
   test('records one terminal receipt after merged evidence and replays its id', async () => {
     const store = durableStore();
     const merged = snapshot({ state: 'MERGED' });
@@ -388,6 +417,21 @@ describe('Flow-backed PR monitor authority', () => {
     expect(reopened.terminalReceiptId).toBeUndefined();
     expect(reopened.changed).toBe(true);
     expect(store.events.some(event => event.payload.monitor_id !== ctx.monitorId)).toBe(true);
+  });
+
+  test('preserves raw display fields while routing observations through a reopened lifecycle', async () => {
+    const store = durableStore();
+    let next = snapshot({ state: 'CLOSED', checks: [] });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ state: 'OPEN', checks: [{ name: 'ci-display', class: 'green' }] });
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ state: 'OPEN', checks: [{ name: 'ci-display', class: 'failed' }] });
+
+    await runFlowMonitorPass(ctx);
+
+    expect(delivered.find(record => record.type === 'check.failed')?.data.name).toBe('ci-display');
   });
 
   test('continues a reopened lifecycle through a later merged terminal receipt with a bounded id', async () => {
