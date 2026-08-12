@@ -15,6 +15,8 @@ const HASH_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_SNAPSHOT_DEPTH = 10;
 const MAX_SNAPSHOT_NODES = 2_000;
 const MAX_SNAPSHOT_BYTES = 65_536;
+const DEFAULT_PROVIDER_TIMEOUT_MS = 5_000;
+const MAX_PROVIDER_TIMEOUT_MS = 30_000;
 const SECRET_PATTERNS = Object.freeze([
   /gh[pousr]_[A-Za-z0-9]{20,}/i,
   /sk_(?:live|test)_[A-Za-z0-9]{16,}/i,
@@ -25,8 +27,8 @@ const SECRET_PATTERNS = Object.freeze([
 ]);
 const USER_PATH_PATTERN = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+\/)/i;
 
-// This list describes optional provider capabilities; the mandatory provider surface remains
-// runIssueOperation, recordPrLinkage, and readTrace (see authority-provider.js).
+// Complete accepted provider capability contract. Live probes may supply the optional reads;
+// runIssueOperation, recordPrLinkage, and readTrace remain mandatory (see authority-provider.js).
 const PR_LIFECYCLE_PROVIDER_METHODS = Object.freeze([
   'readIssue',
   'readOwnership',
@@ -36,6 +38,9 @@ const PR_LIFECYCLE_PROVIDER_METHODS = Object.freeze([
   'readGates',
   'mergePr',
   'listReadyWork',
+  'runIssueOperation',
+  'recordPrLinkage',
+  'readTrace',
 ]);
 
 class PrLifecycleAuthorityError extends Error {
@@ -65,11 +70,17 @@ function containsForbidden(value) {
   return false;
 }
 
+function isForbiddenKey(key) {
+  return containsSecret(key) || USER_PATH_PATTERN.test(key);
+}
+
 function redactForbidden(value) {
   if (typeof value === 'string') return containsForbidden(value) ? '[redacted]' : value;
   if (Array.isArray(value)) return value.map(redactForbidden);
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactForbidden(item)]));
+    return Object.fromEntries(Object.entries(value)
+      .filter(([key]) => !isForbiddenKey(key))
+      .map(([key, item]) => [key, redactForbidden(item)]));
   }
   return value;
 }
@@ -119,15 +130,51 @@ function requiredHash(value, label) {
   return value;
 }
 
+class ProviderDeadlineError extends Error {}
+
+function validateProviderTimeout(timeoutMs) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_PROVIDER_TIMEOUT_MS) {
+    fail('PR_LIFECYCLE_INVALID_INPUT', `provider timeout must be an integer from 1 to ${MAX_PROVIDER_TIMEOUT_MS} milliseconds`);
+  }
+  return timeoutMs;
+}
+
+async function invokeWithDeadline(target, method, args, timeoutMs) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const methodArgs = [...args];
+  if (controller && target[method]?.length > args.length) methodArgs.push(controller.signal);
+  let timer;
+  let timedOut = false;
+  const operation = Promise.resolve().then(() => target[method](...methodArgs));
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller?.abort();
+      reject(new ProviderDeadlineError('provider operation deadline exceeded'));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([operation, deadline]);
+  } finally {
+    clearTimeout(timer);
+    if (timedOut) controller?.abort();
+  }
+}
+
 async function callMethod(target, method, args, label, options = {}) {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
   let result;
   try {
-    result = target[method](...args);
+    const invocationArgs = options.sanitize
+      ? snapshot(args, `${label} provider input`, { privacy: 'sanitize' })
+      : args;
+    result = await invokeWithDeadline(target, method, invocationArgs, timeoutMs);
   } catch (error) {
     fail('PR_LIFECYCLE_UNAVAILABLE', `${label} provider operation failed`, { cause: error });
   }
   try {
-    const bounded = snapshot(await Promise.resolve(result), `${label} provider response`, {
+    const bounded = snapshot(result, `${label} provider response`, {
       privacy: options.sanitize ? 'sanitize' : undefined,
     });
     if (options.unwrap && bounded?.ok === true && bounded.data !== undefined) return bounded.data;
@@ -139,11 +186,11 @@ async function callMethod(target, method, args, label, options = {}) {
   }
 }
 
-async function callProbe(provider, probes, names, args, label, fallbackName) {
+async function callProbe(provider, probes, names, args, label, fallbackName, timeoutMs) {
   const injected = names.find((name) => typeof probes?.[name] === 'function');
-  if (injected) return snapshot(await Promise.resolve(probes[injected](...args)), `${label} live probe response`);
+  if (injected) return callMethod(probes, injected, args, label, { timeoutMs });
   const direct = names.find((name) => typeof provider[name] === 'function');
-  if (direct) return callMethod(provider, direct, args, label);
+  if (direct) return callMethod(provider, direct, args, label, { timeoutMs });
   // Issue read/ownership may use the public operation broker. No invented live-state
   // operation names are permitted for head, capability, risk, or gate evidence.
   if (fallbackName && typeof provider.runIssueOperation === 'function') {
@@ -153,7 +200,7 @@ async function callProbe(provider, probes, names, args, label, fallbackName) {
       operationArgs = [args[0].issue_id];
       context = { actor: args[0].actor_id, sessionId: args[0].session_id };
     }
-    return callMethod(provider, 'runIssueOperation', [fallbackName, operationArgs, context], label, { unwrap: true });
+    return callMethod(provider, 'runIssueOperation', [fallbackName, operationArgs, context], label, { timeoutMs, unwrap: true });
   }
   fail('PR_LIFECYCLE_UNAVAILABLE', `${label} live probe is unavailable`);
 }
@@ -275,6 +322,14 @@ function optionalArrayField(input, field) {
   return { [field]: [...input[field]] };
 }
 
+function optionalPlainObjectField(input, field) {
+  if (input[field] === undefined) return {};
+  if (!input[field] || typeof input[field] !== 'object' || Array.isArray(input[field])) {
+    fail('PR_LIFECYCLE_INVALID_INPUT', `${field} must be a plain object`);
+  }
+  return { [field]: { ...input[field] } };
+}
+
 function buildPacket(input, live) {
   const issueId = requiredString(input.issue_id ?? input.issueId, 'issue_id');
   const repositoryId = requiredString(input.repository_id ?? input.repositoryId ?? live.head.repository_id, 'repository_id');
@@ -316,7 +371,11 @@ function buildPacket(input, live) {
       ...(input.risk ?? live.risk ? { risk: input.risk ?? live.risk } : {}),
       ...(live.risk.digest ? { risk_manifest_digest: live.risk.digest } : {}),
       ...(input.target ? { target: input.target } : {}),
-      receipt_requirements: { terminal: true, gate_ids: [...live.gates.ids], ...(input.receipt_requirements ?? {}) },
+      receipt_requirements: {
+        ...optionalPlainObjectField(input, 'receipt_requirements').receipt_requirements,
+        terminal: true,
+        gate_ids: [...live.gates.ids],
+      },
     },
     extensions: {},
   };
@@ -417,8 +476,9 @@ function stableResult(kind, packet, receipt, linkage) {
     : { merged: true, packet_hash: packet.content_hash, receipt_hash: receipt.content_hash, run_id: receipt.payload.run_id, linkage };
 }
 
-function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
+function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEFAULT_PROVIDER_TIMEOUT_MS } = {}) {
   if (!provider || typeof provider !== 'object' || Array.isArray(provider)) throw new TypeError('PR lifecycle authority requires a public provider object');
+  validateProviderTimeout(timeoutMs);
   for (const method of ['runIssueOperation', 'recordPrLinkage', 'readTrace']) {
     if (typeof provider[method] !== 'function') throw new TypeError(`PR lifecycle provider must implement ${method}()`);
   }
@@ -433,22 +493,22 @@ function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
     }
     const requestedActor = packet ? expectedActor : requiredString(input.actor_id ?? input.actorId, 'actor_id');
     const requestedSession = input.session_id ?? input.sessionId;
-    const issue = await callProbe(provider, liveProbes, ['readIssue', 'getIssue'], [issueId], 'issue', 'show');
+    const issue = await callProbe(provider, liveProbes, ['readIssue'], [issueId], 'issue', 'show', timeoutMs);
     const issueRevision = assertLiveIssue(issue, issueId);
     const ownershipArgs = { issue_id: issueId, ...(requestedActor ? { actor_id: requestedActor } : {}), ...(requestedSession ? { session_id: requestedSession } : {}) };
     const ownership = assertOwnership(
-      await callProbe(provider, liveProbes, ['readOwnership', 'getOwnership', 'ownsIssue'], [ownershipArgs], 'ownership', 'owns'),
+      await callProbe(provider, liveProbes, ['readOwnership'], [ownershipArgs], 'ownership', 'owns', timeoutMs),
       { actor_id: requestedActor, session_id: requestedSession },
     );
-    const head = await callProbe(provider, liveProbes, ['readHead', 'getHead'], [{ issue_id: issueId, repository_id: repositoryId }], 'head');
+    const head = await callProbe(provider, liveProbes, ['readHead'], [{ issue_id: issueId, repository_id: repositoryId }], 'head', undefined, timeoutMs);
     const normalizedHead = providerHead(head, repositoryId);
-    const capability = await callProbe(provider, liveProbes, ['readCapability', 'getCapability', 'readCapabilityManifest'], [{ issue_id: issueId, repository_id: normalizedHead.repository_id }], 'capability');
+    const capability = await callProbe(provider, liveProbes, ['readCapability'], [{ issue_id: issueId, repository_id: normalizedHead.repository_id }], 'capability', undefined, timeoutMs);
     const capabilityDigestValue = capabilityDigest(capability);
     const workflowConfigRevision = requiredString(capability.workflow_config_revision ?? capability.config_revision, 'workflow_config_revision');
     if (input.workflow_config_revision && input.workflow_config_revision !== workflowConfigRevision) fail('PR_LIFECYCLE_REVISION_STALE', 'requested workflow config revision is stale');
-    const risk = await callProbe(provider, liveProbes, ['readRisk', 'getRisk'], [{ issue_id: issueId }], 'risk');
+    const risk = await callProbe(provider, liveProbes, ['readRisk'], [{ issue_id: issueId }], 'risk', undefined, timeoutMs);
     const normalizedRisk = assertRisk(risk, packet?.payload.risk_manifest_digest);
-    const gates = await callProbe(provider, liveProbes, ['readGates', 'getGates'], [{ issue_id: issueId }], 'gates');
+    const gates = await callProbe(provider, liveProbes, ['readGates'], [{ issue_id: issueId }], 'gates', undefined, timeoutMs);
     const normalizedGates = assertGates(gates);
     return { issue, issueRevision, ownership, head: normalizedHead, capability, capabilityDigest: capabilityDigestValue, risk: normalizedRisk, gates: normalizedGates, workflowConfigRevision };
   }
@@ -461,6 +521,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
   async function issueWorkPacket(rawInput = {}) {
     const input = snapshot(rawInput, 'issue input');
     requiredString(input.actor_id ?? input.actorId, 'actor_id');
+    optionalPlainObjectField(input, 'receipt_requirements');
     const live = await readLive(input);
     const packet = buildPacket(input, live);
     assertContract(packet, WORK_PACKET_SCHEMA, { issueRevision: live.issueRevision, workflowConfigRevision: live.workflowConfigRevision, capabilityManifestDigest: live.capabilityDigest, exactHead: live.head.head });
@@ -490,7 +551,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
       fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'receipt acceptance requires authoritative PR linkage fields');
     }
     const traceTarget = { pr_number: linkage.pr_number, repo: linkage.repository_id, issue_id: linkage.issue_id };
-    const trace = await callMethod(provider, 'readTrace', [traceTarget], 'trace');
+    const trace = await callMethod(provider, 'readTrace', [traceTarget], 'trace', { timeoutMs });
     const durable = durableAcceptance(trace, packet, receipt);
     if (durable) {
       assertTraceLinkage(trace, linkage, packet, receipt);
@@ -505,8 +566,8 @@ function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
         occurred_at: receipt.payload.ended_at ?? receipt.created_at,
         work_packet: packet,
         run_receipt: receipt,
-      }], 'PR linkage', { sanitize: true });
-      const persistedTrace = await callMethod(provider, 'readTrace', [traceTarget], 'trace');
+      }], 'PR linkage', { sanitize: true, timeoutMs });
+      const persistedTrace = await callMethod(provider, 'readTrace', [traceTarget], 'trace', { timeoutMs });
       assertTraceLinkage(persistedTrace, linkage, packet, receipt);
     }
     return stableResult('accepted', packet, receipt, linkage);
@@ -526,28 +587,28 @@ function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
     const phase = assertReceiptEvidence(packet, receipt);
     if (phase !== 'merged') fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'merge requires completed pr.merged evidence');
     const linkage = deriveLinkage(packet, receipt, live.gates);
-    const trace = await callMethod(provider, 'readTrace', [{ issue_id: linkage.issue_id, repository_id: linkage.repository_id, ...(linkage.pr_number ? { pr_number: linkage.pr_number, repo: linkage.repository_id } : {}) }], 'trace');
+    const trace = await callMethod(provider, 'readTrace', [{ issue_id: linkage.issue_id, repository_id: linkage.repository_id, ...(linkage.pr_number ? { pr_number: linkage.pr_number, repo: linkage.repository_id } : {}) }], 'trace', { timeoutMs });
     // Compare durable packet/receipt content before linkage checks so a reused run id with
     // divergent content fails closed even when the incoming packet omitted a PR number.
     durableAcceptance(trace, packet, receipt);
     assertTraceLinkage(trace, linkage, packet, receipt);
     const target = packet.payload.target;
-    if (typeof provider.mergePr === 'function' || typeof provider.merge === 'function') {
-      const method = typeof provider.mergePr === 'function' ? 'mergePr' : 'merge';
-      await callMethod(provider, method, [{ packet, receipt, linkage }], 'merge', { sanitize: true });
+    if (typeof provider.mergePr === 'function') {
+      const method = 'mergePr';
+      await callMethod(provider, method, [{ packet, receipt, linkage }], 'merge', { sanitize: true, timeoutMs });
     } else {
       if (!target || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string') fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage fields');
-      await callMethod(provider, 'recordPrLinkage', [{ phase: 'merged', git_common_dir: target.git_common_dir, repo: packet.payload.repository_id, number: linkage.pr_number, branch: target.branch, url: target.url, occurred_at: receipt.payload.ended_at ?? receipt.created_at, work_packet: packet, run_receipt: receipt }], 'PR linkage', { sanitize: true });
+      await callMethod(provider, 'recordPrLinkage', [{ phase: 'merged', git_common_dir: target.git_common_dir, repo: packet.payload.repository_id, number: linkage.pr_number, branch: target.branch, url: target.url, occurred_at: receipt.payload.ended_at ?? receipt.created_at, work_packet: packet, run_receipt: receipt }], 'PR linkage', { sanitize: true, timeoutMs });
     }
     return stableResult('merged', packet, receipt, linkage);
   }
 
   async function requestNextWork(rawInput = {}) {
     const input = snapshot(rawInput, 'next work input');
-    const method = ['listReadyWork', 'ready', 'requestNextWork'].find((name) => typeof provider[name] === 'function');
+    const method = typeof provider.listReadyWork === 'function' ? 'listReadyWork' : undefined;
     const ready = method
-      ? await callMethod(provider, method, [input], 'ready')
-      : await callMethod(provider, 'runIssueOperation', ['ready', [input], {}], 'ready', { unwrap: true });
+      ? await callMethod(provider, method, [input], 'ready', { timeoutMs })
+      : await callMethod(provider, 'runIssueOperation', ['ready', [input], {}], 'ready', { timeoutMs, unwrap: true });
     if (!Array.isArray(ready)) fail('PR_LIFECYCLE_UNAVAILABLE', 'ready provider returned a malformed queue');
     return ready;
   }

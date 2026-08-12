@@ -5,7 +5,10 @@ const {
   computeContentHash,
   validateContractStructure,
 } = require('@forge/memory-contracts');
-const { createPrLifecycleAuthority } = require('../src/pr-lifecycle-authority');
+const {
+  PR_LIFECYCLE_PROVIDER_METHODS,
+  createPrLifecycleAuthority,
+} = require('../src/pr-lifecycle-authority');
 
 const ISSUE_ID = 'issue-1';
 const REPOSITORY_ID = 'github.com/example/forge';
@@ -118,8 +121,8 @@ function provider(overrides = {}) {
     readCapability: async () => ({ digest: DIGEST, approved: true, available: true, probed: true, expires_at: '2099-01-01T00:00:00.000Z', config_revision: CONFIG_REVISION }),
     readRisk: async () => ({ approved: true, digest: 'c'.repeat(64) }),
     readGates: async () => ({ complete: true, approved: true, ids: ['gate-1'] }),
-    merge: async (value) => ({ merged: true, linkage: value }),
-    ready: async () => ([{ id: 'first', rank: 1 }, { id: 'second', rank: 2 }]),
+    mergePr: async (value) => ({ merged: true, linkage: value }),
+    listReadyWork: async () => ([{ id: 'first', rank: 1 }, { id: 'second', rank: 2 }]),
     ...overrides,
   };
   base.recordPrLinkage = async (value) => {
@@ -138,6 +141,96 @@ describe('public PR lifecycle authority', () => {
     expect(typeof authority.acceptRunReceipt).toBe('function');
     expect(typeof authority.mergeWorkPacket).toBe('function');
     expect(typeof authority.requestNextWork).toBe('function');
+  });
+
+  test('exports only the canonical public lifecycle provider methods', () => {
+    expect(PR_LIFECYCLE_PROVIDER_METHODS).toEqual([
+      'readIssue',
+      'readOwnership',
+      'readHead',
+      'readCapability',
+      'readRisk',
+      'readGates',
+      'mergePr',
+      'listReadyWork',
+      'runIssueOperation',
+      'recordPrLinkage',
+      'readTrace',
+    ]);
+  });
+
+  test('pins receipt requirements to live terminal gates and rejects non-objects', async () => {
+    const authority = createPrLifecycleAuthority({ provider: provider() });
+    const issued = await authority.issueWorkPacket({
+      issue_id: ISSUE_ID,
+      repository_id: REPOSITORY_ID,
+      actor_id: 'agent-1',
+      receipt_requirements: { terminal: false, gate_ids: ['caller-gate'] },
+    });
+    expect(issued.packet.payload.receipt_requirements).toEqual({ terminal: true, gate_ids: ['gate-1'] });
+    await expect(authority.issueWorkPacket({
+      issue_id: ISSUE_ID,
+      repository_id: REPOSITORY_ID,
+      actor_id: 'agent-1',
+      receipt_requirements: [],
+    })).rejects.toMatchObject({ code: 'PR_LIFECYCLE_INVALID_INPUT' });
+  });
+
+  test('maps injected live probe throws and rejections to unavailable', async () => {
+    for (const readIssue of [
+      () => { throw new Error('probe failed'); },
+      async () => { throw new Error('probe rejected'); },
+    ]) {
+      const authority = createPrLifecycleAuthority({ provider: provider(), liveProbes: { readIssue } });
+      await expect(authority.issueWorkPacket({
+        issue_id: ISSUE_ID,
+        repository_id: REPOSITORY_ID,
+        actor_id: 'agent-1',
+      })).rejects.toMatchObject({ code: 'PR_LIFECYCLE_UNAVAILABLE' });
+    }
+  });
+
+  test('bounds provider calls and rejects invalid timeout configuration before invocation', async () => {
+    let invoked = 0;
+    const never = createPrLifecycleAuthority({
+      provider: provider({ readIssue: async () => { invoked += 1; return new Promise(() => {}); } }),
+      timeoutMs: 5,
+    });
+    const outcome = await Promise.race([
+      never.issueWorkPacket({ issue_id: ISSUE_ID, repository_id: REPOSITORY_ID, actor_id: 'agent-1' })
+        .then(() => null)
+        .catch(error => error),
+      new Promise(resolve => setTimeout(() => resolve({ code: 'PR_LIFECYCLE_TEST_TIMEOUT' }), 100)),
+    ]);
+    expect(outcome).toMatchObject({ code: 'PR_LIFECYCLE_UNAVAILABLE' });
+    expect(invoked).toBe(1);
+    let observedSignal;
+    const abortable = createPrLifecycleAuthority({
+      provider: provider({
+        readIssue: async (_issueId, signal) => new Promise(resolve => {
+          observedSignal = signal;
+          signal.addEventListener('abort', () => resolve({ id: ISSUE_ID, revision: 7, status: 'open', ready: true }));
+        }),
+      }),
+      timeoutMs: 5,
+    });
+    const abortOutcome = await Promise.race([
+      abortable.issueWorkPacket({ issue_id: ISSUE_ID, repository_id: REPOSITORY_ID, actor_id: 'agent-1' })
+        .then(() => null)
+        .catch(error => error),
+      new Promise(resolve => setTimeout(() => resolve({ code: 'PR_LIFECYCLE_TEST_TIMEOUT' }), 100)),
+    ]);
+    expect(abortOutcome).toMatchObject({ code: 'PR_LIFECYCLE_UNAVAILABLE' });
+    expect(observedSignal).toBeInstanceOf(AbortSignal);
+    expect(observedSignal.aborted).toBe(true);
+    for (const timeoutMs of [0, -1, 30_001, Infinity, '5']) {
+      let calls = 0;
+      expect(() => createPrLifecycleAuthority({
+        provider: provider({ readIssue: async () => { calls += 1; } }),
+        timeoutMs,
+      })).toThrowError(expect.objectContaining({ code: 'PR_LIFECYCLE_INVALID_INPUT' }));
+      expect(calls).toBe(0);
+    }
   });
 
   test('issues a hash-valid packet only after live readiness and ownership checks', async () => {
@@ -300,7 +393,7 @@ describe('public PR lifecycle authority', () => {
     const workPacket = packet({ payload: { target: { pr_number: 514, branch: 'codex/test', git_common_dir: '/repo/.git', url: 'https://example.test/pull/514' } } });
     const runReceipt = receipt(workPacket);
     const authority = createPrLifecycleAuthority({
-      provider: provider({ merge: async (value) => { merges += 1; return { merged: true, linkage: value }; } }),
+      provider: provider({ mergePr: async (value) => { merges += 1; return { merged: true, linkage: value }; } }),
     });
     await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt });
     const result = await authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt });
@@ -317,7 +410,7 @@ describe('public PR lifecycle authority', () => {
       mutations_authorized: ['pr.opened'],
     } });
     const authority = createPrLifecycleAuthority({
-      provider: provider({ merge: async () => { merges += 1; return { merged: true }; } }),
+      provider: provider({ mergePr: async () => { merges += 1; return { merged: true }; } }),
     });
     await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt });
     await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt }))
@@ -332,7 +425,7 @@ describe('public PR lifecycle authority', () => {
     workPacket.content_hash = computeContentHash(workPacket);
     const runReceipt = receipt(workPacket);
     const authority = createPrLifecycleAuthority({
-      provider: provider({ merge: async () => { merges += 1; return { merged: true }; } }),
+      provider: provider({ mergePr: async () => { merges += 1; return { merged: true }; } }),
     });
     await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt }))
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_UNAVAILABLE' });
@@ -407,14 +500,14 @@ describe('public PR lifecycle authority', () => {
 
   test('returns provider ready order without reranking', async () => {
     const ready = [{ id: 'z', rank: 10 }, { id: 'a', rank: 1 }];
-    const authority = createPrLifecycleAuthority({ provider: provider({ ready: async () => ready }) });
+    const authority = createPrLifecycleAuthority({ provider: provider({ listReadyWork: async () => ready }) });
     const result = await authority.requestNextWork();
     expect(result).toEqual(ready);
   });
 
   test('uses the public ready operation when provider has no ready method', async () => {
     const base = provider();
-    delete base.ready;
+    delete base.listReadyWork;
     base.runIssueOperation = async (operation) => operation === 'ready'
       ? { ok: true, data: [{ id: 'z' }, { id: 'a' }] }
       : null;
@@ -441,7 +534,7 @@ describe('public PR lifecycle authority', () => {
           if (traceReads === 2) return { pull_requests: [row()] };
           return { pull_requests: [row(), row()] };
         },
-        merge: async () => { merges += 1; return { merged: true }; },
+        mergePr: async () => { merges += 1; return { merged: true }; },
       }),
     });
     await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt });
@@ -541,7 +634,7 @@ describe('public PR lifecycle authority', () => {
   test('uses the public recordPrLinkage operation for merge persistence', async () => {
     const calls = [];
     const base = provider({
-      merge: undefined,
+      mergePr: undefined,
       recordPrLinkage: async (value) => { calls.push(value); return { link: { id: 'pr-1' } }; },
     });
     const workPacket = packet({ payload: {
@@ -616,7 +709,7 @@ describe('public PR lifecycle authority', () => {
     const workPacket = packet();
     const runReceipt = receipt(workPacket);
     const authority = createPrLifecycleAuthority({
-      provider: provider({ recordPrLinkage: async () => ({ token: 'sk-live_1234567890123456' }) }),
+      provider: provider({ recordPrLinkage: async () => ({ token: 'sk-live_1234567890123456', 'sk-live_1234567890123456': 'hidden' }) }),
     });
     const accepted = await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt });
     expect(JSON.stringify(accepted)).not.toContain('sk-live_');
@@ -653,7 +746,7 @@ describe('public PR lifecycle authority', () => {
     let merges = 0;
     const workPacket = packet({ payload: { target: { pr_number: 514, branch: 'codex/test', git_common_dir: '/repo/.git', url: 'https://example.test/pull/514' } } });
     const runReceipt = receipt(workPacket);
-    const authority = createPrLifecycleAuthority({ provider: provider({ merge: async () => { merges += 1; return { ok: true }; } }) });
+    const authority = createPrLifecycleAuthority({ provider: provider({ mergePr: async () => { merges += 1; return { ok: true }; } }) });
     await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt });
     const divergent = receipt(workPacket, { payload: { validation: { status: 'PASS', note: 'different' } } });
     await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: divergent }))
