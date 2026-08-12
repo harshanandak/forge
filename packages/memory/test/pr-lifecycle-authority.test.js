@@ -631,6 +631,98 @@ describe('public PR lifecycle authority', () => {
     expect(events).toEqual(['merge', 'record:merged']);
   });
 
+  test('serializes concurrent identical merge attempts and passes an exact idempotency key', async () => {
+    let merges = 0;
+    let releaseMerge;
+    let durable;
+    const workPacket = packet();
+    const runReceipt = receipt(workPacket);
+    const authority = createPrLifecycleAuthority({ provider: provider({
+      mergePr: async input => {
+        merges += 1;
+        expect(input.idempotency_key).toMatch(/^pr-merge:[0-9a-f]{64}$/);
+        await new Promise(resolve => { releaseMerge = resolve; });
+        return { merged: true };
+      },
+      recordPrLinkage: async value => { durable = value; return { ok: true }; },
+      readTrace: async () => durable ? { pull_requests: [{
+        number: 514, repo: REPOSITORY_ID, head_sha: HEAD, issue_id: ISSUE_ID,
+        iterations: [{ type: 'pr.merged', work_packet_hash: workPacket.content_hash,
+          work_packet_identity: packetIdentity(workPacket), run_receipt_hash: runReceipt.content_hash }],
+      }] } : { pull_requests: [] },
+    }) });
+    const first = authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
+    while (!releaseMerge) await new Promise(resolve => setTimeout(resolve, 1));
+    const second = authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
+    releaseMerge();
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    expect(merges).toBe(1);
+  });
+
+  test('releases failed merge serialization for retry and keeps different targets independent', async () => {
+    const attempts = new Map();
+    const releases = new Map();
+    const durable = new Map();
+    const packet514 = packet();
+    const receipt514 = receipt(packet514);
+    const packet515 = packet({ payload: {
+      packet_id: 'packet-2',
+      target: { pr_number: 515, branch: 'codex/other', git_common_dir: '/repo/.git', url: 'https://example.test/pull/515' },
+    } });
+    const receipt515 = receipt(packet515, { payload: { run_id: 'run-2', attempt_id: 'attempt-2' } });
+    const authority = createPrLifecycleAuthority({ provider: provider({
+      mergePr: async input => {
+        const number = input.linkage.pr_number;
+        attempts.set(number, (attempts.get(number) ?? 0) + 1);
+        if (number === 514 && attempts.get(number) === 1) throw new Error('transient');
+        await new Promise(resolve => { releases.set(number, resolve); });
+        return { merged: true };
+      },
+      recordPrLinkage: async value => { durable.set(value.number, value); return { ok: true }; },
+      readTrace: async target => {
+        const value = durable.get(target.pr_number);
+        return value ? { pull_requests: [{ number: value.number, repo: REPOSITORY_ID, head_sha: HEAD, issue_id: ISSUE_ID,
+          iterations: [{ type: 'pr.merged', work_packet_hash: value.work_packet.content_hash,
+            work_packet_identity: packetIdentity(value.work_packet), run_receipt_hash: value.run_receipt.content_hash }] }] }
+          : { pull_requests: [] };
+      },
+    }) });
+    await expect(authority.mergeWorkPacket({ packet: packet514, receipt: receipt514, session_id: 'session-1' }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_UNAVAILABLE' });
+    const retry514 = authority.mergeWorkPacket({ packet: packet514, receipt: receipt514, session_id: 'session-1' });
+    const merge515 = authority.mergeWorkPacket({ packet: packet515, receipt: receipt515, session_id: 'session-1' });
+    while (!releases.has(514) || !releases.has(515)) await new Promise(resolve => setTimeout(resolve, 1));
+    expect(attempts).toEqual(new Map([[514, 2], [515, 1]]));
+    releases.get(514)();
+    releases.get(515)();
+    await expect(Promise.all([retry514, merge515])).resolves.toHaveLength(2);
+  });
+
+  test('rejects a divergent receipt queued behind an identical merge', async () => {
+    let releaseMerge;
+    let durable;
+    let merges = 0;
+    const workPacket = packet();
+    const acceptedReceipt = receipt(workPacket);
+    const divergentReceipt = receipt(workPacket, { payload: { attempt_id: 'attempt-2' } });
+    const authority = createPrLifecycleAuthority({ provider: provider({
+      mergePr: async () => { merges += 1; await new Promise(resolve => { releaseMerge = resolve; }); return { merged: true }; },
+      recordPrLinkage: async value => { durable = value; return { ok: true }; },
+      readTrace: async () => durable ? { pull_requests: [{ number: 514, repo: REPOSITORY_ID, head_sha: HEAD, issue_id: ISSUE_ID,
+        iterations: [{ type: 'pr.merged', work_packet_hash: workPacket.content_hash,
+          work_packet_identity: packetIdentity(workPacket), run_receipt_hash: acceptedReceipt.content_hash,
+          run_id: acceptedReceipt.payload.run_id }] }] } : { pull_requests: [] },
+    }) });
+    const first = authority.mergeWorkPacket({ packet: workPacket, receipt: acceptedReceipt, session_id: 'session-1' });
+    while (!releaseMerge) await new Promise(resolve => setTimeout(resolve, 1));
+    const divergent = authority.mergeWorkPacket({ packet: workPacket, receipt: divergentReceipt, session_id: 'session-1' })
+      .then(() => null, error => error);
+    releaseMerge();
+    await expect(first).resolves.toMatchObject({ merged: true });
+    await expect(divergent).resolves.toMatchObject({ code: 'PR_LIFECYCLE_REPLAY_CONFLICT' });
+    expect(merges).toBe(1);
+  });
+
   test('does not record terminal linkage when the merge provider reports failure', async () => {
     let writes = 0;
     const workPacket = packet();
@@ -849,6 +941,46 @@ describe('public PR lifecycle authority', () => {
     });
     await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_INVALID_INPUT' });
+  });
+
+  test('rejects authoritative trace truncation before lifecycle side effects', async () => {
+    let merges = 0;
+    let writes = 0;
+    const workPacket = packet();
+    const authority = createPrLifecycleAuthority({ provider: provider({
+      mergePr: async () => { merges += 1; return { merged: true }; },
+      recordPrLinkage: async () => { writes += 1; return { ok: true }; },
+      readTrace: async () => ({ gaps: ['pull_requests:overflow'], pull_requests: [] }),
+    }) });
+    await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_REPLAY_CONFLICT' });
+    expect({ merges, writes }).toEqual({ merges: 0, writes: 0 });
+  });
+
+  test('retries linkage persistence after a confirmed merge without invoking merge twice', async () => {
+    let merges = 0;
+    let writes = 0;
+    let durable;
+    const workPacket = packet();
+    const runReceipt = receipt(workPacket);
+    const authority = createPrLifecycleAuthority({ provider: provider({
+      mergePr: async () => { merges += 1; return { merged: true }; },
+      recordPrLinkage: async value => {
+        writes += 1;
+        if (writes === 1) throw new Error('transient Kernel write');
+        durable = value;
+        return { ok: true };
+      },
+      readTrace: async () => durable ? { pull_requests: [{ number: 514, repo: REPOSITORY_ID, head_sha: HEAD, issue_id: ISSUE_ID,
+        iterations: [{ type: 'pr.merged', work_packet_hash: workPacket.content_hash,
+          work_packet_identity: packetIdentity(workPacket), run_receipt_hash: runReceipt.content_hash }] }] }
+        : { pull_requests: [] },
+    }) });
+    await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
+      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_UNAVAILABLE' });
+    await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
+      .resolves.toMatchObject({ merged: true });
+    expect({ merges, writes }).toEqual({ merges: 1, writes: 2 });
   });
 
   test('returns provider ready order without reranking', async () => {

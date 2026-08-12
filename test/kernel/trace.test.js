@@ -260,6 +260,18 @@ describe('Kernel receipt-bound PR trace', () => {
 		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
 	});
 
+	test('rejects missing or non-string packet identity before writes', async () => {
+		for (const packetId of [undefined, { forged: true }]) {
+			let packet = workPacket();
+			if (packetId === undefined) delete packet.payload.packet_id;
+			else packet.payload.packet_id = packetId;
+			packet = rehash(packet);
+			await expect(broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet))))
+				.rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
+		}
+		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
+	});
+
 	test('rejects a hash-valid zero packet revision before writes', async () => {
 		const packet = workPacket({ packet_revision: 0 });
 
