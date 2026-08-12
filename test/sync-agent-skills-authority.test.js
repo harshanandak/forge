@@ -28,7 +28,7 @@ describe('command-owned agent skill sync', () => {
         env: { FORGE_ACTOR: 'skill-sync-owner' },
         execFileSync: (_command, args) => {
           if (args[0] === 'rev-parse') return `${HEAD}\n`;
-          if (args[0] === 'diff') return '';
+          if (args[0] === 'diff' || args[0] === 'ls-files') return '';
           calls.push('stage');
           return '';
         },
@@ -67,7 +67,7 @@ describe('command-owned agent skill sync', () => {
         env: { FORGE_ACTOR: 'skill-sync-owner' },
         execFileSync: (_command, args) => {
           if (args[0] === 'rev-parse') return `${HEAD}\n`;
-          if (args[0] === 'diff') return '';
+          if (args[0] === 'diff' || args[0] === 'ls-files') return '';
           staged = true;
           return '';
         },
@@ -79,6 +79,42 @@ describe('command-owned agent skill sync', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('reauthorizes unstaged generated drift after completion fails before staging', async () => {
+    const root = fixture();
+    const run = (args) => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+    let completions = 0;
+    let authorizations = 0;
+    try {
+      expect(run(['init']).status).toBe(0);
+      expect(run(['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+      expect(run(['config', 'user.name', 'Forge Test']).status).toBe(0);
+      expect(run(['add', '.']).status).toBe(0);
+      expect(run(['commit', '-m', 'base']).status).toBe(0);
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'new canonical bytes\n');
+      expect(run(['add', 'skills/review/SKILL.md']).status).toBe(0);
+      const options = {
+        root,
+        env: { FORGE_ACTOR: 'skill-retry-owner' },
+        issueAuthorization: async () => ({ success: true, capabilityId: `capability-${++authorizations}` }),
+        completeAuthorization: async () => (
+          ++completions === 1
+            ? { success: false, error: 'forced completion failure' }
+            : { success: true }
+        ),
+      };
+
+      await expect(syncAgentSkills(options)).rejects.toThrow('completion failed');
+      expect(run(['diff', '--name-only']).stdout.trim()).toBe('.agents/skills/review/SKILL.md');
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/SKILL.md');
+
+      await syncAgentSkills(options);
+      expect(authorizations).toBe(2);
+      expect(run(['diff', '--cached', '--name-only']).stdout).toContain('.agents/skills/review/SKILL.md');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   test('real hook accepts one exact sync and denies replay or foreign actor', async () => {
     const root = fixture();

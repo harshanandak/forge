@@ -28,13 +28,18 @@ function actorFromEnv(env) {
   return env.FORGE_ACTOR || env.USER || env.USERNAME || 'unknown';
 }
 
-function stagedPaths(root, runGit) {
+function generatedDriftPaths(root, runGit) {
   try {
-    return new Set(runGit('git', ['diff', '--cached', '--name-only', '--diff-filter=ACMRDT'], {
+    const commands = [
+      ['diff', '--cached', '--name-only', '--diff-filter=ACMRDT', '--', '.agents/skills'],
+      ['diff', '--name-only', '--diff-filter=ACMRDT', '--', '.agents/skills'],
+      ['ls-files', '--others', '--exclude-standard', '--', '.agents/skills'],
+    ];
+    return new Set(commands.flatMap(args => runGit('git', args, {
       cwd: root,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-    }).split(/\r?\n/).map(value => value.trim().replace(/\\/g, '/')).filter(Boolean));
+    }).split(/\r?\n/).map(value => value.trim().replace(/\\/g, '/')).filter(Boolean)));
   } catch {
     return new Set();
   }
@@ -55,7 +60,7 @@ function walkRegularFiles(root, visit, current = root) {
 
 function changedSkillFiles(root, runGit = execFileSync) {
   const mirror = resolveCodexRepoSkillsDir(root);
-  const staged = stagedPaths(root, runGit);
+  const drift = generatedDriftPaths(root, runGit);
   const changed = [];
   for (const { name, sourcePath: sourceRoot } of listCanonicalSkills(root)) {
     walkRegularFiles(sourceRoot, (sourcePath, relative) => {
@@ -63,7 +68,7 @@ function changedSkillFiles(root, runGit = execFileSync) {
       const mirrorPath = path.join(mirror, name, relative);
       const repoPath = `.agents/skills/${name}/${relative}`;
       try {
-        if (canonical.equals(fs.readFileSync(mirrorPath)) && !staged.has(repoPath)) return;
+        if (canonical.equals(fs.readFileSync(mirrorPath)) && !drift.has(repoPath)) return;
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }

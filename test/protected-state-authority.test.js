@@ -264,4 +264,27 @@ describe('protected-state Kernel authority', () => {
 			fs.rmSync(outside, { recursive: true, force: true });
 		}
 	});
+
+	test('refuses delete authority while the canonical source still exists', async () => {
+		const fs = require('node:fs');
+		const os = require('node:os');
+		const path = require('node:path');
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skill-live-delete-'));
+		try {
+			fs.mkdirSync(path.join(root, 'skills', 'review'), { recursive: true });
+			const content = Buffer.from('live canonical bytes\n');
+			fs.writeFileSync(path.join(root, 'skills', 'review', 'SKILL.md'), content);
+			const result = await issueGeneratedHarnessSkillAuthorization(root, {
+				actor: 'skill-sync',
+				path: '.agents/skills/review/SKILL.md',
+				sourceHead: TEST_HEAD,
+				writeIntent: 'delete',
+				priorContent: content,
+			});
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('source to be absent');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
 });
