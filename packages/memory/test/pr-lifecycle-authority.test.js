@@ -701,6 +701,26 @@ describe('public PR lifecycle authority', () => {
     expect(writes).toBe(0);
   });
 
+  test('rejects ambiguous or non-PR linkage evidence before writing', async () => {
+    let writes = 0;
+    const workPacket = packet({ payload: { target: { branch: 'codex/test', git_common_dir: '/repo/.git' } } });
+    for (const evidence_refs of [
+      [{ kind: 'pr', pr_number: 514, url: 'https://example.test/pull/514' },
+        { kind: 'pr', pr_number: 515, url: 'https://example.test/pull/515' }],
+      [{ kind: 'pr', pr_number: 514, url: 'https://example.test/pull/514' },
+        { kind: 'pr', pr_number: 514, url: 'https://example.test/pull/other' }],
+      [{ kind: 'validation', pr_number: 514, url: 'https://example.test/pull/514' }],
+    ]) {
+      const runReceipt = receipt(workPacket, { payload: { evidence_refs } });
+      const authority = createPrLifecycleAuthority({ provider: provider({
+        recordPrLinkage: async () => { writes += 1; return { ok: true }; },
+      }) });
+      await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
+        .rejects.toMatchObject({ code: expect.stringMatching(/PR_LIFECYCLE_(?:LINKAGE_CONFLICT|LINKAGE_UNAVAILABLE)/) });
+    }
+    expect(writes).toBe(0);
+  });
+
   test('preserves only a validated git common directory in projected trace rows', async () => {
     const gitCommonDir = 'C:\\repo\\.git';
     const workPacket = packet({ payload: { target: { ...packet().payload.target, git_common_dir: gitCommonDir } } });
@@ -784,19 +804,14 @@ describe('public PR lifecycle authority', () => {
     await expect(authority.requestNextWork()).resolves.toEqual([{ id: 'z' }, { id: 'a' }]);
   });
 
-  test('projects an ordered bounded ready subset before snapshotting the Kernel envelope', async () => {
+  test('fails closed instead of prefix-truncating an authoritative ready queue', async () => {
     const base = provider();
     delete base.listReadyWork;
     base.runIssueOperation = async () => ({ ok: true, data: { issues: Array.from({ length: 140 }, (_, index) => ({
       id: `issue-${index}`, title: `title-${index}`, body: 'x'.repeat(1_000), rank: index,
     })), count: 140 } });
     const authority = createPrLifecycleAuthority({ provider: base });
-    const ready = await authority.requestNextWork();
-    expect(ready.length).toBeGreaterThan(0);
-    expect(ready.length).toBeLessThanOrEqual(128);
-    expect(ready.length).toBeLessThan(140);
-    expect(ready[0].id).toBe('issue-0');
-    expect(ready.at(-1).id).toBe(`issue-${ready.length - 1}`);
+    await expect(authority.requestNextWork()).rejects.toMatchObject({ code: 'PR_LIFECYCLE_READINESS_STALE' });
   });
 
   test('does not conceal malformed ready entries behind bounded projection', async () => {

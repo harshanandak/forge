@@ -521,13 +521,16 @@ function assertPacketLiveBindings(packet, live) {
 
 function deriveLinkage(packet, receipt, gates) {
   const target = packet.payload.target ?? {};
-  const prEvidence = receipt.payload.evidence_refs.filter(entry => Number.isInteger(entry?.pr_number));
+  const prEvidence = receipt.payload.evidence_refs.filter(entry => entry?.kind === 'pr' && Number.isInteger(entry?.pr_number));
+  const evidenceNumbers = new Set(prEvidence.map(entry => entry.pr_number));
+  if (evidenceNumbers.size > 1) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt contains ambiguous PR numbers');
   if (Number.isInteger(target.pr_number) && prEvidence.some(entry => entry.pr_number !== target.pr_number)) {
     fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt PR number conflicts with packet target');
   }
   let prNumber = Number.isInteger(target.pr_number) ? target.pr_number : undefined;
   if (prNumber === undefined) prNumber = prEvidence[0]?.pr_number;
   const matchingEvidence = prEvidence.filter(entry => entry.pr_number === prNumber && typeof entry?.url === 'string');
+  if (new Set(matchingEvidence.map(entry => entry.url)).size > 1) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt contains ambiguous PR URLs');
   if (typeof target.url === 'string' && matchingEvidence.some(entry => entry.url !== target.url)) {
     fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt PR URL conflicts with packet target');
   }
@@ -633,8 +636,9 @@ function projectReadyResponse(value) {
   const issues = Array.isArray(envelope) ? envelope : dataProperty(envelope, 'issues');
   if (!Array.isArray(issues)) return value;
   if (types.isProxy(issues)) throw new TypeError('ready provider queue cannot be a Proxy');
+  if (issues.length > MAX_READY_ITEMS) fail('PR_LIFECYCLE_READINESS_STALE', 'authoritative ready queue exceeds lifecycle bounds');
   const selected = [];
-  const length = Math.min(issues.length, MAX_READY_ITEMS);
+  const length = issues.length;
   for (let index = 0; index < length; index += 1) {
     const descriptor = Object.getOwnPropertyDescriptor(issues, String(index));
     if (!descriptor || !Object.hasOwn(descriptor, 'value') || descriptor.enumerable !== true) {
@@ -648,7 +652,9 @@ function projectReadyResponse(value) {
       });
       selected.push(descriptor.value);
     } catch (error) {
-      if (['CANONICAL_BYTE_LIMIT', 'CANONICAL_NODE_LIMIT', 'CANONICAL_DEPTH_LIMIT'].includes(error?.code)) break;
+      if (['CANONICAL_BYTE_LIMIT', 'CANONICAL_NODE_LIMIT', 'CANONICAL_DEPTH_LIMIT'].includes(error?.code)) {
+        fail('PR_LIFECYCLE_READINESS_STALE', 'authoritative ready queue exceeds lifecycle bounds');
+      }
       throw error;
     }
   }
