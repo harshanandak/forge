@@ -26,7 +26,6 @@ function parityFixture() {
   if (run(['init']).status !== 0
     || run(['config', 'user.email', 'forge-test@example.invalid']).status !== 0
     || run(['config', 'user.name', 'Forge Test']).status !== 0
-    || run(['config', 'core.autocrlf', 'false']).status !== 0
     || run(['add', '.']).status !== 0
     || run(['commit', '-m', 'base']).status !== 0) {
     throw new Error('failed to initialize parity fixture');
@@ -38,6 +37,33 @@ describe('command-owned agent skill sync', () => {
   test('preserves literal backslashes in NUL-delimited Git paths', () => {
     expect(parseGitPaths('skills/review/notes\\guide.md\0')).toEqual(['skills/review/notes\\guide.md']);
   });
+
+  test('accepts a clean canonical checkout after Git CRLF conversion', async () => {
+    const { root, run } = parityFixture();
+    let authorizations = 0;
+    try {
+      expect(run(['config', 'core.autocrlf', 'true']).status).toBe(0);
+      fs.rmSync(path.join(root, 'skills/review/SKILL.md'));
+      fs.rmSync(path.join(root, '.agents/skills/review/SKILL.md'));
+      expect(run(['checkout', '--', 'skills/review/SKILL.md', '.agents/skills/review/SKILL.md']).status).toBe(0);
+      expect(fs.readFileSync(path.join(root, 'skills/review/SKILL.md'), 'utf8')).toContain('\r\n');
+
+      const result = await syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-crlf-owner' },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      });
+
+      expect(result.changed).toEqual([]);
+      expect(authorizations).toBe(0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   if (path.sep === '/') {
     test('syncs a literal-backslash sibling filename on supported platforms', async () => {
@@ -80,6 +106,7 @@ describe('command-owned agent skill sync', () => {
           if (args[0] === 'ls-files' && args.at(-1) === 'skills') return 'H skills/review/SKILL.md\0';
           if (args[0] === 'ls-files' && args.at(-1).startsWith('skills/')) return `${args.at(-1)}\0`;
           if (args[0] === 'show' && args[1] === ':skills/review/SKILL.md') return Buffer.from('canonical bytes\n');
+          if (args[0] === 'hash-object') return `${'b'.repeat(40)}\n`;
           if (args[0] === 'diff' || args[0] === 'ls-files') return '';
           calls.push('stage');
           return '';
@@ -122,6 +149,7 @@ describe('command-owned agent skill sync', () => {
           if (args[0] === 'ls-files' && args.at(-1) === 'skills') return 'H skills/review/SKILL.md\0';
           if (args[0] === 'ls-files' && args.at(-1).startsWith('skills/')) return `${args.at(-1)}\0`;
           if (args[0] === 'show' && args[1] === ':skills/review/SKILL.md') return Buffer.from('canonical bytes\n');
+          if (args[0] === 'hash-object') return `${'b'.repeat(40)}\n`;
           if (args[0] === 'diff' || args[0] === 'ls-files') return '';
           staged = true;
           return '';

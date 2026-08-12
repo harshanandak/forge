@@ -49,6 +49,22 @@ function generatedDriftPaths(root, runGit) {
   }))));
 }
 
+function gitObjectHash(root, args, content, runGit) {
+  const hash = runGit('git', ['hash-object', ...args, '--stdin'], {
+    cwd: root,
+    encoding: 'utf8',
+    input: content,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  }).trim();
+  if (!/^[0-9a-f]{40,64}$/.test(hash)) throw new Error('Git returned an invalid object hash while inspecting canonical skill parity');
+  return hash;
+}
+
+function worktreeMatchesIndex(root, repoPath, indexedContent, worktreeContent, runGit) {
+  return gitObjectHash(root, [], indexedContent, runGit)
+    === gitObjectHash(root, [`--path=${repoPath}`], worktreeContent, runGit);
+}
+
 function ambiguousCanonicalPaths(root, runGit) {
   const indexedEntries = parseGitPaths(runGit('git', ['ls-files', '-t', '-z', '--', 'skills'], {
     cwd: root,
@@ -94,7 +110,7 @@ function ambiguousCanonicalPaths(root, runGit) {
     return indexedContent === null
       ? worktreeContent !== null
       : (worktreeContent === null && !skipWorktree.has(repoPath))
-        || (worktreeContent !== null && !indexedContent.equals(worktreeContent));
+        || (worktreeContent !== null && !worktreeMatchesIndex(root, repoPath, indexedContent, worktreeContent, runGit));
   }));
 }
 
