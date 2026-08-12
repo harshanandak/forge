@@ -293,6 +293,21 @@ describe('legacy claim repair backup and apply', () => {
 		fixture.driver.close();
 	});
 
+	test('rejects a hardlink backup alias without reusing that SQLite handle', async () => {
+		const fixture = await createFixture();
+		await seedMixedClaims(fixture);
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		const hardlinkPath = path.join(fixture.root, 'kernel-hardlink.sqlite');
+		fs.linkSync(fixture.databasePath, hardlinkPath);
+		await expect(fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath: hardlinkPath,
+			actor: 'approved-operator',
+		}, fixture.config)).rejects.toThrow('must not alias');
+		fixture.driver.close();
+	});
+
 	test('requires the approved digest, applies exact CAS updates, and replays idempotently', async () => {
 		const fixture = await createFixture();
 		await seedMixedClaims(fixture);
@@ -310,15 +325,6 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath: fixture.databasePath,
 			actor: 'approved-operator',
 		}, fixture.config)).rejects.toThrow('must not alias');
-		const hardlinkPath = path.join(fixture.root, 'kernel-hardlink.sqlite');
-		fs.linkSync(fixture.databasePath, hardlinkPath);
-		await expect(fixture.driver.applyLegacyClaimRepair({
-			observedAt: OBSERVED_AT,
-			approvedDigest: preflight.digest,
-			backupPath: hardlinkPath,
-			actor: 'approved-operator',
-		}, fixture.config)).rejects.toThrow('must not alias');
-		fs.unlinkSync(hardlinkPath);
 		await expect(fixture.driver.applyLegacyClaimRepair({
 			observedAt: OBSERVED_AT,
 			approvedDigest: preflight.digest,
