@@ -96,6 +96,7 @@ describe('Kernel receipt-bound PR trace', () => {
 	let branch;
 	let workFolder;
 	let rawRecordPrLinkage;
+	let brokerNow;
 
 	beforeEach(async () => {
 		root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-trace-'));
@@ -105,7 +106,9 @@ describe('Kernel receipt-bound PR trace', () => {
 		fs.mkdirSync(gitCommonDir, { recursive: true });
 		config = { databasePath: path.join(root, 'kernel.sqlite') };
 		driver = createBuiltinSQLiteDriver({ databasePath: config.databasePath });
-		broker = createLocalBroker({ projectRoot: root, gitCommonDir, databasePath: config.databasePath, driver });
+		brokerNow = '2026-08-11T00:10:00.000Z';
+		broker = createLocalBroker({ projectRoot: root, gitCommonDir, databasePath: config.databasePath, driver,
+			now: () => brokerNow });
 		await broker.initialize();
 		await driver.exec(
 			"INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-trace', 'Trace', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');",
@@ -209,7 +212,8 @@ describe('Kernel receipt-bound PR trace', () => {
 	test('shares initialized Kernel state with an isolated linkage transaction for an in-memory database', async () => {
 		const memoryConfig = { databasePath: ':memory:' };
 		const memoryDriver = createBuiltinSQLiteDriver({});
-		const memoryBroker = createLocalBroker({ projectRoot: root, gitCommonDir, ...memoryConfig, driver: memoryDriver });
+		const memoryBroker = createLocalBroker({ projectRoot: root, gitCommonDir, ...memoryConfig, driver: memoryDriver,
+			now: () => '2026-08-11T00:10:00.000Z' });
 		await memoryBroker.initialize();
 		try {
 			await memoryDriver.exec(
@@ -307,7 +311,7 @@ describe('Kernel receipt-bound PR trace', () => {
 			return fork;
 		};
 		await broker.recordPrLinkage(linkage());
-		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-1', sessionId: 'session-1' }))
+		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-2', sessionId: 'session-2' }))
 			.rejects.toBeInstanceOf(Error);
 		expect(closes).toBe(2);
 		driver.forkConnection = originalFork;
@@ -374,6 +378,7 @@ describe('Kernel receipt-bound PR trace', () => {
 		await driver.insertKernelClaim({ id: 'claim-2', issue_id: 'issue-trace', actor: 'agent-2', session_id: 'session-2',
 			state: 'active', claimed_at: '2026-08-11T00:11:00.000Z', expires_at: '2026-08-11T00:12:00.000Z' }, {}, config);
 		await expect(broker.recordOpenedPrLinkage(linkage(), context)).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+		brokerNow = '2026-08-11T00:13:00.000Z';
 		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-2', sessionId: 'session-2', now: '2026-08-11T00:13:00.000Z' }))
 			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
 	});
@@ -383,6 +388,13 @@ describe('Kernel receipt-bound PR trace', () => {
 			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
 		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
 		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
+	});
+
+	test('uses broker time instead of caller time to reject expired opened linkage ownership', async () => {
+		brokerNow = '2026-08-11T01:01:00.000Z';
+		await expect(rawRecordPrLinkage(linkage(), {
+			actor: 'agent-1', sessionId: 'session-1', now: '2026-08-11T00:10:00.000Z',
+		})).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
 	});
 
 	test('rejects a foreign issue PR binding inside the linkage transaction', async () => {
