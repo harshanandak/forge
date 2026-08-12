@@ -488,7 +488,7 @@ describe('legacy claim repair backup and apply', () => {
 		fixture.driver.close();
 	});
 
-	test('rejects a receipt-shaped event without canonical repair provenance', async () => {
+	test('reserves the durable claim-repair receipt namespace from generic event writers', async () => {
 		const fixture = await createFixture();
 		await seedMixedClaims(fixture);
 		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
@@ -502,24 +502,18 @@ describe('legacy claim repair backup and apply', () => {
 			mutations: { released: 1, reclaimable: 1, total: 2 },
 			replayed: false,
 		};
-		await fixture.driver.insertKernelEvent({
+		await expect(fixture.driver.insertKernelEvent({
 			id: 'forged-row',
-			entity_type: 'issue',
-			entity_id: 'terminal-expired',
-			event_type: 'comment',
+			entity_type: 'claim_repair',
+			entity_id: 'legacy_claims',
+			event_type: 'claim.repair',
 			idempotency_key: `claim.repair:${preflight.digest}`,
 			expected_revision: 0,
 			actor: 'attacker',
-			origin: 'raw-broker',
+			origin: 'forge.claim-repair',
 			payload_json: JSON.stringify(forgedReceipt),
 			created_at: OBSERVED_AT,
-		}, fixture.config);
-		await expect(fixture.driver.applyLegacyClaimRepair({
-			observedAt: OBSERVED_AT,
-			approvedDigest: preflight.digest,
-			backupPath: path.join(fixture.root, 'missing.sqlite'),
-			actor: 'approved-operator',
-		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_RECEIPT_INVALID' });
+		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_RECEIPT_RESERVED' });
 		fixture.driver.close();
 	});
 
@@ -716,8 +710,7 @@ describe('legacy claim repair backup and apply', () => {
 		fixture.driver.close();
 	});
 
-	test('restores owner-only backup permissions immediately before commit', async () => {
-		if (process.platform === 'win32') return;
+	test.skipIf(process.platform === 'win32')('restores owner-only backup permissions immediately before commit', async () => {
 		let backupPath;
 		const fixture = await createFixture({
 			claimRepairFaultInjector(phase) {
