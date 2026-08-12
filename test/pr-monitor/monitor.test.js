@@ -162,4 +162,27 @@ describe('pollEvents (events --since)', () => {
     expect(res.ranPass).toBe(true);
     expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
   });
+
+  test('caps returned deltas and reports overflow instead of returning whole history', async () => {
+    const records = Array.from({ length: 140 }, (_, index) => ({
+      seq: index + 1,
+      ts: '2026-07-13T00:00:00.000Z',
+      type: T.VERDICT_CHANGED,
+      key: `state:${index}`,
+      repo: 'acme-forge',
+      pr: '1',
+      data: {},
+    }));
+    journal.appendEvents(dir, records);
+    const res = await pollEvents({
+      dir,
+      gather: async () => { throw new Error('must not run'); },
+      since: 0,
+      watcherRunning: () => true,
+    });
+
+    expect(res.overflow).toBe(true);
+    expect(res.events).toHaveLength(128);
+    expect(res.events[0].seq).toBe(13);
+  });
 });

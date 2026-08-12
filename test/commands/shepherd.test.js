@@ -5,6 +5,13 @@ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 const shepherdCmd = require('../../lib/commands/shepherd');
 const { validateCommand } = require('../../lib/commands/_registry');
 
+const CONVERGENCE_DEPS = {
+  runLocalPreflight: async () => ({ status: 'PASS', blocking: false, providers: {}, findings: [] }),
+  collectConvergenceEvidence: async () => ({
+    deltas: [], deltaOverflow: false, receiptIds: [], exactHead: 'a'.repeat(40),
+  }),
+};
+
 describe('shepherd command handler', () => {
   test('satisfies the _registry { name, description, handler } contract', () => {
     expect(validateCommand(shepherdCmd)).toEqual({ valid: true });
@@ -21,6 +28,7 @@ describe('shepherd command handler', () => {
       return { state: 'PENDING', actions: [], reason: 'pending' };
     };
     const out = await shepherdCmd.handler(['123'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
       runPass: fakeRun,
       buildContext: async () => ({ pr: '123', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' }),
     });
@@ -37,10 +45,10 @@ describe('shepherd command handler', () => {
     };
     const buildContext = async () => ({ pr: '5', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' });
 
-    await shepherdCmd.handler(['5'], {}, process.cwd(), { runPass: fakeRun, buildContext });
+    await shepherdCmd.handler(['5'], {}, process.cwd(), { ...CONVERGENCE_DEPS, runPass: fakeRun, buildContext });
     expect(seenAutoRebase).toBe(false);
 
-    await shepherdCmd.handler(['5', '--auto-rebase'], {}, process.cwd(), { runPass: fakeRun, buildContext });
+    await shepherdCmd.handler(['5', '--auto-rebase'], {}, process.cwd(), { ...CONVERGENCE_DEPS, runPass: fakeRun, buildContext });
     expect(seenAutoRebase).toBe(true);
   });
 
@@ -58,7 +66,7 @@ describe('shepherd command handler', () => {
     const gh = (cmd, args) => {
       ghCalls.push(args.join(' '));
       if (args.includes('pr') && args.includes('view')) {
-        return JSON.stringify({ baseRefName: 'release/2.0' });
+        return JSON.stringify({ baseRefName: 'release/2.0', headRefOid: 'a'.repeat(40) });
       }
       if (args.includes('repo') && args.includes('view')) {
         return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
@@ -71,6 +79,7 @@ describe('shepherd command handler', () => {
 
     expect(ctx.base).toBe('release/2.0');
     expect(ctx.baseRef).toBe('origin/release/2.0');
+    expect(ctx.headSha).toBe('a'.repeat(40));
     expect(ctx.owner).toBe('acme');
     expect(ctx.repo).toBe('widget');
     // It MUST consult the PR, not just `gh repo view` defaultBranchRef.
@@ -94,11 +103,33 @@ describe('shepherd command handler', () => {
 
   test('MERGE_READY result never carries a merge side-effect', async () => {
     const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
       runPass: async () => ({ state: 'MERGE_READY', actions: [], reason: 'ready' }),
       buildContext: async () => ({ pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' }),
     });
     expect(out.state).toBe('MERGE_READY');
     expect((out.actions || []).some((a) => a.type === 'merge')).toBe(false);
+    expect(out.handoff).toMatchObject({ next: 'merge', humanApprovalRequired: true });
+  });
+
+  test('consolidates blocking local findings before a read-only remote decision', async () => {
+    let dryRun;
+    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
+      runLocalPreflight: async () => ({
+        status: 'FAIL', blocking: true, providers: {},
+        findings: [{ provider: 'lint', detail: 'error' }],
+      }),
+      runPass: async (context) => {
+        dryRun = context.dryRun;
+        return { state: 'MERGE_READY', actions: [], reason: 'remote ready' };
+      },
+      buildContext: async () => ({ pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' }),
+    });
+
+    expect(dryRun).toBe(true);
+    expect(out).toMatchObject({ state: 'PENDING', remoteState: 'MERGE_READY' });
+    expect(out.localPreflight.findings).toEqual([{ provider: 'lint', detail: 'error' }]);
   });
 });
 

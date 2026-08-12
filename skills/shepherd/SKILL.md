@@ -27,7 +27,7 @@ Forge owns your open PRs. A singleton daemon converges every open PR toward merg
 `shepherd` is the PR-ownership utility, not a workflow stage. It has two modes over the **single `forge shepherd` verb**:
 
 - **Daemon (default ownership):** `forge shepherd daemon` is a machine-wide singleton for this repo. It heartbeats and converges the whole PR world every ~60s — self-registering hand-opened PRs, restarting killed watchers, reaping verified orphans, converging CI check state into kernel verdicts, retiring merged/closed PRs — then self-retires (releases the lease, kills its children, exits) once no PRs remain open. You do NOT poll by hand; the daemon does.
-- **One-shot pass:** `forge shepherd <pr>` reads one PR's state, takes at most one idempotent Tier-A action, and exits. Use it for a point-in-time question about a single PR.
+- **One-shot convergence:** `forge shepherd <pr>` runs the local review preflight, reads one PR's current-head state, takes at most one idempotent Tier-A action, persists bounded deltas/receipts, and exits. Use it for a point-in-time question or one bounded convergence attempt on a single PR.
 
 ## Which mode? (decision rule)
 
@@ -56,6 +56,15 @@ forge shepherd events <pr> --since <seq>   # only the new events since sequence 
 ```
 
 `--pull` is strictly read-only (dry-run pass: no rerun, no rebase, no merge, no thread resolution). It returns one bounded, actionable-only payload — `blockers[]`, classified `requiredChecks`, failed-check log `failures[]` (matrix-deduped), and every unresolved `reviewThreads[]` — so you get "everything blocking this PR + what to fix" in one call. Passing checks and satisfied policy are omitted.
+
+A plain `forge shepherd <pr>` also returns a consolidated `localPreflight`, at
+most 128 `deltas`, `receiptIds`, and one explicit `handoff`. The preflight probes
+CodeRabbit and runs strict lint, Sonar parity, structural drift, and affected
+tests. An unavailable or unauthenticated CodeRabbit CLI is reported as
+`UNAVAILABLE`/`INCOMPLETE`, never as a fabricated pass; deterministic failures or
+actual review findings make the remote decision read-only for that pass. A
+checkout that is not the exact PR head is `NOT_APPLICABLE`, never reviewed as if
+it were authoritative.
 
 ### Verdict vocabulary (collapsed, W-S1)
 
@@ -109,4 +118,11 @@ before lease, Kernel-state, or process work. All leave the manual
 
 ## State
 
-Progress is durable in GitHub (PR comments, labels, `git`). The one local store is the per-PR journal under `.forge/pr-monitor/<repo>-<pr>/` (append-only `events.ndjson` + snapshot/consumer cursors) — the replay surface for `events --since`. The bounded one-shot pass keeps no separate local state.
+Public Memory is the durable monitor authority and public Flow reducers restore
+its bounded event and watcher-process checkpoints after restart. The per-PR
+journal under `.forge/pr-monitor/<repo>-<pr>/` remains a compatibility delivery
+surface for `events --since`, not authority. Merged/closed evidence produces one
+idempotent terminal MonitorReceipt; conflicting or incomplete replay fails
+closed. For 0.1 no receipt grants continuing lease authority: live ownership is
+re-probed at consequential boundaries, and canonical LeaseReceipt epoch/scope
+plus the same-actor/session ABA fix remain explicitly deferred.

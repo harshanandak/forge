@@ -22,8 +22,10 @@ function snapshot(overrides = {}) {
 function durableStore() {
   const events = [];
   const cursors = new Map();
+  let terminalReceipt = null;
   return {
     events,
+    get terminalReceipt() { return terminalReceipt; },
     async appendEvent(event, targets) {
       const existing = events.find((item) => item.payload.event_id === event.payload.event_id
         || item.payload.sequence === event.payload.sequence);
@@ -45,7 +47,13 @@ function durableStore() {
     async readEventTail(_monitorId, { limit }) {
       const selected = events.slice(-limit);
       return {
-        events: selected.map(event => ({ envelope_json: JSON.stringify(event) })),
+        events: selected.map(event => ({
+          event_id: event.payload.event_id,
+          monitor_id: event.payload.monitor_id,
+          sequence: event.payload.sequence,
+          content_hash: event.content_hash,
+          envelope_json: JSON.stringify(event),
+        })),
         overflow: events.length > limit,
         truncated_before_sequence: events.length > limit ? selected[0].payload.sequence : null,
       };
@@ -54,7 +62,11 @@ function durableStore() {
       return {
         cursors: [...cursors.entries()].map(([target, sequence]) => ({ monitor_id: monitorId, target, sequence })),
         outbox: [],
-        terminal_receipt: null,
+        terminal_receipt: terminalReceipt && {
+          monitor_id: monitorId,
+          content_hash: terminalReceipt.content_hash,
+          envelope_json: JSON.stringify(terminalReceipt),
+        },
         overflow: { cursors: false, outbox: false },
       };
     },
@@ -62,6 +74,13 @@ function durableStore() {
       const event = events.find(item => item.payload.event_id === receipt.payload.event_id);
       cursors.set(receipt.payload.target, event.payload.sequence);
       return { idempotent: false };
+    },
+    async recordTerminalReceipt(receipt) {
+      if (terminalReceipt && terminalReceipt.content_hash !== receipt.content_hash) {
+        throw new Error('monitor receipt conflict');
+      }
+      terminalReceipt = structuredClone(receipt);
+      return { idempotent: Boolean(terminalReceipt) };
     },
   };
 }
@@ -136,5 +155,43 @@ describe('Flow-backed PR monitor authority', () => {
 
     await expect(runFlowMonitorPass(context(store, async () => snapshot(), async () => {})))
       .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+  });
+
+  test('rejects content-corrupted durable history before provider observation', async () => {
+    const store = durableStore();
+    await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
+    store.events[0].payload.bounded_payload.snapshot.headSha = 'b'.repeat(40);
+
+    await expect(runFlowMonitorPass(context(store, async () => {
+      throw new Error('corrupt replay must not poll the provider');
+    }, async () => {}))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+  });
+
+  test('records one terminal receipt after merged evidence and replays its id', async () => {
+    const store = durableStore();
+    const merged = snapshot({ state: 'MERGED' });
+    const first = await runFlowMonitorPass(context(store, async () => merged, async () => {}));
+    const replay = await runFlowMonitorPass(context(store, async () => {
+      throw new Error('terminal replay must not poll the provider');
+    }, async () => {}));
+
+    expect(first.terminalReceiptId).toBeString();
+    expect(first.receiptIds).toContain(first.terminalReceiptId);
+    expect(store.terminalReceipt.payload).toMatchObject({
+      terminal_state: 'PASS',
+      cancellation_acknowledged: false,
+      lease_cleanup: { continuing_authority: false },
+    });
+    expect(replay.terminalReceiptId).toBe(first.terminalReceiptId);
+  });
+
+  test('rejects a content-corrupted terminal receipt instead of replaying authority', async () => {
+    const store = durableStore();
+    await runFlowMonitorPass(context(store, async () => snapshot({ state: 'MERGED' }), async () => {}));
+    store.terminalReceipt.payload.terminal_reason = 'tampered';
+
+    await expect(runFlowMonitorPass(context(store, async () => {
+      throw new Error('corrupt terminal replay must not poll the provider');
+    }, async () => {}))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
   });
 });

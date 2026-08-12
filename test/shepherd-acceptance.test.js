@@ -237,6 +237,10 @@ describe('shepherd acceptance §5', () => {
     const out = await shepherdCmd.handler(['123'], {}, ROOT, {
       adapter: s.adapter,
       buildContext: async () => BASE_CTX,
+      runLocalPreflight: async () => ({ status: 'PASS', blocking: false, providers: {}, findings: [] }),
+      collectConvergenceEvidence: async () => ({
+        deltas: [], deltaOverflow: false, receiptIds: [], exactHead: 'a'.repeat(40),
+      }),
     });
     expect(out.state).toBe('MERGE_READY');
     expect((out.actions || []).some((a) => a.type === 'merge')).toBe(false);

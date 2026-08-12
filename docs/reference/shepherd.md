@@ -33,9 +33,10 @@ verb:
   non-dry-run ship. These are the only automatic firing seams; ordinary commands
   do not launch it. Once running, an agent does not poll: the daemon owns the
   convergence loop.
-- **`forge shepherd <pr>` — one bounded pass.** Reads one PR's state, takes at
-  most one Tier-A action, exits. The point-in-time surface for a single PR (see
-  *Bounded-pass model* below).
+- **`forge shepherd <pr>` — one bounded convergence pass.** Runs local review
+  preflight, reads one PR's state, takes at most one Tier-A action, persists
+  bounded deltas/receipts, and exits. The point-in-time surface for a single PR
+  (see *Bounded-pass model* below).
 - **`forge shepherd watch <pr>` / `watch --adopt`** — foreground streaming watch of
   one PR, or (`--adopt`) adopt every currently-open PR into the watcher set.
 - **`forge shepherd events <pr> --since <seq>`** — the event deltas for a PR since a
@@ -114,6 +115,16 @@ one Tier-A action, then exit. There is no in-process loop. This preserves the
 project's documented ergonomic — poll briefly, then stop and hand off. A pass
 that finds checks still pending returns `PENDING`; the next scheduled pass picks
 up from there.
+
+Before remote mutation, the plain pass consolidates a probed CodeRabbit CLI with
+strict lint, structural drift, Sonar parity, and affected tests. The result is
+returned as `localPreflight`; CodeRabbit absence/auth loss is explicitly
+`UNAVAILABLE`/`INCOMPLETE`, not green. Deterministic failure or actual local
+review findings makes the remote decision dry-run for that pass. A local
+checkout that is not the exact PR head is explicitly `NOT_APPLICABLE`. Output is
+bounded to 128 `deltas` plus receipt IDs and one outcome handoff: `review` for
+semantic feedback, explicit human-approved `merge` at `MERGE_READY`, or `verify`
+after merged evidence. Shepherd never resolves threads and never merges.
 
 `--watch`-style behavior, if desired, belongs in an external scheduler (cron, or
 a `/loop`) that re-invokes the bounded pass with a debounce of at least 60
@@ -248,8 +259,13 @@ neutral `forge/pr-monitor` check.
 
 ## State
 
-Progress is durable in the Actions job summary, the single verdict label, and
-`git`. The one local store is the constant monitor's per-PR journal under
-`.forge/pr-monitor/<repo>-<pr>/` (the append-only `events.ndjson` + snapshot and
-consumer cursors) — the delivery/replay surface for `forge shepherd watch` and
-`events --since`. The bounded shepherd pass itself keeps no separate local state.
+Public Memory is the durable monitor authority; public Flow reducers replay its
+bounded event and watcher-process checkpoints after restart. The per-PR journal
+under `.forge/pr-monitor/<repo>-<pr>/` is retained as a compatibility delivery
+surface for `forge shepherd watch` and `events --since`, not as authority.
+Merged/closed evidence records one idempotent terminal MonitorReceipt that drives
+cleanup and the `verify` handoff; incomplete or conflicting replay fails closed.
+
+For 0.1, no receipt grants continuing lease authority. Consequential paths
+re-probe live ownership, while canonical LeaseReceipt epoch/scope and the
+same-actor/session release-reclaim ABA fix remain explicitly deferred.
