@@ -178,7 +178,13 @@ function changedSkillFiles(root, runGit = execFileSync, ignoredCanonical = ignor
   const changed = [];
   for (const { name, sourcePath: sourceRoot } of listCanonicalSkills(root)) {
     walkRegularFiles(sourceRoot, (sourcePath, relative) => {
-      if (ignoredCanonical.has(normalizedRepoPath(`skills/${name}/${relative}`))) return;
+      const canonicalRepoPath = `skills/${name}/${relative}`;
+      if (ignoredCanonical.has(normalizedRepoPath(canonicalRepoPath))) {
+        if (indexedFile(root, `.agents/${canonicalRepoPath}`, runGit) !== null) {
+          throw new Error(`ignored canonical skill path still has a tracked mirror: ${canonicalRepoPath}`);
+        }
+        return;
+      }
       const canonical = fs.readFileSync(sourcePath);
       const mirrorPath = path.join(mirror, name, relative);
       const repoPath = `.agents/skills/${name}/${relative}`;

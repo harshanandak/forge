@@ -704,8 +704,9 @@ describe('command-owned agent skill sync', () => {
       fs.writeFileSync(path.join(root, '.gitignore'), '/skills/**/*.tmp\n');
       expect(run(['add', '.gitignore']).status).toBe(0);
       expect(run(['commit', '-m', 'ignore temp files']).status).toBe(0);
-      fs.writeFileSync(path.join(root, 'skills/review/editor.tmp'), 'editor scratch\n');
-      expect(run(['check-ignore', 'skills/review/editor.tmp']).status).toBe(0);
+      const ignoredName = 'cafe\u0301.tmp';
+      fs.writeFileSync(path.join(root, 'skills/review', ignoredName), 'editor scratch\n');
+      expect(run(['check-ignore', `skills/review/${ignoredName}`]).status).toBe(0);
 
       const result = await syncAgentSkills({
         root,
@@ -719,9 +720,39 @@ describe('command-owned agent skill sync', () => {
 
       expect(result.changed).toEqual([]);
       expect(authorizations).toBe(0);
-      expect(fs.existsSync(path.join(root, 'skills/review/editor.tmp'))).toBe(true);
-      expect(fs.existsSync(path.join(root, '.agents/skills/review/editor.tmp'))).toBe(false);
-      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/editor.tmp');
+      expect(fs.existsSync(path.join(root, 'skills/review', ignoredName))).toBe(true);
+      expect(fs.existsSync(path.join(root, '.agents/skills/review', ignoredName))).toBe(false);
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain(`.agents/skills/review/${ignoredName}`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('fails closed when a newly ignored canonical file still has a tracked mirror', async () => {
+    const { root, run } = parityFixture();
+    let authorizations = 0;
+    try {
+      fs.writeFileSync(path.join(root, 'skills/review/notes.tmp'), 'tracked notes\n');
+      fs.writeFileSync(path.join(root, '.agents/skills/review/notes.tmp'), 'tracked notes\n');
+      expect(run(['add', '.']).status).toBe(0);
+      expect(run(['commit', '-m', 'add tracked notes']).status).toBe(0);
+      fs.writeFileSync(path.join(root, '.gitignore'), '/skills/**/*.tmp\n');
+      expect(run(['add', '.gitignore']).status).toBe(0);
+      expect(run(['rm', '--cached', 'skills/review/notes.tmp']).status).toBe(0);
+
+      await expect(syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-newly-ignored-owner' },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      })).rejects.toThrow('ignored canonical skill path still has a tracked mirror');
+
+      expect(authorizations).toBe(0);
+      expect(fs.readFileSync(path.join(root, '.agents/skills/review/notes.tmp'), 'utf8')).toBe('tracked notes\n');
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/notes.tmp');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
