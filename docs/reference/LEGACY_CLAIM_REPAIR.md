@@ -89,6 +89,12 @@ but the named backup changed during commit. Do not discard the
 writers and investigate the named path before any restore. Repeating the same
 approved apply returns the committed receipt without mutating rows again.
 
+A successful first apply also reports `receipt.recovery_path`. The tool never
+automatically unlinks this owner-only hardlink after commit because no final
+check can make a later unlink race-free. Keep it until the named backup and
+receipt have been independently verified. A human may then remove that exact
+reported recovery path after confirming that no repair process is running.
+
 ## Restore boundary
 
 Restore is deliberately not automated. Fence every Kernel writer, stop Forge
