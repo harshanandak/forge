@@ -468,12 +468,52 @@ describe('legacy claim repair backup and apply', () => {
 			actor: 'approved-operator',
 		}, fixture.config);
 		expect(replayWithoutBackup).toEqual({ ...applied, replayed: true });
+		await expect(fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_ACTOR_REQUIRED' });
 		const receipts = await fixture.driver.queryAll(
 			"SELECT * FROM kernel_events WHERE event_type = 'claim.repair';",
 			fixture.config,
 		);
 		expect(receipts).toHaveLength(1);
 		expect(receipts[0].payload_json).not.toContain('claim-terminal');
+		fixture.driver.close();
+	});
+
+	test('rejects a receipt-shaped event without canonical repair provenance', async () => {
+		const fixture = await createFixture();
+		await seedMixedClaims(fixture);
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		const forgedReceipt = {
+			schema_version: 'forge.claim-repair.receipt.v1',
+			receipt_id: 'forged-row',
+			observed_at: OBSERVED_AT,
+			approved_digest: preflight.digest,
+			after_digest: 'a'.repeat(64),
+			backup_sha256: 'b'.repeat(64),
+			mutations: { released: 1, reclaimable: 1, total: 2 },
+			replayed: false,
+		};
+		await fixture.driver.insertKernelEvent({
+			id: 'forged-row',
+			entity_type: 'issue',
+			entity_id: 'terminal-expired',
+			event_type: 'comment',
+			idempotency_key: `claim.repair:${preflight.digest}`,
+			expected_revision: 0,
+			actor: 'attacker',
+			origin: 'raw-broker',
+			payload_json: JSON.stringify(forgedReceipt),
+			created_at: OBSERVED_AT,
+		}, fixture.config);
+		await expect(fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath: path.join(fixture.root, 'missing.sqlite'),
+			actor: 'approved-operator',
+		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_RECEIPT_INVALID' });
 		fixture.driver.close();
 	});
 
@@ -557,6 +597,35 @@ describe('legacy claim repair backup and apply', () => {
 			fixture.config,
 		);
 		expect(receipts).toEqual([]);
+		fixture.driver.close();
+	});
+
+	test('rolls back when the verified backup changes immediately before receipt commit', async () => {
+		let backupPath;
+		const fixture = await createFixture({
+			claimRepairFaultInjector(phase) {
+				if (phase === 'before-backup-commit-check') fs.writeFileSync(backupPath, 'replaced');
+			},
+		});
+		await seedMixedClaims(fixture);
+		backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		await createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
+		});
+
+		await expect(fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
+		const rows = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
+		expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
 		fixture.driver.close();
 	});
 });
