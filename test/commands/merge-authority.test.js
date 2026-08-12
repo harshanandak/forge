@@ -249,7 +249,7 @@ describe('merge command — mandatory release authority', () => {
     });
     expect(calls[0][0].run_receipt.payload).toMatchObject({
       executor: { mode: 'guarded-exact-head-recovery' },
-      mutations_attempted: [],
+      mutations_attempted: ['pr.merged'],
     });
   });
 

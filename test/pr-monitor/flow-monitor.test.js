@@ -211,6 +211,36 @@ describe('Flow-backed PR monitor authority', () => {
     expect(Buffer.byteLength(JSON.stringify(store.events.at(-1).payload.bounded_payload))).toBeLessThanOrEqual(16_384);
   });
 
+  test('preserves long repository identity in bounded durable and compatibility records', async () => {
+    const store = durableStore();
+    const repo = `owner/${'repository'.repeat(10)}`;
+    const delivered = [];
+    await runFlowMonitorPass(context(
+      store,
+      async () => snapshot({ repo }),
+      async record => delivered.push(record),
+    ));
+
+    expect(store.events.at(-1).payload.bounded_payload.snapshot.repo).toBe(repo);
+    expect(store.events.at(-1).payload.bounded_payload.record.repo).toBe(repo);
+    expect(delivered.at(-1).repo).toBe(repo);
+  });
+
+  test('checkpoints non-event snapshot changes so recurring failures are observed', async () => {
+    const store = durableStore();
+    let next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: [{ name: 'ci', class: 'pending' }] });
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
+    await runFlowMonitorPass(ctx);
+
+    expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(1);
+    expect(store.events.some(event => event.payload.type === 'monitor.checkpoint')).toBe(true);
+  });
+
   test('retains transition identity beyond the first three snapshot entries', async () => {
     const store = durableStore();
     let next = snapshot({

@@ -109,6 +109,57 @@ describe('execute — watcher lifecycle', () => {
 		});
 	});
 
+	test('resumes a persisted termination acknowledgement by reaping the dead watcher', async () => {
+		const checkpoints = [];
+		const cancelling = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
+				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
+				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z', kill: () => {},
+				removeClaim: () => {},
+				onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
+			},
+		);
+		await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2001,
+				watchers: cancelling, isAlive: () => false, removeClaim: () => {},
+				onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
+			},
+		);
+		const acknowledged = checkpoints.find(checkpoint => checkpoint.state.phase === 'TERMINATION_ACKNOWLEDGED');
+		expect(acknowledged).toBeDefined();
+		const resumed = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2002,
+				watchers: [{
+					pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z', lifecycle: acknowledged,
+				}],
+				isAlive: () => false, removeClaim: () => {},
+			},
+		);
+		expect(resumed).toEqual([]);
+	});
+
+	test('terminates a newly spawned watcher when its authority checkpoint fails', async () => {
+		let writes = 0;
+		const killed = [];
+		await expect(executor.execute(
+			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
+				spawnWatcher: () => ({ pid: 1234 }),
+				persistLifecycleCheckpoint: () => { writes += 1; return writes === 1; },
+				writeClaim: () => {}, readClaim: () => '1970-01-01T00:00:01.000Z',
+				isAlive: () => true, kill: (pid, signal) => killed.push([pid, signal]),
+			},
+		)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+		expect(killed).toEqual([[1234, 'SIGKILL']]);
+	});
+
 	test('force-kills only after cancellation grace expires and reaps after acknowledgement', async () => {
 		const signals = [];
 		const cancelling = await executor.execute(

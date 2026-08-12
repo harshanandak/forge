@@ -586,6 +586,32 @@ describe('merge authority — exact reviewer regressions', () => {
     ])).bound).toBe(false);
   });
 
+  test('merge recovery reads one exact retired PR linkage from the durable trace', async () => {
+    const result = await mergeCmd.defaultVerifyPrIssueBinding({
+      issueId: ISSUE,
+      pr: '42',
+      projectRoot: process.cwd(),
+      prContext: context({ state: 'MERGED' }),
+      allowRetired: true,
+      buildBroker: async () => ({
+        gitCommonDir: '/repo/.git',
+        broker: {
+          readTrace: async () => ({
+            pull_requests: [{
+              repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+              branch: 'feature/merge', git_common_dir: '/repo/.git', url: 'https://example/pr/42',
+            }],
+          }),
+        },
+        driver: { close() {} },
+      }),
+    });
+
+    expect(result).toMatchObject({
+      bound: true, issueId: ISSUE, branch: 'feature/merge', gitCommonDir: '/repo/.git',
+    });
+  });
+
   test('leases normalized repository identity across both reads and final mutation', async () => {
     let reads = 0;
     let merges = 0;
