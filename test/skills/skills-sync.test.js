@@ -267,6 +267,18 @@ describe('skills-sync: checkSkillsSync', () => {
     });
   });
 
+  test('excludes an ignored nested SKILL.md artifact from drift', () => {
+    execFileSync('git', ['init'], { cwd: tmp, stdio: 'ignore' });
+    write('.gitignore', '/skills/*/references/SKILL.md\n');
+    write('skills/plan/SKILL.md', 'defining descriptor');
+    write('skills/plan/references/SKILL.md', 'ignored nested descriptor');
+    write('.codex/skills/plan/SKILL.md', 'defining descriptor');
+
+    const result = checkSkillsSync({ repoRoot: tmp });
+    expect(result.inSync).toBe(true);
+    expect(result.drift).toEqual([]);
+  });
+
   test('exposes the standard agent skill dirs', () => {
     expect(AGENT_SKILL_DIRS).toContain('.codex/skills');
     expect(AGENT_SKILL_DIRS).toContain('.claude/skills');

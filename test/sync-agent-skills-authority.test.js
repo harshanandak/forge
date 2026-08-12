@@ -38,6 +38,25 @@ describe('command-owned agent skill sync', () => {
     expect(parseGitPaths('skills/review/notes\\guide.md\0')).toEqual(['skills/review/notes\\guide.md']);
   });
 
+  test('inspects generated mirrors with a literal Git pathspec', () => {
+    const { root } = parityFixture();
+    const canonicalPath = path.join(root, 'skills/review/notes[1].tmp');
+    const calls = [];
+    try {
+      fs.writeFileSync(canonicalPath, 'ignored notes\n');
+      changedSkillFiles(root, (command, args, options) => {
+        calls.push(args);
+        return execFileSync(command, args, options);
+      }, new Set(['skills/review/notes[1].tmp']));
+
+      expect(calls).toContainEqual([
+        'ls-files', '-z', '--', ':(literal).agents/skills/review/notes[1].tmp',
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('accepts a clean canonical checkout after Git CRLF conversion', async () => {
     const { root, run } = parityFixture();
     let authorizations = 0;
@@ -104,7 +123,7 @@ describe('command-owned agent skill sync', () => {
         execFileSync: (_command, args) => {
           if (args[0] === 'rev-parse') return `${HEAD}\n`;
           if (args[0] === 'ls-files' && args.at(-1) === 'skills') return 'H skills/review/SKILL.md\0';
-          if (args[0] === 'ls-files' && args.at(-1).startsWith('skills/')) return `${args.at(-1)}\0`;
+          if (args[0] === 'ls-files' && args.at(-1).startsWith(':(literal)skills/')) return `${args.at(-1).slice(':(literal)'.length)}\0`;
           if (args[0] === 'show' && args[1] === ':skills/review/SKILL.md') return Buffer.from('canonical bytes\n');
           if (args[0] === 'hash-object') return `${'b'.repeat(40)}\n`;
           if (args[0] === 'diff' || args[0] === 'ls-files') return '';
@@ -147,7 +166,7 @@ describe('command-owned agent skill sync', () => {
         execFileSync: (_command, args) => {
           if (args[0] === 'rev-parse') return `${HEAD}\n`;
           if (args[0] === 'ls-files' && args.at(-1) === 'skills') return 'H skills/review/SKILL.md\0';
-          if (args[0] === 'ls-files' && args.at(-1).startsWith('skills/')) return `${args.at(-1)}\0`;
+          if (args[0] === 'ls-files' && args.at(-1).startsWith(':(literal)skills/')) return `${args.at(-1).slice(':(literal)'.length)}\0`;
           if (args[0] === 'show' && args[1] === ':skills/review/SKILL.md') return Buffer.from('canonical bytes\n');
           if (args[0] === 'hash-object') return `${'b'.repeat(40)}\n`;
           if (args[0] === 'diff' || args[0] === 'ls-files') return '';

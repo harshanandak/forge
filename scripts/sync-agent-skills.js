@@ -142,7 +142,7 @@ function ambiguousCanonicalPaths(root, runGit) {
 }
 
 function indexedFile(root, repoPath, runGit) {
-  const tracked = parseGitPaths(runGit('git', ['ls-files', '-z', '--', repoPath], {
+  const tracked = parseGitPaths(runGit('git', ['ls-files', '-z', '--', `:(literal)${repoPath}`], {
     cwd: root,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
