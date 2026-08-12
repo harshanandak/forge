@@ -85,15 +85,18 @@ receipt can still be replayed without this cleanup.
 
 `CLAIM_REPAIR_BACKUP_POSTCOMMIT_DRIFT` means the repair and receipt committed,
 but the named backup changed during commit. Do not discard the
-`details.recovery_path` hardlink: it is the retained verified backup. Fence
-writers and investigate the named path before any restore. Repeating the same
-approved apply returns the committed receipt without mutating rows again.
+`details.recovery_path` copy: it is the independently retained verified backup.
+Fence writers and investigate the named path before any restore. Repeating the
+same approved apply returns the committed receipt without mutating rows again.
 
-A successful first apply also reports `receipt.recovery_path`. The tool never
-automatically unlinks this owner-only hardlink after commit because no final
-check can make a later unlink race-free. Keep it until the named backup and
-receipt have been independently verified. A human may then remove that exact
-reported recovery path after confirming that no repair process is running.
+A successful first apply also reports `receipt.recovery_path`, and its durable
+receipt stores a privacy-safe `recovery_ref` suffix so a retry with the same
+`--backup` path reconstructs the retained artifact after response loss. The
+tool never automatically unlinks this owner-only independent copy after commit
+because no final check can make a later unlink race-free. Keep it until the
+named backup and receipt have been independently verified. A human may then
+remove that exact reported recovery path after confirming that no repair
+process is running.
 
 ## Restore boundary
 

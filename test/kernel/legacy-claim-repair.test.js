@@ -468,7 +468,6 @@ describe('legacy claim repair backup and apply', () => {
 		});
 		expect(typeof applied.recovery_path).toBe('string');
 		expect(fs.existsSync(applied.recovery_path)).toBe(true);
-		const { recovery_path: _recoveryPath, ...durableReceipt } = applied;
 		const rows = await fixture.driver.queryAll('SELECT id, state FROM kernel_claims ORDER BY id;', fixture.config);
 		expect(rows).toEqual([
 			{ id: 'claim-durable', state: 'active' },
@@ -486,7 +485,7 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath,
 			actor: 'approved-operator',
 		}, fixture.config);
-		expect(replay).toEqual({ ...durableReceipt, replayed: true });
+		expect(replay).toEqual({ ...applied, replayed: true });
 		fs.rmSync(backupPath, { force: true });
 		const replayWithoutBackup = await fixture.driver.applyLegacyClaimRepair({
 			observedAt: OBSERVED_AT,
@@ -494,7 +493,7 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath,
 			actor: 'approved-operator',
 		}, fixture.config);
-		expect(replayWithoutBackup).toEqual({ ...durableReceipt, replayed: true });
+		expect(replayWithoutBackup).toEqual({ ...applied, replayed: true });
 		await expect(fixture.driver.applyLegacyClaimRepair({
 			observedAt: OBSERVED_AT,
 			approvedDigest: preflight.digest,
@@ -520,6 +519,7 @@ describe('legacy claim repair backup and apply', () => {
 			approved_digest: preflight.digest,
 			after_digest: 'a'.repeat(64),
 			backup_sha256: 'b'.repeat(64),
+			recovery_ref: '11111111-1111-4111-8111-111111111111',
 			mutations: { released: 1, reclaimable: 1, total: 2 },
 			replayed: false,
 		};
@@ -731,7 +731,7 @@ describe('legacy claim repair backup and apply', () => {
 		fixture.driver.close();
 	});
 
-	test('preserves the verified recovery inode when the backup name changes during commit', async () => {
+	test('preserves the verified recovery copy when the backup name changes during commit', async () => {
 		let backupPath;
 		const fixture = await createFixture({
 			claimRepairFaultInjector(phase) {
@@ -782,7 +782,49 @@ describe('legacy claim repair backup and apply', () => {
 		fixture.driver.close();
 	});
 
-	test('preserves the verified recovery inode when a sidecar blocker is replaced during commit', async () => {
+	test('preserves an independent recovery copy when the named backup is overwritten in place', async () => {
+		let backupPath;
+		const fixture = await createFixture({
+			claimRepairFaultInjector(phase) {
+				if (phase === 'after-commit-before-backup-check') {
+					fs.writeFileSync(backupPath, 'in-place post-commit corruption');
+				}
+			},
+		});
+		await seedMixedClaims(fixture);
+		backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		await createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
+		});
+
+		let failure;
+		try {
+			await fixture.driver.applyLegacyClaimRepair({
+				observedAt: OBSERVED_AT,
+				approvedDigest: preflight.digest,
+				backupPath,
+				actor: 'approved-operator',
+			}, fixture.config);
+		} catch (error) {
+			failure = error;
+		}
+		expect(failure?.code).toBe('CLAIM_REPAIR_BACKUP_POSTCOMMIT_DRIFT');
+		const proof = await verifyClaimRepairBackup({
+			backupPath: failure.details.recovery_path,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
+		});
+		expect(proof.plan_digest).toBe(preflight.digest);
+		fixture.driver.close();
+	});
+
+	test('preserves the verified recovery copy when a sidecar blocker is replaced during commit', async () => {
 		let backupPath;
 		const fixture = await createFixture({
 			claimRepairFaultInjector(phase) {
@@ -826,7 +868,7 @@ describe('legacy claim repair backup and apply', () => {
 		fixture.driver.close();
 	});
 
-	test('retains the verified recovery inode when the backup changes after final verification', async () => {
+	test('retains the verified recovery copy when the backup changes after final verification', async () => {
 		let backupPath;
 		const fixture = await createFixture({
 			claimRepairFaultInjector(phase) {
@@ -861,6 +903,46 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath,
 			actor: 'approved-operator',
 		}, fixture.config)).resolves.toMatchObject({ replayed: true });
+		fixture.driver.close();
+	});
+
+	test('replays a persisted recovery reference after response loss post-commit', async () => {
+		let loseResponse = true;
+		const fixture = await createFixture({
+			claimRepairFaultInjector(phase) {
+				if (phase === 'after-postcommit-backup-check' && loseResponse) {
+					loseResponse = false;
+					throw new Error('simulated response loss');
+				}
+			},
+		});
+		await seedMixedClaims(fixture);
+		const backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		await createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
+		});
+
+		await expect(fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config)).rejects.toThrow('simulated response loss');
+		const replay = await fixture.driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config);
+		expect(replay.replayed).toBe(true);
+		expect(replay.recovery_ref).toMatch(/^[0-9a-f-]{36}$/);
+		expect(typeof replay.recovery_path).toBe('string');
+		expect(fs.existsSync(replay.recovery_path)).toBe(true);
 		fixture.driver.close();
 	});
 
