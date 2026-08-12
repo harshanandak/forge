@@ -414,19 +414,24 @@ describe('public PR lifecycle authority', () => {
 
   test('reconciles consequential provider completion instead of reporting a false timeout', async () => {
     let writes = 0;
+    let releaseWrite;
+    const writeGate = new Promise(resolve => { releaseWrite = resolve; });
     const workPacket = packet();
     const authority = createPrLifecycleAuthority({
       provider: provider({ recordPrLinkage: async () => {
-        await new Promise(resolve => setTimeout(resolve, 15));
+        await writeGate;
         writes += 1;
         return { ok: true };
       } }),
       timeoutMs: 5,
     });
-    const started = Date.now();
-    await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
-      .resolves.toMatchObject({ merged: true });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(5);
+    let settled = false;
+    const merge = authority.mergeWorkPacket({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' })
+      .finally(() => { settled = true; });
+    await new Promise(resolve => setTimeout(resolve, 15));
+    expect(settled).toBe(false);
+    releaseWrite();
+    await expect(merge).resolves.toMatchObject({ merged: true });
     expect(writes).toBe(1);
   });
 
