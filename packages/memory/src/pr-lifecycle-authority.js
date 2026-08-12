@@ -51,9 +51,11 @@ function isCanonicalGitCommonDir(value) {
     return code < 0x20 || code === 0x7f;
   })) return false;
   const segments = normalized.split('/');
+  const segmentStart = /^[A-Za-z]:$/.test(segments[0]) || segments[0] === '' ? 1 : 0;
+  if (segments.slice(segmentStart).some(segment => segment.length === 0 || segment.trim() !== segment)) return false;
   if (segments.some(segment => segment === '.' || segment === '..' || containsSecret(segment))) return false;
   if (segments.at(-1)?.toLowerCase() !== '.git') return false;
-  const posixHome = segments[0] === '' && ['users', 'home'].includes(segments[1]?.toLowerCase()) && segments.length >= 5;
+  const posixHome = segments[0] === '' && ['Users', 'home'].includes(segments[1]) && segments.length >= 5;
   const windowsHome = /^[a-z]:$/i.test(segments[0]) && segments[1]?.toLowerCase() === 'users' && segments.length >= 5;
   return normalized === '/repo/.git' || posixHome || windowsHome;
 }

@@ -286,6 +286,11 @@ describe('public PR lifecycle authority', () => {
       'C:\\Users\\alice\\..\\repo\\.git',
       '/home/alice/%2e%2e/repo/.git',
       '/home/sk-live_1234567890123456/repo/.git',
+      '/home/alice//repo/.git',
+      '/home//repo/.git',
+      'C:/Users//repo/.git',
+      '/home/alice /repo/.git',
+      '/HOME/alice/repo/.git',
     ]) {
       let writes = 0;
       const authority = createPrLifecycleAuthority({
