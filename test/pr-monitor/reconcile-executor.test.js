@@ -160,6 +160,26 @@ describe('execute — watcher lifecycle', () => {
 		expect(killed).toEqual([[1234, 'SIGKILL']]);
 	});
 
+	test('terminates every watcher spawned earlier in a batch when a later checkpoint fails', async () => {
+		let writes = 0;
+		let nextPid = 1000;
+		const killed = [];
+		await expect(executor.execute([
+			{ type: 'startWatcher', pr: { repo: 'forge', number: 41 } },
+			{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } },
+		], {
+			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
+			spawnWatcher: () => ({ pid: nextPid++ }),
+			persistLifecycleCheckpoint: () => { writes += 1; return writes < 4; },
+			writeClaim: () => {}, removeClaim: () => {}, readClaim: () => '1970-01-01T00:00:01.000Z',
+			isAlive: () => true, kill: (pid, signal) => killed.push([pid, signal]),
+		})).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+
+		expect(killed.sort((a, b) => a[0] - b[0])).toEqual([
+			[1000, 'SIGKILL'], [1001, 'SIGKILL'],
+		]);
+	});
+
 	test('force-kills only after cancellation grace expires and reaps after acknowledgement', async () => {
 		const signals = [];
 		const cancelling = await executor.execute(

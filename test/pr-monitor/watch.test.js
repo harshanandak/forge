@@ -60,6 +60,28 @@ describe('watchLoop', () => {
     expect(emitted.map((e) => e.type)).toContain(T.CHECK_FAILED);
   });
 
+  test('streams journal-assigned compatibility sequences instead of raw Memory sequences', async () => {
+    const compatibility = {
+      seq: 2, ts: now(), type: T.VERDICT_CHANGED, key: 'state:ready',
+      repo: 'acme-forge', pr: '1', data: {},
+    };
+    const emitted = [];
+    await runWatchPass({ pending: new Map() }, {
+      dir,
+      runMonitorPass: async () => {
+        journal.appendEvents(dir, [compatibility]);
+        return {
+          events: [
+            { ...compatibility, seq: 2, type: 'monitor.checkpoint' },
+            { ...compatibility, seq: 3 },
+          ],
+        };
+      },
+    }, event => emitted.push(event));
+
+    expect(emitted).toEqual([compatibility]);
+  });
+
   test('emits nothing after the baseline when the snapshot never changes', async () => {
     const emitted = [];
     const sleeps = [];
