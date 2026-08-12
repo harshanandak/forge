@@ -72,6 +72,22 @@ describe('execute — watcher lifecycle', () => {
 		expect(restarted).toEqual(first);
 	});
 
+	test('replays a structurally equal lifecycle checkpoint regardless of object key order', async () => {
+		const first = await executor.execute(
+			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000,
+				spawnWatcher: () => ({ pid: 1234 }), writeClaim: () => {}, watchers: [],
+			},
+		);
+		const state = first[0].lifecycle.state;
+		first[0].lifecycle.state = Object.fromEntries(Object.entries(state).reverse());
+
+		await expect(executor.execute([], {
+			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000, watchers: first,
+		})).resolves.toHaveLength(1);
+	});
+
 	test('bounds watcher lifecycle identities before a detached child is recorded', async () => {
 		const watchers = await executor.execute(
 			[{ type: 'startWatcher', pr: { repo: `owner/${'r'.repeat(180)}`, number: 42 } }],
@@ -1287,11 +1303,13 @@ describe('daemon retirement waits for watcher termination', () => {
 
 	test('once mode keeps the lease when cancellation is still awaiting acknowledgement', async () => {
 		let released = false;
+		let exited = false;
 		const res = await executor.runDaemon('/repo', {
 			gitCommonDir: '/g', once: true,
 			acquire: () => ({ ok: true, token: 't' }),
 			startHeartbeat: () => ({}), stopHeartbeat: () => {},
 			release: () => { released = true; },
+			exit: () => { exited = true; },
 			convergeOnce: async () => ({
 				actions: [], desiredCount: 0,
 				watchers: [{ pr: 5, pid: 999, lifecycle: { state: { phase: 'CANCEL_REQUESTED', terminal: false } } }],
@@ -1299,6 +1317,7 @@ describe('daemon retirement waits for watcher termination', () => {
 		});
 
 		expect(released).toBe(false);
+		expect(exited).toBe(false);
 		expect(res.watchers).toHaveLength(1);
 	});
 });

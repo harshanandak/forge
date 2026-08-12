@@ -30,16 +30,23 @@ function memoryStore() {
       const event = events.find(item => item.payload.event_id === id);
       return event ? { envelope_json: JSON.stringify(event) } : null;
     },
-    async readEventTail() {
+    async readEventTail(monitorId, { limit = 128 } = {}) {
+      const matching = events.filter(event => event.payload.monitor_id === monitorId);
+      const selected = matching.slice(-limit);
       return {
-        events: events.map(event => ({ envelope_json: JSON.stringify(event) })),
-        overflow: false,
-        truncated_before_sequence: null,
+        events: selected.map(event => ({
+          object_id: event.object_id,
+          content_hash: event.content_hash,
+          envelope_json: JSON.stringify(event),
+        })),
+        overflow: matching.length > limit,
+        truncated_before_sequence: matching.length > limit ? selected[0].payload.sequence : null,
       };
     },
     async readDeliveryState(monitorId) {
       return {
-        cursors: [...cursors].map(([target, sequence]) => ({ monitor_id: monitorId, target, sequence })),
+        cursors: [...(cursors.get(monitorId) || new Map())]
+          .map(([target, sequence]) => ({ monitor_id: monitorId, target, sequence })),
         outbox: [],
         terminal_receipt: null,
         overflow: { cursors: false, outbox: false },
@@ -47,7 +54,9 @@ function memoryStore() {
     },
     async recordDeliveryReceipt(receipt) {
       const event = events.find(item => item.payload.event_id === receipt.payload.event_id);
-      cursors.set(receipt.payload.target, event.payload.sequence);
+      const monitorId = event.payload.monitor_id;
+      if (!cursors.has(monitorId)) cursors.set(monitorId, new Map());
+      cursors.get(monitorId).set(receipt.payload.target, event.payload.sequence);
     },
   };
 }
@@ -71,6 +80,24 @@ beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'prmon-m-')); di
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('runMonitorPass', () => {
+	test('test Memory store reports bounded monitor-specific tails', async () => {
+		const store = memoryStore();
+		for (let sequence = 1; sequence <= 3; sequence += 1) {
+			await store.appendEvent({
+				object_id: `event-${sequence}`, content_hash: `hash-${sequence}`,
+				payload: { monitor_id: 'monitor-a', event_id: `id-${sequence}`, sequence },
+			});
+		}
+		await store.appendEvent({
+			object_id: 'other', content_hash: 'other-hash',
+			payload: { monitor_id: 'monitor-b', event_id: 'other-id', sequence: 1 },
+		});
+
+		const tail = await store.readEventTail('monitor-a', { limit: 2 });
+		expect(tail).toMatchObject({ overflow: true, truncated_before_sequence: 2 });
+		expect(tail.events.map(row => JSON.parse(row.envelope_json).payload.sequence)).toEqual([2, 3]);
+	});
+
   test('uses durable Memory as authority when a monitor store is supplied', async () => {
     const store = memoryStore();
     const ctx = memoryContext(store, async () => snap());
@@ -81,7 +108,7 @@ describe('runMonitorPass', () => {
 
     expect(first.authority).toBe('memory');
     expect(restarted.events).toEqual([]);
-    expect((await store.readEventTail()).events).toHaveLength(1);
+    expect((await store.readEventTail(ctx.monitorId)).events).toHaveLength(1);
     expect(journal.readAllEvents(dir)).toHaveLength(1);
   });
 
