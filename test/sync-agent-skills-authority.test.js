@@ -141,7 +141,7 @@ describe('command-owned agent skill sync', () => {
           return { success: true, capabilityId: 'must-not-be-issued' };
         },
         completeAuthorization: async () => ({ success: true }),
-      })).rejects.toThrow('canonical index differs from generated mirror index');
+      })).rejects.toThrow('unstaged canonical skill changes');
 
       expect(authorizations).toBe(0);
       expect(fs.readFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'utf8')).toBe('base canonical bytes\n');
@@ -201,11 +201,50 @@ describe('command-owned agent skill sync', () => {
           return { success: true, capabilityId: 'must-not-be-issued' };
         },
         completeAuthorization: async () => ({ success: true }),
-      })).rejects.toThrow('canonical index differs from generated mirror index');
+      })).rejects.toThrow('unstaged canonical skill changes');
 
       expect(authorizations).toBe(0);
       expect(fs.readFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'utf8')).toBe('base canonical bytes\n');
       expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/SKILL.md');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('blocks a staged skill when another skill has an unstaged edit', async () => {
+    const root = fixture();
+    const run = args => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+    let authorizations = 0;
+    try {
+      fs.writeFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'review base\n');
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'review base\n');
+      fs.mkdirSync(path.join(root, '.agents/skills/ship'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'skills/ship'), { recursive: true });
+      fs.writeFileSync(path.join(root, '.agents/skills/ship/SKILL.md'), 'ship base\n');
+      fs.writeFileSync(path.join(root, 'skills/ship/SKILL.md'), 'ship base\n');
+      expect(run(['init']).status).toBe(0);
+      expect(run(['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+      expect(run(['config', 'user.name', 'Forge Test']).status).toBe(0);
+      expect(run(['add', '.']).status).toBe(0);
+      expect(run(['commit', '-m', 'base']).status).toBe(0);
+
+      fs.writeFileSync(path.join(root, 'skills/ship/SKILL.md'), 'ship staged\n');
+      expect(run(['add', 'skills/ship/SKILL.md']).status).toBe(0);
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'review unstaged\n');
+
+      await expect(syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-mixed-parity-owner' },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      })).rejects.toThrow('unstaged canonical skill changes');
+
+      expect(authorizations).toBe(0);
+      expect(fs.readFileSync(path.join(root, '.agents/skills/ship/SKILL.md'), 'utf8')).toBe('ship base\n');
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/ship/SKILL.md');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
