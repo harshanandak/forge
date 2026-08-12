@@ -6,6 +6,7 @@ const { execFileSync } = require('node:child_process');
 
 const {
   listCanonicalSkills,
+  gitIgnoredCanonicalPaths,
   populateAgentSkills,
   diffSkillDir,
   checkSkillsSync,
@@ -70,6 +71,15 @@ describe('skills-sync: listCanonicalSkills', () => {
     expect(fs.readFileSync(path.join(target, 'model/SKILL.md'), 'utf8')).toBe(model);
     expect(fs.readFileSync(path.join(target, 'omitted/SKILL.md'), 'utf8')).toBe(omitted);
     expect(fs.readFileSync(path.join(target, 'user/SKILL.md'), 'utf8')).toBe(user);
+  });
+});
+
+describe('skills-sync: gitIgnoredCanonicalPaths', () => {
+  test('is tolerant for setup callers and strict for authority callers', () => {
+    fs.mkdirSync(path.join(tmp, '.git'));
+    const failingGit = () => { throw new Error('git unavailable'); };
+    expect(gitIgnoredCanonicalPaths(tmp, failingGit)).toEqual(new Set());
+    expect(() => gitIgnoredCanonicalPaths(tmp, failingGit, { strict: true })).toThrow('git unavailable');
   });
 });
 

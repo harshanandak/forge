@@ -13,6 +13,10 @@ const {
   issueGeneratedHarnessSkillAuthorization,
 } = require('../lib/protected-state-authority');
 
+function strictIgnoredCanonicalPaths(root, runGit) {
+  return gitIgnoredCanonicalPaths(root, runGit, { strict: true });
+}
+
 function repoRoot() {
   try {
     return execFileSync('git', ['rev-parse', '--show-toplevel'], {
@@ -87,7 +91,7 @@ function ambiguousCanonicalPaths(root, runGit) {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   })).filter(entry => entry.startsWith('S ')).map(entry => normalizedRepoPath(entry.slice(2))));
-  const ignoredWorktree = gitIgnoredCanonicalPaths(root, runGit);
+  const ignoredWorktree = strictIgnoredCanonicalPaths(root, runGit);
   const filesystemPrefixes = listCanonicalSkills(root).map(({ name }) => `skills/${name}/`);
   const canonicalPrefixKeys = new Set(filesystemPrefixes.map(normalizedRepoPath));
   for (const entry of indexedEntries) {
@@ -180,7 +184,7 @@ function rejectIgnoredSkillDescriptors(root, ignoredCanonical) {
   }
 }
 
-function changedSkillFiles(root, runGit = execFileSync, ignoredCanonical = gitIgnoredCanonicalPaths(root, runGit)) {
+function changedSkillFiles(root, runGit = execFileSync, ignoredCanonical = strictIgnoredCanonicalPaths(root, runGit)) {
   const mirror = resolveCodexRepoSkillsDir(root);
   const drift = generatedDriftPaths(root, runGit);
   const changed = [];
@@ -271,7 +275,7 @@ async function syncAgentSkills(options = {}) {
   }).trim();
   if (!/^[0-9a-f]{40}$/.test(sourceHead)) throw new Error('source HEAD is not a full lowercase commit SHA');
 
-  const ignoredCanonical = gitIgnoredCanonicalPaths(root, runGit);
+  const ignoredCanonical = strictIgnoredCanonicalPaths(root, runGit);
   rejectIgnoredSkillDescriptors(root, ignoredCanonical);
   const ambiguousCanonical = ambiguousCanonicalPaths(root, runGit);
   for (const canonicalPath of ambiguousCanonical) {
@@ -299,7 +303,7 @@ async function syncAgentSkills(options = {}) {
     authorizations.push({ ...file, capabilityId: authorization.capabilityId });
   }
 
-  const refreshedIgnoredCanonical = gitIgnoredCanonicalPaths(root, runGit);
+  const refreshedIgnoredCanonical = strictIgnoredCanonicalPaths(root, runGit);
   rejectIgnoredSkillDescriptors(root, refreshedIgnoredCanonical);
   const refreshedAmbiguousCanonical = ambiguousCanonicalPaths(root, runGit);
   if (refreshedAmbiguousCanonical.size > 0) {
