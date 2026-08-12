@@ -195,6 +195,22 @@ describe('Flow-backed PR monitor authority', () => {
     expect(Buffer.byteLength(JSON.stringify(store.events.at(-1).payload.bounded_payload))).toBeLessThanOrEqual(16_384);
   });
 
+  test('bounds enriched failure records before Flow validation and durable persistence', async () => {
+    const store = durableStore();
+    let next = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
+    ctx.enrich = async records => {
+      const failed = records.find(record => record.type === 'check.failed');
+      failed.data.excerpt = `failure:${'x'.repeat(32_768)}`;
+    };
+
+    await runFlowMonitorPass(ctx);
+
+    expect(Buffer.byteLength(JSON.stringify(store.events.at(-1).payload.bounded_payload))).toBeLessThanOrEqual(16_384);
+  });
+
   test('retains transition identity beyond the first three snapshot entries', async () => {
     const store = durableStore();
     let next = snapshot({

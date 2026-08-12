@@ -58,7 +58,9 @@ function reviewEvidence(state, commitOid = HEAD, overrides = {}) {
 function deps(overrides = {}) {
   return {
     loadConfig: () => ENABLED,
-    verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
+    verifyIssueOwnership: async () => ({
+      owned: true, actor: 'release-actor', claimedBy: 'release-actor', sessionId: 'release-session', expired: false,
+    }),
     verifyPrIssueBinding: async () => ({ bound: true }),
     verifyMergeGate: async () => true,
     prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
@@ -86,7 +88,7 @@ describe('merge command — mandatory release authority', () => {
         issueId: ISSUE,
         projectRoot: root,
         now: Date.parse('2026-08-01T12:00:00Z'),
-      })).toBe(true);
+      })).toMatchObject({ success: true, disabled: true });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -167,6 +169,22 @@ describe('merge command — mandatory release authority', () => {
     expect(records).toBe(1);
   });
 
+  test('reconciles a merged PR without requiring a receipt for a disabled merge gate', async () => {
+    let receiptRequirements;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+      verifyMergeGate: async () => ({ success: true, disabled: true }),
+      prepareMergeDecision: async input => {
+        receiptRequirements = input.requireMergeGate;
+        return { decisionId: 'decision-disabled-gate' };
+      },
+      recordMergeDecision: async () => ({ receiptId: 'receipt-disabled-gate' }),
+    }));
+
+    expect(out).toMatchObject({ success: true, merged: true, recovered: true });
+    expect(receiptRequirements).toBe(false);
+  });
+
   test('default evidence binds the live issue revision and terminal merged linkage', async () => {
     const decision = await mergeCmd.defaultPrepareMergeDecision({
       issueId: ISSUE,
@@ -235,6 +253,25 @@ describe('merge command — mandatory release authority', () => {
     });
   });
 
+  test('omits a disabled merge gate from terminal receipt requirements', async () => {
+    const decision = await mergeCmd.defaultPrepareMergeDecision({
+      issueId: ISSUE,
+      pr: 42,
+      expectedHead: HEAD,
+      repository: 'acme/forge',
+      binding: { branch: 'feature/merge', gitCommonDir: 'C:/repo/.git' },
+      actor: 'release-actor',
+      sessionId: 'release-session',
+      requireMergeGate: false,
+      config: ENABLED,
+      projectRoot: process.cwd(),
+      now: '2026-08-01T12:00:00.000Z',
+      runIssue: async () => ({ ok: true, data: { revision: 7 } }),
+    });
+
+    expect(decision.packet.payload.receipt_requirements).toEqual({ gate_ids: [] });
+  });
+
   test('requires one full expected head and issue before ownership or provider I/O', async () => {
     for (const argv of [
       ['42', '--auto', '--issue', ISSUE],
@@ -270,6 +307,24 @@ describe('merge command — mandatory release authority', () => {
     expect(out.merged).toBe(false);
     expect(out.error).toMatch(/ownership|claim/i);
     expect(fetchCalls).toBe(0);
+  });
+
+  test('requires the live claim to carry the exact merge session before mutation', async () => {
+    let mergeCalls = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      verifyIssueOwnership: async () => ({
+        owned: true,
+        actor: 'release-actor',
+        claimedBy: 'release-actor',
+        sessionId: null,
+        expired: false,
+      }),
+      mergePr: async () => { mergeCalls += 1; return { merged: true }; },
+    }));
+
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(out.error).toMatch(/session/i);
+    expect(mergeCalls).toBe(0);
   });
 
   test('aborts when the first observed head does not match the caller lease', async () => {
@@ -342,7 +397,7 @@ describe('merge command — mandatory release authority', () => {
       verifyIssueOwnership: async () => {
         ownershipCalls += 1;
         return ownershipCalls === 1
-          ? { owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }
+          ? { owned: true, actor: 'release-actor', claimedBy: 'release-actor', sessionId: 'release-session', expired: false }
           : { owned: false, actor: 'other', claimedBy: 'other', expired: false };
       },
       mergePr: async () => { mergeCalls += 1; return { merged: true }; },
@@ -510,6 +565,49 @@ describe('merge command — mandatory release authority', () => {
       }),
     });
     expect(foreign.owned).toBe(false);
+  });
+
+  test('default ownership verifier requires one exact live claim session', async () => {
+    const runIssue = async (operation, _args, _root, { env }) => {
+      if (operation === 'owns') {
+        return {
+          ok: true,
+          data: {
+            owned: true, actor: env.FORGE_ACTOR, claimed_by: env.FORGE_ACTOR, expired: false,
+          },
+        };
+      }
+      return {
+        ok: true,
+        data: {
+          claims: [{ issue_id: ISSUE, actor: env.FORGE_ACTOR, session_id: null }],
+        },
+      };
+    };
+
+    const sessionless = await mergeCmd.defaultVerifyIssueOwnership({
+      issueId: ISSUE,
+      projectRoot: process.cwd(),
+      env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
+      runIssue,
+    });
+    expect(sessionless).toMatchObject({ owned: false, sessionId: null });
+
+    const exact = await mergeCmd.defaultVerifyIssueOwnership({
+      issueId: ISSUE,
+      projectRoot: process.cwd(),
+      env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
+      runIssue: async (operation, _args, _root, { env }) => operation === 'owns'
+        ? {
+          ok: true,
+          data: { owned: true, actor: env.FORGE_ACTOR, claimed_by: env.FORGE_ACTOR, expired: false },
+        }
+        : {
+          ok: true,
+          data: { claims: [{ issue_id: ISSUE, actor: env.FORGE_ACTOR, session_id: 'release-session' }] },
+        },
+    });
+    expect(exact).toMatchObject({ owned: true, sessionId: 'release-session' });
   });
 
   test('default fetch exposes exact head and only authoritative protection requirements', async () => {

@@ -43,7 +43,9 @@ function authorizedContext(overrides = {}) {
 
 const AUTHORITY_DEPS = {
   env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
-  verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
+  verifyIssueOwnership: async () => ({
+    owned: true, actor: 'release-actor', claimedBy: 'release-actor', sessionId: 'release-session', expired: false,
+  }),
   verifyPrIssueBinding: async () => ({ bound: true }),
   verifyMergeGate: async () => true,
   prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),

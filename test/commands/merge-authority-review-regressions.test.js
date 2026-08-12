@@ -39,7 +39,9 @@ function context(overrides = {}) {
 function deps(overrides = {}) {
   return {
     loadConfig: () => ENABLED,
-    verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
+    verifyIssueOwnership: async () => ({
+      owned: true, actor: 'release-actor', claimedBy: 'release-actor', sessionId: 'release-session', expired: false,
+    }),
     verifyPrIssueBinding: async () => ({ bound: true }),
     verifyMergeGate: async () => true,
     prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
@@ -510,7 +512,9 @@ describe('merge authority — exact reviewer regressions', () => {
         expect(input.actor).toBe('alice');
         if (ownershipCalls === 1) {
           env.FORGE_ACTOR = 'bob';
-          return { owned: true, expired: false, actor: 'alice', claimedBy: 'alice' };
+          return {
+            owned: true, expired: false, actor: 'alice', claimedBy: 'alice', sessionId: 'alice-session',
+          };
         }
         return { owned: true, expired: false, actor: 'bob', claimedBy: 'bob' };
       },
@@ -530,7 +534,7 @@ describe('merge authority — exact reviewer regressions', () => {
     }));
     expect(out.success).toBe(false);
     expect(out.merged).toBe(false);
-    expect(out.error).toMatch(/session identity/i);
+    expect(out.error).toMatch(/exact session/i);
     expect(merges).toBe(0);
   });
 

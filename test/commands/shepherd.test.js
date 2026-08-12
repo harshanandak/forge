@@ -104,12 +104,34 @@ describe('shepherd command handler', () => {
   test('MERGE_READY result never carries a merge side-effect', async () => {
     const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
       ...CONVERGENCE_DEPS,
-      runPass: async () => ({ state: 'MERGE_READY', actions: [], reason: 'ready' }),
+      runPass: async () => ({
+        state: 'MERGE_READY', actions: [], reason: 'ready', expectedHead: 'a'.repeat(40),
+      }),
       buildContext: async () => ({ pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' }),
     });
     expect(out.state).toBe('MERGE_READY');
     expect((out.actions || []).some((a) => a.type === 'merge')).toBe(false);
     expect(out.handoff).toMatchObject({ next: 'merge', humanApprovalRequired: true });
+  });
+
+  test('reconfirms mutable PR evidence before returning a merge handoff', async () => {
+    let passes = 0;
+    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
+      runPass: async () => {
+        passes += 1;
+        return passes === 1
+          ? { state: 'MERGE_READY', actions: [], reason: 'ready', expectedHead: 'a'.repeat(40) }
+          : { state: 'NEEDS_REVIEW', actions: [], reason: 'new review feedback' };
+      },
+      buildContext: async () => ({
+        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master', headSha: 'a'.repeat(40),
+      }),
+    });
+
+    expect(passes).toBe(2);
+    expect(out).toMatchObject({ state: 'NEEDS_REVIEW', reason: 'new review feedback' });
+    expect(out.handoff).toMatchObject({ next: 'review' });
   });
 
   test('consolidates blocking local findings before a read-only remote decision', async () => {
