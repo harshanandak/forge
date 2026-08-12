@@ -19,7 +19,8 @@ claim acquisition, or any background process.
   authority table, while the report exposes only the digest and aggregate claim
   counts. Any intervening Kernel write invalidates approval.
 - Preflight fails closed on integrity, foreign-key, schema/index, duplicate-row,
-  state, timestamp, or read faults.
+  state, timestamp, read faults, or active claims attached to unclaimable issue
+  types.
 - Apply requires the human-approved exact digest and the verified backup. It
   acquires `BEGIN IMMEDIATE`, re-reads the complete repair snapshot, rejects any
   digest drift, and compare-and-swaps every exact row before committing one

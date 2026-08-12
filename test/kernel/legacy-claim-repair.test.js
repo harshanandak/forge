@@ -55,10 +55,10 @@ async function createFixture(driverOptions = {}) {
 	});
 	await broker.initialize();
 
-	async function issue(id, status = 'open') {
+	async function issue(id, status = 'open', type = 'task') {
 		const created = await broker.runIssueOperation(
 			'create',
-			['--id', id, '--title', `Issue ${id}`, '--type', 'task'],
+			['--id', id, '--title', `Issue ${id}`, '--type', type],
 			{ now: '2026-08-12T06:00:00.000Z', actor: 'fixture' },
 		);
 		expect(created.ok).toBe(true);
@@ -305,6 +305,20 @@ describe('legacy claim repair preflight', () => {
 			}) },
 		});
 		brokenAuthority.driver.close();
+	});
+
+	test('fails closed when an active claim targets an unclaimable issue type', async () => {
+		const fixture = await createFixture();
+		await fixture.issue('unclaimable-epic', 'open', 'epic');
+		await fixture.claim('invalid-epic-claim', 'unclaimable-epic', { expires_at: null });
+
+		await expect(fixture.driver.preflightLegacyClaimRepair(
+			{ observedAt: OBSERVED_AT }, fixture.config,
+		)).rejects.toMatchObject({
+			code: 'CLAIM_REPAIR_PREFLIGHT_FAILED',
+			details: { errors: { unclaimable_active_claim: 1 } },
+		});
+		fixture.driver.close();
 	});
 });
 
