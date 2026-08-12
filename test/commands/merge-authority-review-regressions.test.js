@@ -600,6 +600,11 @@ describe('merge authority — exact reviewer regressions', () => {
             pull_requests: [{
               repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
               branch: 'feature/merge', git_common_dir: '/repo/.git', url: 'https://example/pr/42',
+              iterations: [{
+                id: 'merged-event', type: 'pr.merged', at: '2026-08-01T12:00:00.000Z',
+                issue_id: ISSUE, issue_revision: 7, head_sha: HEAD,
+                work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+              }],
             }],
           }),
         },
@@ -609,7 +614,12 @@ describe('merge authority — exact reviewer regressions', () => {
 
     expect(result).toMatchObject({
       bound: true, issueId: ISSUE, branch: 'feature/merge', gitCommonDir: '/repo/.git',
+      terminalEvidence: {
+        occurredAt: '2026-08-01T12:00:00.000Z', receiptHash: 'b'.repeat(64),
+      },
     });
+    expect(result.terminalEvidence.decisionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(result.terminalEvidence.receiptId).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   test('leases normalized repository identity across both reads and final mutation', async () => {

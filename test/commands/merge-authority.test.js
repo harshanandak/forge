@@ -169,6 +169,29 @@ describe('merge command — mandatory release authority', () => {
     expect(records).toBe(1);
   });
 
+  test('replays existing terminal evidence without regenerating retry-time receipts', async () => {
+    let decisions = 0;
+    let records = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+      verifyPrIssueBinding: async () => ({
+        bound: true,
+        terminalEvidence: {
+          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+        },
+      }),
+      prepareMergeDecision: async () => { decisions += 1; },
+      recordMergeDecision: async () => { records += 1; },
+    }));
+
+    expect(out).toMatchObject({
+      success: true, merged: true, recovered: true,
+      decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+    });
+    expect(decisions).toBe(0);
+    expect(records).toBe(0);
+  });
+
   test('reconciles a merged PR without requiring a receipt for a disabled merge gate', async () => {
     let receiptRequirements;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
