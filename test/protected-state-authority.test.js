@@ -7,10 +7,12 @@ const {
 	PROTECTED_STATE_AUTHORIZATION_ISSUED,
 	authorizationEntityId,
 	evaluateAuthorization,
+	issueGeneratedHarnessSkillAuthorization,
 	resolveWorktreeScope,
 } = require('../lib/protected-state-authority');
 
 const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
+const SKILL_MIRROR_SOURCE_COMMAND = 'scripts/sync-agent-skills.js';
 const PROTECTED_STATE_WRITE_COMPLETED = 'protected_state.write.completed';
 const TEST_HEAD = 'a'.repeat(40);
 
@@ -46,6 +48,7 @@ function eventRow(eventType, capabilityId, overrides = {}) {
 			surface,
 			contentHash: hashProtectedContent(content),
 			worktreeScope: overrides.worktreeScope || target.worktreeScope,
+			writeIntent: overrides.writeIntent || 'update',
 			operation: eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
 				? 'generate_npm_workflow'
 				: (eventType === PROTECTED_STATE_WRITE_COMPLETED ? 'generate_npm_workflow_completed' : 'staged_edit'),
@@ -87,6 +90,69 @@ describe('protected-state Kernel authority', () => {
 			requiredSurface: target.surface,
 			capabilityId: 'capability-1',
 		});
+	});
+
+	test('accepts only an exact command-owned canonical skill mirror capability', () => {
+		const skillTarget = {
+			actor: 'forge-skill-sync',
+			surface: 'generated_harness',
+			path: '.agents/skills/review/SKILL.md',
+			content: 'canonical review skill\n',
+			worktreeScope: 'scope-skills',
+			sourceHead: TEST_HEAD,
+		};
+		const skillEvent = (eventType, overrides = {}) => ({
+			entity_type: 'protected_state',
+			entity_id: authorizationEntityId(
+				overrides.worktreeScope || skillTarget.worktreeScope,
+				overrides.path || skillTarget.path,
+			),
+			event_type: eventType,
+			actor: overrides.actor || skillTarget.actor,
+			origin: 'cli',
+			created_at: '2026-08-12T00:00:00.000Z',
+			payload_json: JSON.stringify({
+				version: 1,
+				capabilityId: 'skill-capability',
+				actor: overrides.payloadActor || overrides.actor || skillTarget.actor,
+				path: overrides.path || skillTarget.path,
+				surface: overrides.surface || skillTarget.surface,
+				contentHash: hashProtectedContent(overrides.content || skillTarget.content),
+				worktreeScope: overrides.worktreeScope || skillTarget.worktreeScope,
+				writeIntent: overrides.writeIntent || 'update',
+				operation: eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
+					? 'sync_agent_skill'
+					: 'sync_agent_skill_completed',
+				viaForgeApi: true,
+				sourceHead: overrides.sourceHead || skillTarget.sourceHead,
+				sourceCommand: overrides.sourceCommand || SKILL_MIRROR_SOURCE_COMMAND,
+			}),
+		});
+		const exactRows = [
+			skillEvent(PROTECTED_STATE_AUTHORIZATION_ISSUED),
+			skillEvent(PROTECTED_STATE_WRITE_COMPLETED),
+		];
+
+		expect(evaluateAuthorization(skillTarget, exactRows)).toMatchObject({
+			allowed: true,
+			capabilityId: 'skill-capability',
+		});
+		for (const request of [
+			{ ...skillTarget, actor: 'foreign-actor' },
+			{ ...skillTarget, path: '.agents/skills/ship/SKILL.md' },
+			{ ...skillTarget, content: 'foreign bytes\n' },
+			{ ...skillTarget, sourceHead: 'b'.repeat(40) },
+		]) {
+			expect(evaluateAuthorization(request, exactRows).allowed).toBe(false);
+		}
+		expect(evaluateAuthorization(skillTarget, [
+			skillEvent(PROTECTED_STATE_AUTHORIZATION_ISSUED, { sourceCommand: 'raw node script' }),
+			skillEvent(PROTECTED_STATE_WRITE_COMPLETED, { sourceCommand: 'raw node script' }),
+		]).allowed).toBe(false);
+		expect(evaluateAuthorization(skillTarget, [
+			...exactRows,
+			skillEvent(PROTECTED_STATE_AUTHORIZATION_CONSUMED),
+		]).allowed).toBe(false);
 	});
 
 	test('denies a pre-write authorization until the owning writer records completion', () => {
@@ -171,5 +237,54 @@ describe('protected-state Kernel authority', () => {
 		expect(replay.reason).toContain('already consumed');
 		expect(ambiguous.allowed).toBe(false);
 		expect(ambiguous.reason).toContain('multiple unconsumed');
+	});
+
+	test('rejects traversal and symlinked canonical skill roots before issuing authority', async () => {
+		const fs = require('node:fs');
+		const os = require('node:os');
+		const path = require('node:path');
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skill-path-'));
+		const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skill-outside-'));
+		try {
+			fs.mkdirSync(path.join(root, 'skills'), { recursive: true });
+			fs.writeFileSync(path.join(outside, 'SKILL.md'), 'foreign bytes\n');
+			fs.symlinkSync(outside, path.join(root, 'skills', 'review'), 'junction');
+			expect((await issueGeneratedHarnessSkillAuthorization(root, {
+				actor: 'skill-sync',
+				path: '.agents/skills/review/SKILL.md',
+				sourceHead: TEST_HEAD,
+			})).success).toBe(false);
+			expect((await issueGeneratedHarnessSkillAuthorization(root, {
+				actor: 'skill-sync',
+				path: '.agents/skills/review/../SKILL.md',
+				sourceHead: TEST_HEAD,
+			})).success).toBe(false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	test('refuses delete authority while the canonical source still exists', async () => {
+		const fs = require('node:fs');
+		const os = require('node:os');
+		const path = require('node:path');
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skill-live-delete-'));
+		try {
+			fs.mkdirSync(path.join(root, 'skills', 'review'), { recursive: true });
+			const content = Buffer.from('live canonical bytes\n');
+			fs.writeFileSync(path.join(root, 'skills', 'review', 'SKILL.md'), content);
+			const result = await issueGeneratedHarnessSkillAuthorization(root, {
+				actor: 'skill-sync',
+				path: '.agents/skills/review/SKILL.md',
+				sourceHead: TEST_HEAD,
+				writeIntent: 'delete',
+				priorContent: content,
+			});
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('source to be absent');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	});
 });

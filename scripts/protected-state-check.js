@@ -8,6 +8,7 @@ const {
 const { authorizeAndConsumeProtectedStateWrites } = require('../lib/protected-state-authority');
 const { verifyBunLockfileRegeneration } = require('../lib/bun-lockfile-proof');
 const realStagedFiles = new Set();
+const deletedFiles = new Set();
 
 function parseNameStatus(output) {
 	const files = [];
@@ -17,8 +18,10 @@ function parseNameStatus(output) {
 		const parts = trimmed.split('\t').filter(Boolean);
 		const status = parts[0] || '';
 		if (/^[RC]/.test(status)) {
+			if (parts[1]) deletedFiles.add(parts[1]);
 			files.push(...parts.slice(1, 3));
 		} else {
+			if (status.startsWith('D') && parts[1]) deletedFiles.add(parts[1]);
 			files.push(parts[1]);
 		}
 	}
@@ -75,7 +78,15 @@ function getStagedContent(file) {
 			stdio: ['ignore', 'pipe', 'pipe'],
 		});
 	} catch (_error) {
-		return null;
+		if (!deletedFiles.has(file)) return null;
+		try {
+			return execFileSync('git', ['show', `HEAD:${file}`], {
+				encoding: null,
+				stdio: ['ignore', 'pipe', 'pipe'],
+			});
+		} catch {
+			return null;
+		}
 	}
 }
 
@@ -122,7 +133,7 @@ async function main() {
 					surface: probe.requiredSurface,
 					path: probe.path,
 					content,
-					operation: 'staged_edit',
+					operation: deletedFiles.has(probe.path) ? 'staged_delete' : 'staged_edit',
 					sourceHead,
 				},
 			};

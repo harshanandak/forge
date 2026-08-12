@@ -1,26 +1,17 @@
 #!/usr/bin/env node
 'use strict';
 
-/**
- * Pre-commit auto-sync for the committed `.agents/skills` mirror.
- *
- * `.agents/skills` is Codex's repo-local discovery path and the ONE skill mirror
- * committed to the repo (so a teammate who clones WITHOUT running `forge setup`
- * still gets Forge skills/stages auto-discovered). It must stay byte-identical to
- * the canonical `skills/` source, which the structural drift gate enforces.
- *
- * This hook removes the regen friction: whenever `skills/**` is staged, it
- * regenerates `.agents/skills` from `skills/` (reusing the same
- * `populateCodexRepoSkills` / `populateAgentSkills` sync the drift gate checks
- * against) and re-stages it, so the committed mirror never drifts from canonical.
- *
- * It is intentionally scoped to `skills/**` via lefthook's `glob`, so it only runs
- * when the canonical source actually changes.
- */
+/** Command-owned pre-commit sync for the committed `.agents/skills` mirror. */
 
+const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { populateCodexRepoSkills, resolveCodexRepoSkillsDir } = require('../lib/codex-skills');
+const { listCanonicalSkills } = require('../lib/skills-sync');
+const {
+  completeGeneratedHarnessSkillAuthorization,
+  issueGeneratedHarnessSkillAuthorization,
+} = require('../lib/protected-state-authority');
 
 function repoRoot() {
   try {
@@ -33,30 +24,133 @@ function repoRoot() {
   }
 }
 
-function main() {
-  const root = repoRoot();
-  let written = [];
+function actorFromEnv(env) {
+  return env.FORGE_ACTOR || env.USER || env.USERNAME || 'unknown';
+}
+
+function generatedDriftPaths(root, runGit) {
   try {
-    // clean: true so skills removed from canonical are dropped from the mirror too.
-    ({ written } = populateCodexRepoSkills({ sourceRoot: root, projectRoot: root, clean: true }));
-  } catch (error) {
-    console.error(`sync-agent-skills: failed to regenerate .agents/skills — ${error.message}`);
-    process.exit(1);
+    const commands = [
+      ['diff', '--cached', '--name-only', '--diff-filter=ACMRDT', '--', '.agents/skills'],
+      ['diff', '--name-only', '--diff-filter=ACMRDT', '--', '.agents/skills'],
+      ['ls-files', '--others', '--exclude-standard', '--', '.agents/skills'],
+    ];
+    return new Set(commands.flatMap(args => runGit('git', args, {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).split(/\r?\n/).map(value => value.trim().replace(/\\/g, '/')).filter(Boolean)));
+  } catch {
+    return new Set();
+  }
+}
+
+function walkRegularFiles(root, visit, current = root) {
+  if (!fs.existsSync(current)) return;
+  const currentStat = fs.lstatSync(current);
+  if (!currentStat.isDirectory() || currentStat.isSymbolicLink()) throw new Error(`skill sync path is not a real directory: ${current}`);
+  for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+    const entryPath = path.join(current, entry.name);
+    const stat = fs.lstatSync(entryPath);
+    if (stat.isSymbolicLink()) throw new Error(`skill sync refuses symlink: ${entryPath}`);
+    if (stat.isDirectory()) walkRegularFiles(root, visit, entryPath);
+    else if (stat.isFile()) visit(entryPath, path.relative(root, entryPath).replace(/\\/g, '/'));
+  }
+}
+
+function changedSkillFiles(root, runGit = execFileSync) {
+  const mirror = resolveCodexRepoSkillsDir(root);
+  const drift = generatedDriftPaths(root, runGit);
+  const changed = [];
+  for (const { name, sourcePath: sourceRoot } of listCanonicalSkills(root)) {
+    walkRegularFiles(sourceRoot, (sourcePath, relative) => {
+      const canonical = fs.readFileSync(sourcePath);
+      const mirrorPath = path.join(mirror, name, relative);
+      const repoPath = `.agents/skills/${name}/${relative}`;
+      try {
+        if (canonical.equals(fs.readFileSync(mirrorPath)) && !drift.has(repoPath)) return;
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      changed.push({ path: repoPath, canonical, writeIntent: 'update' });
+    });
+  }
+  walkRegularFiles(mirror, (mirrorPath, relative) => {
+    const canonicalPath = path.join(root, 'skills', relative);
+    if (!fs.existsSync(canonicalPath)) {
+      changed.push({
+        path: `.agents/skills/${relative}`,
+        canonical: fs.readFileSync(mirrorPath),
+        writeIntent: 'delete',
+      });
+    }
+  });
+  return changed;
+}
+
+async function syncAgentSkills(options = {}) {
+  const root = options.root || repoRoot();
+  const env = options.env || process.env;
+  const runGit = options.execFileSync || execFileSync;
+  const issueAuthorization = options.issueAuthorization || issueGeneratedHarnessSkillAuthorization;
+  const completeAuthorization = options.completeAuthorization || completeGeneratedHarnessSkillAuthorization;
+  const actor = actorFromEnv(env);
+  const sourceHead = runGit('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  if (!/^[0-9a-f]{40}$/.test(sourceHead)) throw new Error('source HEAD is not a full lowercase commit SHA');
+
+  const changed = changedSkillFiles(root, runGit);
+  const authorizations = [];
+  for (const file of changed) {
+    const authorization = await issueAuthorization(root, {
+      actor,
+      path: file.path,
+      sourceHead,
+      writeIntent: file.writeIntent,
+      ...(file.writeIntent === 'delete' ? { priorContent: file.canonical } : {}),
+    });
+    if (!authorization.success) throw new Error(`authorization failed for ${file.path}: ${authorization.error}`);
+    authorizations.push({ ...file, capabilityId: authorization.capabilityId });
+  }
+
+  const { written } = populateCodexRepoSkills({ sourceRoot: root, projectRoot: root, clean: true });
+  for (const file of authorizations) {
+    const mirrorExists = fs.existsSync(path.join(root, file.path));
+    if (file.writeIntent === 'delete' ? mirrorExists : !file.canonical.equals(fs.readFileSync(path.join(root, file.path)))) {
+      throw new Error(`canonical mirror intent failed for ${file.path}`);
+    }
+    const completion = await completeAuthorization(root, {
+      actor,
+      path: file.path,
+      sourceHead,
+      capabilityId: file.capabilityId,
+      writeIntent: file.writeIntent,
+      ...(file.writeIntent === 'delete' ? { priorContent: file.canonical } : {}),
+    });
+    if (!completion.success) throw new Error(`completion failed for ${file.path}: ${completion.error}`);
   }
 
   const mirror = resolveCodexRepoSkillsDir(root);
-  try {
-    // Stage the regenerated mirror (and any deletions within it).
-    execFileSync('git', ['add', '--all', '--', mirror], {
-      cwd: root,
-      stdio: ['ignore', 'ignore', 'inherit'],
-    });
-  } catch (error) {
-    console.error(`sync-agent-skills: failed to stage .agents/skills — ${error.message}`);
-    process.exit(1);
-  }
-
+  runGit('git', ['add', '--all', '--', mirror], {
+    cwd: root,
+    stdio: ['ignore', 'ignore', 'inherit'],
+  });
   console.log(`sync-agent-skills: .agents/skills in sync with skills/ (${written.length} skills)`);
+  return { written, changed: changed.map(file => file.path), sourceHead };
 }
 
-main();
+async function main() {
+  try {
+    await syncAgentSkills();
+  } catch (error) {
+    console.error(`sync-agent-skills: failed — ${error.message}`);
+    process.exitCode = 1;
+  }
+}
+
+if (require.main === module) main();
+
+module.exports = { actorFromEnv, changedSkillFiles, syncAgentSkills };
