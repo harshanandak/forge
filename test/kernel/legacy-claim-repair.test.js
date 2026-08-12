@@ -318,6 +318,7 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath: hardlinkPath,
 			actor: 'approved-operator',
 		}, fixture.config)).rejects.toThrow('must not alias');
+		fs.unlinkSync(hardlinkPath);
 		await expect(fixture.driver.applyLegacyClaimRepair({
 			observedAt: OBSERVED_AT,
 			approvedDigest: preflight.digest,
