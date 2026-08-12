@@ -31,7 +31,7 @@ const SECRET_PATTERNS = Object.freeze([
   /AKIA[0-9A-Z]{16}/i,
   /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}/i,
 ]);
-const USER_PATH_PATTERN = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+\/)/i;
+const USER_PATH_PATTERN = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+(?:\/|$))/i;
 
 // Complete accepted provider capability contract. Live probes may supply the optional reads;
 // runIssueOperation, recordPrLinkage, and readTrace remain mandatory (see authority-provider.js).
@@ -197,9 +197,7 @@ async function invokeWithDeadline(target, method, args, timeoutMs, options = {})
   });
   try {
     const result = await Promise.race([operation, deadline]);
-    // Consequential operations must never report a timeout while a write can still
-    // complete later. If cancellation did not settle it, reconcile the actual result.
-    return result === PROVIDER_DEADLINE_SENTINEL ? await operation : result;
+    return result;
   } finally {
     clearTimeout(timer);
     if (timedOut && !options.reconcileOnTimeout) controller?.abort();
@@ -218,6 +216,9 @@ async function callMethod(target, method, args, label, options = {}) {
     if (error instanceof PrLifecycleAuthorityError) throw error;
     fail('PR_LIFECYCLE_UNAVAILABLE', `${label} provider operation failed`, { cause: error });
   }
+  // Consequential writes reconcile this private deadline through a bounded,
+  // authoritative trace read instead of waiting on an unacknowledged write.
+  if (result === PROVIDER_DEADLINE_SENTINEL) return result;
   try {
     const projected = typeof options.project === 'function' ? options.project(result) : result;
     const bounded = snapshot(projected, `${label} provider response`, {
