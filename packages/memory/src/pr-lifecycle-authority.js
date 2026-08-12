@@ -766,6 +766,23 @@ async function readLifecycleTrace(provider, linkage, timeoutMs, gitCommonDir) {
   });
 }
 
+async function reconcileLifecycleTrace(provider, linkage, packet, receipt, timeoutMs, gitCommonDir) {
+  const deadline = Date.now() + Math.max(timeoutMs, 10);
+  let trace;
+  do {
+    const remaining = Math.max(1, deadline - Date.now());
+    trace = await readLifecycleTrace(provider, linkage, Math.min(timeoutMs, remaining), gitCommonDir);
+    traceLinkageRow(trace, linkage);
+    if (durableAcceptance(trace, packet, receipt)) {
+      assertTraceLinkage(trace, linkage, packet, receipt);
+      return trace;
+    }
+    const waitMs = Math.min(5, deadline - Date.now());
+    if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
+  } while (Date.now() < deadline);
+  assertTraceLinkage(trace, linkage, packet, receipt);
+}
+
 function traceLinkageRow(trace, linkage) {
   if (!trace || typeof trace !== 'object' || Array.isArray(trace)) fail('PR_LIFECYCLE_UNAVAILABLE', 'public PR trace is unavailable');
   if (!Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage');
@@ -876,7 +893,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
     const durable = durableAcceptance(trace, packet, receipt);
     if (durable) assertTraceLinkage(trace, linkage, packet, receipt);
     else {
-      await callMethod(provider, 'recordOpenedPrLinkage', [{
+      const persistence = await callMethod(provider, 'recordOpenedPrLinkage', [{
         phase: 'opened',
         git_common_dir: target.git_common_dir,
         repo: linkage.repository_id,
@@ -889,8 +906,12 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
       }, { actor: packet.provenance.actor_id, sessionId: input.session_id ?? input.sessionId }], 'PR linkage', {
         sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true,
       });
-      const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
-      assertTraceLinkage(persistedTrace, linkage, packet, receipt);
+      if (persistence === PROVIDER_DEADLINE_SENTINEL) {
+        await reconcileLifecycleTrace(provider, linkage, packet, receipt, timeoutMs, target.git_common_dir);
+      } else {
+        const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
+        assertTraceLinkage(persistedTrace, linkage, packet, receipt);
+      }
     }
     return stableResult('accepted', packet, receipt, linkage);
   }

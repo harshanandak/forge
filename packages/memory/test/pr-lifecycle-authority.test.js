@@ -498,6 +498,19 @@ describe('public PR lifecycle authority', () => {
     expect(observed).toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
   });
 
+  test('polls bounded trace reconciliation when a timed-out opened write commits shortly afterward', async () => {
+    const workPacket = packet();
+    const authority = createPrLifecycleAuthority({
+      provider: provider({ recordPrLinkage: async () => {
+        await new Promise(resolve => setTimeout(resolve, 8));
+        return { ok: true };
+      } }),
+      timeoutMs: 5,
+    });
+    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
+      .resolves.toMatchObject({ accepted: true });
+  });
+
   test('re-probes ownership and exact head at receipt acceptance', async () => {
     const workPacket = packet();
     const runReceipt = receipt(workPacket);
