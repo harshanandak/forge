@@ -1,6 +1,7 @@
 'use strict';
 
 const { createHash, randomUUID } = require('node:crypto');
+const { types } = require('node:util');
 const {
   canonicalize,
   computeContentHash,
@@ -21,6 +22,7 @@ const MAX_PROVIDER_TIMEOUT_MS = 30_000;
 const MAX_TRACE_ROWS = 2;
 const MAX_TRACE_SCAN_ROWS = 128;
 const MAX_TRACE_ITERATIONS = 128;
+const MAX_READY_ITEMS = 128;
 const SECRET_PATTERNS = Object.freeze([
   /gh[pousr]_[A-Za-z0-9]{20,}/i,
   /sk_(?:live|test)_[A-Za-z0-9]{16,}/i,
@@ -464,6 +466,17 @@ function assertReceiptEvidence(packet, receipt) {
   return phase;
 }
 
+function assertReceiptExecutor(receipt) {
+  const provenance = receipt.provenance;
+  const producer = receipt.producer;
+  if (producer?.product_id !== 'forge-flow'
+    || provenance?.source_kind !== 'execution'
+    || provenance?.actor_class !== 'system'
+    || provenance?.actor_id !== producer?.instance_id) {
+    fail('PR_LIFECYCLE_CONTRACT_INVALID', 'RunReceipt executor provenance is not trusted');
+  }
+}
+
 function assertPacketLiveBindings(packet, live) {
   const requiredGateIds = packet.payload.receipt_requirements?.gate_ids;
   if (!Array.isArray(requiredGateIds) || requiredGateIds.length === 0 || requiredGateIds.some((id) => typeof id !== 'string' || id.length === 0) || new Set(requiredGateIds).size !== requiredGateIds.length) fail('PR_LIFECYCLE_GATE_INVALID', 'WorkPacket gate requirements are incomplete');
@@ -478,11 +491,13 @@ function deriveLinkage(packet, receipt, gates) {
   const target = packet.payload.target ?? {};
   let prNumber = Number.isInteger(target.pr_number) ? target.pr_number : undefined;
   if (prNumber === undefined) prNumber = receipt.payload.evidence_refs.find((entry) => Number.isInteger(entry?.pr_number))?.pr_number;
+  const evidenceUrl = receipt.payload.evidence_refs.find((entry) => Number(entry?.pr_number) === prNumber && typeof entry?.url === 'string')?.url;
   return {
     issue_id: packet.payload.issue_id,
     repository_id: packet.payload.repository_id,
     head: packet.payload.target_head,
     ...(prNumber === undefined ? {} : { pr_number: prNumber }),
+    ...(typeof target.url === 'string' || evidenceUrl ? { url: target.url ?? evidenceUrl } : {}),
     gate_ids: [...gates.ids],
   };
 }
@@ -560,11 +575,45 @@ function projectTraceIteration(iteration) {
     ?? dataProperty(iteration, 'packet_identity')
     ?? packetSemanticIdentity(packet);
   return {
+    ...(dataProperty(iteration, 'type') === undefined ? {} : { type: dataProperty(iteration, 'type') }),
     ...(packetHash === undefined ? {} : { work_packet_hash: packetHash }),
     ...(receiptHash === undefined ? {} : { run_receipt_hash: receiptHash }),
     ...(runId === undefined ? {} : { run_id: runId }),
     ...(packetIdentity === null || packetIdentity === undefined ? {} : { work_packet_identity: packetIdentity }),
   };
+}
+
+function projectReadyResponse(value) {
+  if (types.isProxy(value)) throw new TypeError('ready provider response cannot be a Proxy');
+  const ok = dataProperty(value, 'ok');
+  const data = dataProperty(value, 'data');
+  const envelope = ok === true && data && !Array.isArray(data) ? data : value;
+  if (types.isProxy(envelope)) throw new TypeError('ready provider envelope cannot be a Proxy');
+  const issues = Array.isArray(envelope) ? envelope : dataProperty(envelope, 'issues');
+  if (!Array.isArray(issues)) return value;
+  if (types.isProxy(issues)) throw new TypeError('ready provider queue cannot be a Proxy');
+  const selected = [];
+  const length = Math.min(issues.length, MAX_READY_ITEMS);
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(issues, String(index));
+    if (!descriptor || !Object.hasOwn(descriptor, 'value') || descriptor.enumerable !== true) {
+      throw new TypeError('ready provider queue must contain plain dense entries');
+    }
+    try {
+      canonicalize([...selected, descriptor.value], {
+        maxDepth: MAX_SNAPSHOT_DEPTH,
+        maxNodes: MAX_SNAPSHOT_NODES,
+        maxBytes: MAX_SNAPSHOT_BYTES - 1_024,
+      });
+      selected.push(descriptor.value);
+    } catch (error) {
+      if (['CANONICAL_BYTE_LIMIT', 'CANONICAL_NODE_LIMIT', 'CANONICAL_DEPTH_LIMIT'].includes(error?.code)) break;
+      throw error;
+    }
+  }
+  return ok === true
+    ? { ok: true, data: selected }
+    : selected;
 }
 
 function projectTrace(trace, target) {
@@ -699,13 +748,12 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     assertPacketLiveBindings(packet, live);
     assertContract(receipt, RUN_RECEIPT_SCHEMA, { packetHash: packet.content_hash, workflowConfigRevision: packet.payload.workflow_config_revision, capabilityManifestDigest: packet.payload.capability_manifest_digest, exactHead: packet.payload.target_head });
     const phase = assertReceiptEvidence(packet, receipt);
-    if (receipt.provenance.actor_id !== packet.provenance.actor_id || receipt.provenance.actor_id !== live.ownership.actor_id) {
-      fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'RunReceipt provenance actor does not match live ownership');
-    }
+    assertReceiptExecutor(receipt);
     const linkage = deriveLinkage(packet, receipt, live.gates);
     const target = packet.payload.target;
-    if (!target || !Number.isInteger(target.pr_number) || target.pr_number <= 0
-      || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string' || typeof target.url !== 'string') {
+    if (!target || !Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0
+      || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string'
+      || (phase === 'opened' ? typeof linkage.url !== 'string' : typeof target.url !== 'string')) {
       fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'receipt acceptance requires authoritative PR linkage fields');
     }
     const trace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
@@ -719,7 +767,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
         repo: linkage.repository_id,
         number: linkage.pr_number,
         branch: target.branch,
-        url: target.url,
+        url: linkage.url,
         occurred_at: receipt.payload.ended_at ?? receipt.created_at,
         work_packet: packet,
         run_receipt: receipt,
@@ -743,16 +791,14 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     assertContract(receipt, RUN_RECEIPT_SCHEMA, { packetHash: packet.content_hash, workflowConfigRevision: packet.payload.workflow_config_revision, capabilityManifestDigest: packet.payload.capability_manifest_digest, exactHead: packet.payload.target_head });
     const phase = assertReceiptEvidence(packet, receipt);
     if (phase !== 'merged') fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'merge requires completed pr.merged evidence');
-    if (receipt.provenance.actor_id !== packet.provenance.actor_id || receipt.provenance.actor_id !== live.ownership.actor_id) {
-      fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'RunReceipt provenance actor does not match live ownership');
-    }
+    assertReceiptExecutor(receipt);
     const linkage = deriveLinkage(packet, receipt, live.gates);
     if (!Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage');
     const trace = await readLifecycleTrace(provider, linkage, timeoutMs, packet.payload.target?.git_common_dir);
     // The authoritative PR number is validated before trace I/O; the trace then rejects
     // semantic-identity, packet-hash, and run-id replay conflicts before any merge effect.
     const durable = durableAcceptance(trace, packet, receipt);
-    if (durable) {
+    if (durable?.type === 'pr.merged') {
       assertTraceLinkage(trace, linkage, packet, receipt);
       return stableResult('merged', packet, receipt, linkage);
     }
@@ -771,8 +817,8 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
     const input = snapshot(rawInput, 'next work input');
     const method = typeof provider.listReadyWork === 'function' ? 'listReadyWork' : undefined;
     const response = method
-      ? await callMethod(provider, method, [input], 'ready', { timeoutMs })
-      : await callMethod(provider, 'runIssueOperation', ['ready', [input], {}], 'ready', { timeoutMs, unwrap: true });
+      ? await callMethod(provider, method, [input], 'ready', { timeoutMs, project: projectReadyResponse })
+      : await callMethod(provider, 'runIssueOperation', ['ready', [input], {}], 'ready', { timeoutMs, unwrap: true, project: projectReadyResponse });
     const ready = Array.isArray(response) ? response : response?.issues;
     if (!Array.isArray(ready)) fail('PR_LIFECYCLE_UNAVAILABLE', 'ready provider returned a malformed queue');
     return ready;
