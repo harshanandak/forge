@@ -117,6 +117,7 @@ function provider(overrides = {}) {
   const base = {
     runIssueOperation: async () => null,
     recordPrLinkage: async (value) => { durable = value; return { ok: true }; },
+    recordOpenedPrLinkage: async (value) => { durable = value; return { ok: true }; },
     readTrace: async () => {
       if (!durable) return { pull_requests: [] };
       if (durable.packet.payload.target?.pr_number) return { pull_requests: [{
@@ -145,6 +146,7 @@ function provider(overrides = {}) {
       : durable;
     return result;
   };
+  base.recordOpenedPrLinkage = base.recordPrLinkage;
   return base;
 }
 
@@ -173,6 +175,7 @@ describe('public PR lifecycle authority', () => {
       'listReadyWork',
       'runIssueOperation',
       'recordPrLinkage',
+      'recordOpenedPrLinkage',
       'readTrace',
     ]);
   });
@@ -259,6 +262,7 @@ describe('public PR lifecycle authority', () => {
         provider: {
           runIssueOperation: async () => null,
           recordPrLinkage: async () => null,
+          recordOpenedPrLinkage: async () => null,
           readTrace: async () => ({ pull_requests: [] }),
           readIssue: async () => new Promise(() => {}),
         },

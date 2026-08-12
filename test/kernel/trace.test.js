@@ -216,6 +216,29 @@ describe('Kernel receipt-bound PR trace', () => {
 		}
 	});
 
+	test('revalidates exact claim ownership inside opened linkage persistence', async () => {
+		await driver.insertKernelClaim({ id: 'claim-1', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
+			state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z' }, {}, config);
+		const context = { actor: 'agent-1', sessionId: 'session-1', now: '2026-08-11T00:10:00.000Z' };
+		await expect(broker.recordOpenedPrLinkage(linkage(), context)).resolves.toHaveProperty('iteration');
+		await driver.updateKernelClaimState('claim-1', 'released', {}, config);
+		await expect(broker.recordOpenedPrLinkage(linkage(), context)).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+		await driver.insertKernelClaim({ id: 'claim-2', issue_id: 'issue-trace', actor: 'agent-2', session_id: 'session-2',
+			state: 'active', claimed_at: '2026-08-11T00:11:00.000Z', expires_at: '2026-08-11T00:12:00.000Z' }, {}, config);
+		await expect(broker.recordOpenedPrLinkage(linkage(), context)).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-2', sessionId: 'session-2', now: '2026-08-11T00:13:00.000Z' }))
+			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+	});
+
+	test('rejects a foreign issue PR binding inside the linkage transaction', async () => {
+		await driver.exec("INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-other', 'Other', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');", config);
+		await driver.upsertPr({ id: 'foreign-pr', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 514,
+			issue_id: 'issue-other', worktree_id: 'worktree-other', branch, head_sha: 'f'.repeat(40) }, {}, config);
+		await expect(broker.recordPrLinkage(linkage())).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+		const rows = await driver.queryAll('SELECT issue_id, head_sha FROM kernel_pr WHERE id = \'foreign-pr\';', config);
+		expect(rows).toEqual([{ issue_id: 'issue-other', head_sha: 'f'.repeat(40) }]);
+	});
+
 	test('accepts producer-canonical hashes with mixed-case receipt keys', async () => {
 		const packet = workPacket({ constraints: { Z: 'upper', a: 'lower' } });
 		const receipt = runReceipt(packet);

@@ -20,7 +20,7 @@ const MEMORY_AUTHORITY_METHODS = Object.freeze([
 // Optional PR lifecycle operations are intentionally separate from the mandatory
 // Memory authority surface. Legacy brokers keep the exact historical provider
 // keys; lifecycle consumers opt into the pair atomically.
-const MEMORY_PR_LIFECYCLE_METHODS = Object.freeze(['recordPrLinkage', 'readTrace']);
+const MEMORY_PR_LIFECYCLE_METHODS = Object.freeze(['recordPrLinkage', 'recordOpenedPrLinkage', 'readTrace']);
 
 function assertMemoryAuthorityProvider(provider, label = 'Memory authority provider') {
   if (!provider || typeof provider !== 'object' || Array.isArray(provider)) {

@@ -45,6 +45,7 @@ const PR_LIFECYCLE_PROVIDER_METHODS = Object.freeze([
   'listReadyWork',
   'runIssueOperation',
   'recordPrLinkage',
+  'recordOpenedPrLinkage',
   'readTrace',
 ]);
 
@@ -769,7 +770,7 @@ function stableResult(kind, packet, receipt, linkage) {
 function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier, timeoutMs = DEFAULT_PROVIDER_TIMEOUT_MS } = {}) {
   if (!provider || typeof provider !== 'object' || Array.isArray(provider)) throw new TypeError('PR lifecycle authority requires a public provider object');
   validateProviderTimeout(timeoutMs);
-  for (const method of ['runIssueOperation', 'recordPrLinkage', 'readTrace']) {
+  for (const method of ['runIssueOperation', 'recordPrLinkage', 'recordOpenedPrLinkage', 'readTrace']) {
     if (typeof provider[method] !== 'function') throw new TypeError(`PR lifecycle provider must implement ${method}()`);
   }
   if (!liveProbes || typeof liveProbes !== 'object' || Array.isArray(liveProbes)) throw new TypeError('liveProbes must be an object');
@@ -850,7 +851,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
     const durable = durableAcceptance(trace, packet, receipt);
     if (durable) assertTraceLinkage(trace, linkage, packet, receipt);
     else {
-      await callMethod(provider, 'recordPrLinkage', [{
+      await callMethod(provider, 'recordOpenedPrLinkage', [{
         phase: 'opened',
         git_common_dir: target.git_common_dir,
         repo: linkage.repository_id,
@@ -860,7 +861,9 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
         occurred_at: receipt.payload.ended_at ?? receipt.created_at,
         work_packet: packet,
         run_receipt: receipt,
-      }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true });
+      }, { actor: packet.provenance.actor_id, sessionId: input.session_id ?? input.sessionId }], 'PR linkage', {
+        sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true,
+      });
       const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
       assertTraceLinkage(persistedTrace, linkage, packet, receipt);
     }

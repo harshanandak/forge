@@ -67,14 +67,17 @@ describe('Memory authority provider', () => {
     const calls = [];
     const broker = brokerStub(calls);
     broker.recordPrLinkage = async (...args) => { calls.push({ method: 'recordPrLinkage', args }); return { ok: true }; };
+    broker.recordOpenedPrLinkage = async (...args) => { calls.push({ method: 'recordOpenedPrLinkage', args }); return { ok: true }; };
     broker.readTrace = async (...args) => { calls.push({ method: 'readTrace', args }); return { ok: true }; };
     const provider = createMemoryAuthorityProvider({ broker });
 
-    expect(Object.keys(provider)).toEqual([...MEMORY_AUTHORITY_METHODS, 'recordPrLinkage', 'readTrace']);
+    expect(Object.keys(provider)).toEqual([...MEMORY_AUTHORITY_METHODS, 'recordPrLinkage', 'recordOpenedPrLinkage', 'readTrace']);
     await provider.recordPrLinkage({ phase: 'opened' }, { actor: 'agent-1' });
+    await provider.recordOpenedPrLinkage({ phase: 'opened' }, { actor: 'agent-1' });
     await provider.readTrace({ issue_id: 'issue-1' }, { actor: 'agent-1' });
-    expect(calls.slice(-2)).toEqual([
+    expect(calls.slice(-3)).toEqual([
       { method: 'recordPrLinkage', args: [{ phase: 'opened' }, { actor: 'agent-1' }] },
+      { method: 'recordOpenedPrLinkage', args: [{ phase: 'opened' }, { actor: 'agent-1' }] },
       { method: 'readTrace', args: [{ issue_id: 'issue-1' }, { actor: 'agent-1' }] },
     ]);
   });
