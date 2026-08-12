@@ -53,6 +53,7 @@ function makeAdapter(spec = {}) {
           throw err;
         }
         actions.push({ type: 'rebase', ...args });
+        return { previousHead: args.expectedHead, headSha: spec.rebasedHead || 'b'.repeat(40) };
       },
     },
   };

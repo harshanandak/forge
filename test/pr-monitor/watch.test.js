@@ -7,7 +7,7 @@ const path = require('node:path');
 
 const journal = require('../../lib/pr-monitor/journal');
 const {
-  watchLoop, jitter, defaultSleep, defaultClaim, releaseClaim, DEFAULT_INTERVAL_MS,
+  watchLoop, runWatchPass, jitter, defaultSleep, defaultClaim, releaseClaim, DEFAULT_INTERVAL_MS,
 } = require('../../lib/pr-monitor/watch');
 const { EVENT_TYPES: T } = require('../../lib/pr-monitor/events');
 
@@ -38,6 +38,12 @@ beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'prmon-w-')); di
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('watchLoop', () => {
+  test('stops immediately when durable Memory replays a terminal receipt', async () => {
+    const result = await runWatchPass({ pending: new Map() }, {
+      runMonitorPass: async () => ({ events: [], terminalReceiptId: 'receipt-terminal' }),
+    }, () => {});
+    expect(result).toEqual({ terminal: true });
+  });
   test('streams a confirmed check.failed as an emitted event on change', async () => {
     const green = snap({ checks: [{ name: 'ci', class: 'green' }] });
     const failed = snap({ checks: [{ name: 'ci', class: 'failed' }] });

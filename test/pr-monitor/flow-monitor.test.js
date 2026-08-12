@@ -296,7 +296,23 @@ describe('Flow-backed PR monitor authority', () => {
     expect(closed.terminalReceiptId).toBeString();
     expect(reopened.terminalReceiptId).toBeUndefined();
     expect(reopened.changed).toBe(true);
-    expect(store.events.some(event => event.payload.monitor_id.includes(':after:'))).toBe(true);
+    expect(store.events.some(event => event.payload.monitor_id !== ctx.monitorId)).toBe(true);
+  });
+
+  test('continues a reopened lifecycle through a later merged terminal receipt with a bounded id', async () => {
+    const store = durableStore();
+    let next = snapshot({ state: 'CLOSED' });
+    const ctx = context(store, async () => next, async () => {});
+    ctx.monitorId = `pr:${'x'.repeat(90)}:42`;
+    const closed = await runFlowMonitorPass(ctx);
+    next = snapshot({ state: 'OPEN' });
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ state: 'MERGED' });
+    const merged = await runFlowMonitorPass(ctx);
+
+    expect(merged.terminalReceiptId).toBeString();
+    expect(merged.terminalReceiptId).not.toBe(closed.terminalReceiptId);
+    expect(Math.max(...store.events.map(event => event.payload.monitor_id.length))).toBeLessThanOrEqual(128);
   });
 
   test('rejects a content-corrupted terminal receipt instead of replaying authority', async () => {

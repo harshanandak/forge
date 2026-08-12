@@ -56,6 +56,7 @@ function scriptedAdapter(steps) {
           const err = new Error('lease'); err.leaseRejected = true; throw err;
         }
         actions.push({ type: 'rebase', ...a });
+        return { previousHead: a.expectedHead, headSha: cur().rebasedHead || 'b'.repeat(40) };
       },
       async readComments() { return cur().comments || []; },
     },
@@ -98,6 +99,7 @@ describe('shepherd acceptance §5', () => {
     ]);
     const okRes = await runShepherdPass({ ...BASE_CTX, adapter: ok.adapter, autoRebase: true, cleanTree: true });
     expect(okRes.state).toBe('PENDING');
+    expect(okRes.expectedHead).toBe('b'.repeat(40));
     expect(ok.actions.filter((a) => a.type === 'rebase')).toHaveLength(1);
 
     const lease = scriptedAdapter([

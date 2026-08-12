@@ -37,6 +37,9 @@ test('claim markers share one path across worktrees with the same common dir', (
 });
 
 describe('execute — watcher lifecycle', () => {
+	test('rejects non-array actions with a distinct validation code', async () => {
+		await expect(executor.execute(null)).rejects.toMatchObject({ code: 'INVALID_ACTIONS' });
+	});
 	test('processes oversized action sets in bounded resumable batches', async () => {
 		let writes = 0;
 		const actions = Array.from({ length: 130 }, (_, index) => ({
@@ -256,6 +259,27 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
 			},
 		);
 		expect(kills).toEqual([999]);
+	});
+
+	test('a live orphan escalates to SIGKILL after its grace deadline and is reaped after exit', async () => {
+		const kills = [];
+		const action = [{ type: 'reapOrphan', pid: 999, startedAt: 't1' }];
+		const common = {
+			projectRoot: '/repo', readClaim: () => 't1',
+			kill: (pid, signal) => kills.push([pid, signal || 'SIGTERM']), broker: {},
+		};
+		let watchers = await executor.execute(action, {
+			...common, watchers: [{ ...baseEntry }], now: () => 1_000, isAlive: () => true,
+		});
+		watchers = await executor.execute(action, {
+			...common, watchers, now: () => 31_001, isAlive: () => true,
+		});
+		watchers = await executor.execute(action, {
+			...common, watchers, now: () => 31_002, isAlive: () => false,
+		});
+
+		expect(kills).toEqual([[999, 'SIGTERM'], [999, 'SIGKILL']]);
+		expect(watchers).toEqual([]);
 	});
 
 	test('legacy/null startedAt → never killed (unverifiable)', async () => {

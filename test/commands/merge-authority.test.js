@@ -119,6 +119,16 @@ describe('merge command — mandatory release authority', () => {
     expect(receipts).toBe(0);
   });
 
+  test('never writes terminal linkage when the provider does not confirm the merge', async () => {
+    let receipts = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      mergePr: async () => ({ merged: false, reason: 'blocked by branch protection' }),
+      recordMergeDecision: async () => { receipts += 1; return { receiptId: 'receipt-x' }; },
+    }));
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(receipts).toBe(0);
+  });
+
   test('requires the human merge gate before preparing evidence or mutating GitHub', async () => {
     let decisions = 0;
     let merges = 0;
@@ -207,6 +217,21 @@ describe('merge command — mandatory release authority', () => {
       actor: 'release-actor',
       sessionId: 'release-session',
       requireExactLifecycleOwnership: true,
+    });
+
+    calls.length = 0;
+    await mergeCmd.defaultRecordMergeDecision({
+      decision,
+      mergeResult: { merged: true, recovered: true },
+      pr: 42,
+      expectedHead: HEAD,
+      repository: 'acme/forge',
+      projectRoot: process.cwd(),
+      buildBroker: async () => ({ broker }),
+    });
+    expect(calls[0][0].run_receipt.payload).toMatchObject({
+      executor: { mode: 'guarded-exact-head-recovery' },
+      mutations_attempted: [],
     });
   });
 

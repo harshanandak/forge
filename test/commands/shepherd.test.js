@@ -158,6 +158,25 @@ describe('shepherd command handler', () => {
     expect(out.reason).toMatch(/head changed/i);
     expect(out.handoff).toBeUndefined();
   });
+
+  test('uses the pass-verified post-rebase head for convergence evidence', async () => {
+    const oldHead = 'a'.repeat(40);
+    const newHead = 'b'.repeat(40);
+    let evidenceHead;
+    const out = await shepherdCmd.handler(['7', '--auto-rebase'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
+      runPass: async () => ({ state: 'PENDING', actions: [{ type: 'rebase' }], expectedHead: newHead }),
+      collectConvergenceEvidence: async ({ context }) => {
+        evidenceHead = context.headSha;
+        return { deltas: [], deltaOverflow: false, receiptIds: [], exactHead: context.headSha };
+      },
+      buildContext: async () => ({
+        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master', headSha: oldHead,
+      }),
+    });
+    expect(out.success).toBe(true);
+    expect(evidenceHead).toBe(newHead);
+  });
 });
 
 describe('forge shepherd events — the agent-agnostic monitor pull surface', () => {
