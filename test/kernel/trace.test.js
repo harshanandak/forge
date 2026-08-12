@@ -194,6 +194,43 @@ describe('Kernel receipt-bound PR trace', () => {
 			gate_receipts: [GATE_RECEIPT],
 		});
 		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([{ n: 2 }]);
+		expect(await driver.queryAll("SELECT DISTINCT target FROM kernel_outbox WHERE target = 'jsonl';", config))
+			.toEqual([{ target: 'jsonl' }]);
+	});
+
+	test('shares initialized Kernel state with an isolated linkage transaction for an in-memory database', async () => {
+		const memoryConfig = { databasePath: ':memory:' };
+		const memoryDriver = createBuiltinSQLiteDriver(memoryConfig);
+		const memoryBroker = createLocalBroker({ projectRoot: root, gitCommonDir, ...memoryConfig, driver: memoryDriver });
+		await memoryBroker.initialize();
+		try {
+			await memoryDriver.exec(
+				"INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-trace', 'Trace', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');",
+				memoryConfig,
+			);
+			memoryDriver.registerWorktree({
+				id: 'worktree-trace', git_common_dir: gitCommonDir, path: path.join(root, '.worktrees', 'trace'),
+				branch, issue_id: 'issue-trace', work_folder: workFolder, registered_at: '2026-08-11T00:00:00.000Z',
+			}, memoryConfig);
+			await memoryDriver.insertKernelEvent({
+				entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.approved',
+				idempotency_key: GATE_RECEIPT, expected_revision: 0, actor: 'maintainer', origin: 'test',
+				payload: { gate: GATE_ID, expires_at: null, generation: 0 }, created_at: '2026-08-11T00:04:00.000Z',
+			}, {}, memoryConfig);
+			await memoryDriver.insertKernelClaim({
+				id: 'claim-memory', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
+				state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z',
+			}, {}, memoryConfig);
+
+			const memoryResult = memoryBroker.recordOpenedPrLinkage(linkage(), {
+				actor: 'agent-1', sessionId: 'session-1', now: '2026-08-11T00:10:00.000Z',
+			});
+			await expect(memoryResult).resolves.toHaveProperty('iteration.decision', 'accept');
+			expect(await memoryDriver.queryAll("SELECT issue_id, number FROM kernel_pr;", memoryConfig))
+				.toEqual([{ issue_id: 'issue-trace', number: 514 }]);
+		} finally {
+			memoryDriver.close();
+		}
 	});
 
 	test('atomically rejects divergent opened evidence across independent brokers', async () => {
@@ -253,6 +290,25 @@ describe('Kernel receipt-bound PR trace', () => {
 		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-1', sessionId: 'session-1' }))
 			.rejects.toBeInstanceOf(Error);
 		expect(closes).toBe(2);
+		driver.forkConnection = originalFork;
+	});
+
+	test('closes the isolated linkage connection when transaction acquisition fails', async () => {
+		const originalFork = driver.forkConnection;
+		let closes = 0;
+		driver.forkConnection = () => {
+			const fork = originalFork.call(driver);
+			const exec = fork.exec;
+			const close = fork.close;
+			fork.exec = async (statement, ...args) => {
+				if (statement === 'BEGIN IMMEDIATE;') throw new Error('begin failed');
+				return exec.call(fork, statement, ...args);
+			};
+			fork.close = () => { closes += 1; close.call(fork); };
+			return fork;
+		};
+		await expect(broker.recordPrLinkage(linkage())).rejects.toThrow('begin failed');
+		expect(closes).toBe(1);
 		driver.forkConnection = originalFork;
 	});
 
