@@ -43,6 +43,9 @@ describe('command-owned agent skill sync', () => {
         env: { FORGE_ACTOR: 'skill-sync-owner' },
         execFileSync: (_command, args) => {
           if (args[0] === 'rev-parse') return `${HEAD}\n`;
+          if (args[0] === 'ls-files' && args.at(-1) === 'skills') return 'skills/review/SKILL.md\0';
+          if (args[0] === 'ls-files' && args.at(-1).startsWith('skills/')) return `${args.at(-1)}\0`;
+          if (args[0] === 'show' && args[1] === ':skills/review/SKILL.md') return Buffer.from('canonical bytes\n');
           if (args[0] === 'diff' || args[0] === 'ls-files') return '';
           calls.push('stage');
           return '';
@@ -82,6 +85,9 @@ describe('command-owned agent skill sync', () => {
         env: { FORGE_ACTOR: 'skill-sync-owner' },
         execFileSync: (_command, args) => {
           if (args[0] === 'rev-parse') return `${HEAD}\n`;
+          if (args[0] === 'ls-files' && args.at(-1) === 'skills') return 'skills/review/SKILL.md\0';
+          if (args[0] === 'ls-files' && args.at(-1).startsWith('skills/')) return `${args.at(-1)}\0`;
+          if (args[0] === 'show' && args[1] === ':skills/review/SKILL.md') return Buffer.from('canonical bytes\n');
           if (args[0] === 'diff' || args[0] === 'ls-files') return '';
           staged = true;
           return '';
@@ -365,6 +371,33 @@ describe('command-owned agent skill sync', () => {
       })).rejects.toThrow('canonical index differs from generated mirror index');
 
       expect(authorizations).toBe(0);
+      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/SKILL.md');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('blocks unstaged canonical bytes hidden by assume-unchanged', async () => {
+    const { root, run } = parityFixture();
+    let authorizations = 0;
+    try {
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'staged canonical bytes\n');
+      expect(run(['add', 'skills/review/SKILL.md']).status).toBe(0);
+      expect(run(['update-index', '--assume-unchanged', 'skills/review/SKILL.md']).status).toBe(0);
+      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'hidden unstaged bytes\n');
+
+      await expect(syncAgentSkills({
+        root,
+        env: { FORGE_ACTOR: 'skill-assume-unchanged-owner' },
+        issueAuthorization: async () => {
+          authorizations += 1;
+          return { success: true, capabilityId: 'must-not-be-issued' };
+        },
+        completeAuthorization: async () => ({ success: true }),
+      })).rejects.toThrow('canonical index differs from generated mirror index');
+
+      expect(authorizations).toBe(0);
+      expect(run(['diff', '--name-only', '--', 'skills/review/SKILL.md']).stdout.trim()).toBe('');
       expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/SKILL.md');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

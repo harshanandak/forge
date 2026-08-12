@@ -49,16 +49,27 @@ function generatedDriftPaths(root, runGit) {
   }
 }
 
-function unstagedCanonicalPaths(root, runGit) {
-  const commands = [
-    ['diff', '--name-only', '-z', '--diff-filter=ACMRDT', '--', 'skills'],
-    ['ls-files', '-z', '--others', '--exclude-standard', '--', 'skills'],
-  ];
-  return new Set(commands.flatMap(args => parseGitPaths(runGit('git', args, {
+function ambiguousCanonicalPaths(root, runGit) {
+  const indexed = new Set(parseGitPaths(runGit('git', ['ls-files', '-z', '--', 'skills'], {
     cwd: root,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-  }))));
+  })));
+  const worktree = new Set();
+  walkRegularFiles(path.join(root, 'skills'), (_file, relative) => worktree.add(`skills/${relative}`));
+  const paths = new Set([...indexed, ...worktree]);
+  return new Set([...paths].filter(repoPath => {
+    const indexedContent = indexedFile(root, repoPath, runGit);
+    let worktreeContent = null;
+    try {
+      worktreeContent = fs.readFileSync(path.join(root, repoPath));
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    return indexedContent === null
+      ? worktreeContent !== null
+      : worktreeContent === null || !indexedContent.equals(worktreeContent);
+  }));
 }
 
 function indexedFile(root, repoPath, runGit) {
@@ -151,22 +162,19 @@ async function syncAgentSkills(options = {}) {
   }).trim();
   if (!/^[0-9a-f]{40}$/.test(sourceHead)) throw new Error('source HEAD is not a full lowercase commit SHA');
 
-  const unstagedCanonical = unstagedCanonicalPaths(root, runGit);
-  for (const canonicalPath of unstagedCanonical) {
+  const ambiguousCanonical = ambiguousCanonicalPaths(root, runGit);
+  for (const canonicalPath of ambiguousCanonical) {
     const indexedCanonical = indexedFile(root, canonicalPath, runGit);
     const indexedMirror = indexedFile(root, `.agents/${canonicalPath}`, runGit);
     if (indexedCanonical === null ? indexedMirror !== null : indexedMirror === null || !indexedCanonical.equals(indexedMirror)) {
       throw new Error(`canonical index differs from generated mirror index: ${canonicalPath}`);
     }
   }
+  if (ambiguousCanonical.size > 0) {
+    throw new Error(`unstaged canonical skill changes must be reconciled before mirror sync: ${[...ambiguousCanonical].join(', ')}`);
+  }
 
   const changed = changedSkillFiles(root, runGit);
-  const deferred = changed
-    .map(file => `skills/${file.path.slice('.agents/skills/'.length)}`)
-    .filter(file => unstagedCanonical.has(file));
-  if (deferred.length > 0) {
-    throw new Error(`unstaged canonical skill changes must be reconciled before mirror sync: ${deferred.join(', ')}`);
-  }
   const authorizations = [];
   for (const file of changed) {
     const authorization = await issueAuthorization(root, {
