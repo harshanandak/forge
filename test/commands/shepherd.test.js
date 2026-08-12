@@ -181,6 +181,27 @@ describe('shepherd command handler', () => {
     expect(out.handoff).toBeUndefined();
   });
 
+  test('fails closed when a merge-ready pass moved beyond the locally reviewed head', async () => {
+    const oldHead = 'a'.repeat(40);
+    const newHead = 'b'.repeat(40);
+    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
+      runPass: async () => ({ state: 'MERGE_READY', actions: [], reason: 'ready', expectedHead: newHead }),
+      collectConvergenceEvidence: async () => ({
+        deltas: [], deltaOverflow: false, receiptIds: [], exactHead: newHead,
+      }),
+      buildContext: async () => ({
+        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+        headSha: oldHead, localHead: oldHead,
+      }),
+      git: () => '',
+    });
+
+    expect(out).toMatchObject({ success: false, state: 'INCOMPLETE', remoteState: 'MERGE_READY' });
+    expect(out.reason).toMatch(/local preflight.*head changed/i);
+    expect(out.handoff).toBeUndefined();
+  });
+
   test('uses the pass-verified post-rebase head for convergence evidence', async () => {
     const oldHead = 'a'.repeat(40);
     const newHead = 'b'.repeat(40);

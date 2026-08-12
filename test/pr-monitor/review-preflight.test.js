@@ -9,7 +9,7 @@ const {
 } = require('../../lib/pr-monitor/review-preflight');
 
 const EXACT_HEAD_CONTEXT = {
-  projectRoot: '/repo', base: 'master', expectedHead: 'a'.repeat(40), localHead: 'a'.repeat(40),
+  projectRoot: '/repo', base: 'master', expectedHead: 'a'.repeat(40), localHead: 'a'.repeat(40), cleanTree: true,
 };
 
 describe('bounded local review preflight', () => {
@@ -85,6 +85,20 @@ describe('bounded local review preflight', () => {
     expect(result.providers.coderabbit).toMatchObject({
       status: 'NOT_APPLICABLE', summary: 'PR head is unavailable',
     });
+    expect(calls).toBe(0);
+  });
+
+  test('blocks exact-head preflight when the local checkout has uncommitted changes', async () => {
+    let calls = 0;
+    const result = await runLocalReviewPreflight({ ...EXACT_HEAD_CONTEXT, cleanTree: false }, {
+      probeCodeRabbit: async () => { calls += 1; },
+      runDeterministic: async () => { calls += 1; },
+    });
+
+    expect(result).toMatchObject({ status: 'INCOMPLETE', blocking: true });
+    expect(result.findings).toEqual([{
+      provider: 'local-preflight', detail: 'local checkout has uncommitted changes',
+    }]);
     expect(calls).toBe(0);
   });
 
