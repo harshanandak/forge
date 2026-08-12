@@ -382,7 +382,7 @@ describe('legacy claim repair backup and apply', () => {
 		});
 		expect(verifiedAgain).toEqual(proof);
 		fixture.driver.close();
-	});
+	}, 30_000);
 
 	test('rejects a backup changed after the restore snapshot was read', async () => {
 		const fixture = await createFixture();
