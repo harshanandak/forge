@@ -76,6 +76,12 @@ bun scripts/legacy-claim-repair.js --apply \
   --actor <operator-id>
 ```
 
+If an apply process is forcibly terminated, it may leave empty blocker
+directories named `<backup>-wal`, `<backup>-shm`, and `<backup>-journal`. After
+confirming that no repair process is still running, remove those stale
+directories before verifying or reusing that backup. An already committed
+receipt can still be replayed without this cleanup.
+
 ## Restore boundary
 
 Restore is deliberately not automated. Fence every Kernel writer, stop Forge
