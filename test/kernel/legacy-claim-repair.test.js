@@ -391,15 +391,17 @@ describe('legacy claim repair backup and apply', () => {
 		const fixture = await createFixture();
 		await seedMixedClaims(fixture);
 		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		fixture.driver.close();
+		const aliasDriver = createBuiltinSQLiteDriver({ databasePath: fixture.databasePath });
 		const hardlinkPath = path.join(fixture.root, 'kernel-hardlink.sqlite');
 		fs.linkSync(fixture.databasePath, hardlinkPath);
-		await expect(fixture.driver.applyLegacyClaimRepair({
+		await expect(aliasDriver.applyLegacyClaimRepair({
 			observedAt: OBSERVED_AT,
 			approvedDigest: preflight.digest,
 			backupPath: hardlinkPath,
 			actor: 'approved-operator',
 		}, fixture.config)).rejects.toThrow('must not alias');
-		fixture.driver.close();
+		aliasDriver.close();
 	});
 
 	test('requires the approved digest, applies exact CAS updates, and replays idempotently', async () => {
