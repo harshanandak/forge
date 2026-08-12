@@ -97,6 +97,21 @@ describe('skills-sync: populateAgentSkills', () => {
     expect(fs.readFileSync(path.join(target, 'research/evals/evals.json'), 'utf8')).toBe('{"a":1}');
   });
 
+  test('removes a previously generated file when it becomes Git-ignored', () => {
+    execFileSync('git', ['init'], { cwd: tmp, stdio: 'ignore' });
+    write('skills/plan/SKILL.md', 'plan');
+    write('skills/plan/editor.tmp', 'previously generated');
+    const target = path.join(tmp, '.codex/skills');
+    populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target });
+    expect(fs.existsSync(path.join(target, 'plan/editor.tmp'))).toBe(true);
+
+    write('.gitignore', '/skills/**/*.tmp\n');
+    populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target });
+
+    expect(fs.existsSync(path.join(target, 'plan/editor.tmp'))).toBe(false);
+    expect(fs.readFileSync(path.join(target, 'plan/SKILL.md'), 'utf8')).toBe('plan');
+  });
+
   test('clean removes stale managed dirs but leaves canonical ones', () => {
     write('skills/plan/SKILL.md', 'plan');
     const target = path.join(tmp, '.codex/skills');
