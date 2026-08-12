@@ -132,6 +132,26 @@ describe('Kernel SQLite driver — faithful beads import write path', () => {
 		expect(shown.data.close_reason).toBe('Cancelled — superseded');
 	});
 
+	test('rejects imported activity events from the reserved claim-repair receipt namespace', async () => {
+		await expect(broker.importIssues({
+			issues: [{ id: 'reserved-import', title: 'Reserved import' }],
+			activityEvents: [{
+				id: 'forged-repair-receipt',
+				entity_type: 'claim_repair',
+				entity_id: 'legacy_claims',
+				event_type: 'claim.repair',
+				idempotency_key: `claim.repair:${'a'.repeat(64)}`,
+				actor: 'attacker',
+				origin: 'forge.claim-repair',
+				payload_json: '{}',
+				created_at: now,
+			}],
+		}, { now })).rejects.toMatchObject({ code: 'CLAIM_REPAIR_RECEIPT_RESERVED' });
+
+		expect(await driver.issueOperation('show', ['reserved-import'], {}, config))
+			.toMatchObject({ ok: false });
+	});
+
 	// GAP 1 + GAP 3 end-to-end: the legacy-backup fixtures flow through
 	// loadBeadsSnapshotFromDirectory → importBeadsSnapshot → broker.importIssues, and
 	// every issue keeps its original timestamps/status while its comments and the
