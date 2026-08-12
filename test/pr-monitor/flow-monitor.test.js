@@ -3,6 +3,7 @@
 const { describe, expect, test } = require('bun:test');
 
 const { runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
+const { computeContentHash } = require('../../packages/memory-contracts');
 
 function snapshot(overrides = {}) {
   return {
@@ -23,8 +24,11 @@ function durableStore() {
   const events = [];
   const cursors = new Map();
   let terminalReceipt = null;
+  let outboxOverflow = false;
   return {
     events,
+    setCursor(target, sequence) { cursors.set(target, sequence); },
+    setOutboxOverflow(value) { outboxOverflow = value; },
     get terminalReceipt() { return terminalReceipt; },
     async appendEvent(event, targets) {
       const existing = events.find((item) => item.payload.event_id === event.payload.event_id
@@ -67,7 +71,7 @@ function durableStore() {
           content_hash: terminalReceipt.content_hash,
           envelope_json: JSON.stringify(terminalReceipt),
         },
-        overflow: { cursors: false, outbox: false },
+        overflow: { cursors: false, outbox: outboxOverflow },
       };
     },
     async recordDeliveryReceipt(receipt) {
@@ -96,6 +100,22 @@ function context(store, gather, deliverLegacy) {
     deliverLegacy,
     now: () => '2026-08-12T12:00:00.000Z',
   };
+}
+
+async function seedHistory(store, count) {
+  await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
+  const template = store.events[0];
+  for (let sequence = 2; sequence <= count; sequence += 1) {
+    const event = structuredClone(template);
+    event.object_id = `00000000-0000-4000-8000-${sequence.toString(16).padStart(12, '0')}`;
+    event.payload.event_id = sequence.toString(16).padStart(64, '0');
+    event.payload.sequence = sequence;
+    event.payload.bounded_payload.record.seq = sequence;
+    event.payload.bounded_payload.snapshot.headSha = sequence.toString(16).padStart(40, '0');
+    event.content_hash = computeContentHash(event);
+    store.events.push(event);
+  }
+  store.setCursor('legacy-journal', count);
 }
 
 describe('Flow-backed PR monitor authority', () => {
@@ -155,6 +175,39 @@ describe('Flow-backed PR monitor authority', () => {
 
     await expect(runFlowMonitorPass(context(store, async () => snapshot(), async () => {})))
       .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+  });
+
+  test('uses a contiguous bounded tail as a restart checkpoint after history exceeds the limit', async () => {
+    const store = durableStore();
+    await seedHistory(store, 129);
+    let next = snapshot({ headSha: 'f'.repeat(40) });
+    const ctx = context(store, async () => next, async () => {});
+
+    const before = store.events.at(-1).payload.sequence;
+    const resumed = await runFlowMonitorPass(ctx);
+
+    expect(store.events.length).toBeGreaterThan(128);
+    expect(resumed.changed).toBe(true);
+    expect(resumed.events[0].seq).toBe(before + 1);
+  });
+
+  test('rejects a truncated restart checkpoint when delivery predates its first retained event', async () => {
+    const store = durableStore();
+    await seedHistory(store, 129);
+    const ctx = context(store, async () => snapshot(), async () => {});
+    store.setCursor('legacy-journal', 0);
+
+    await expect(runFlowMonitorPass(ctx))
+      .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+  });
+
+  test('rejects a bounded replay when the durable delivery outbox was truncated', async () => {
+    const store = durableStore();
+    await seedHistory(store, 129);
+    store.setOutboxOverflow(true);
+
+    await expect(runFlowMonitorPass(context(store, async () => snapshot(), async () => {})))
+      .rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
   });
 
   test('rejects content-corrupted durable history before provider observation', async () => {

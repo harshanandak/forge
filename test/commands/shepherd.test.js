@@ -131,6 +131,33 @@ describe('shepherd command handler', () => {
     expect(out).toMatchObject({ state: 'PENDING', remoteState: 'MERGE_READY' });
     expect(out.localPreflight.findings).toEqual([{ provider: 'lint', detail: 'error' }]);
   });
+
+  test('fails closed when the PR head changes immediately before merge handoff', async () => {
+    const oldHead = 'a'.repeat(40);
+    const newHead = 'b'.repeat(40);
+    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
+      collectConvergenceEvidence: shepherdCmd.collectConvergenceEvidence,
+      pollEvents: async () => ({ events: [], overflow: false, receiptIds: [] }),
+      runPass: async () => ({ state: 'MERGE_READY', actions: [], reason: 'ready' }),
+      buildContext: async () => ({
+        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master', headSha: oldHead,
+      }),
+      adapter: {
+        id: 'test', kind: 'pr-state', name: 'test',
+        readState: async () => ({ headSha: newHead }),
+        readRequiredChecks: async () => [], readComments: async () => [],
+        readDivergence: async () => ({}), detectConflicts: async () => false,
+        rerunFailedChecks: async () => {}, replyToThread: async () => {},
+      },
+      store: {}, monitorId: 'pr:o/r:7', ownerRunId: 'run-7', packetId: 'packet-7', subjectId: 'o/r#7',
+      resolveGitCommonDir: () => process.cwd(),
+    });
+
+    expect(out).toMatchObject({ success: false, state: 'INCOMPLETE', remoteState: 'MERGE_READY' });
+    expect(out.reason).toMatch(/head changed/i);
+    expect(out.handoff).toBeUndefined();
+  });
 });
 
 describe('forge shepherd events — the agent-agnostic monitor pull surface', () => {

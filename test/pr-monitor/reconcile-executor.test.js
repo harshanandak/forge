@@ -95,6 +95,35 @@ describe('execute — watcher lifecycle', () => {
 		});
 	});
 
+	test('force-kills only after cancellation grace expires and reaps after acknowledgement', async () => {
+		const signals = [];
+		const cancelling = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
+				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
+				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z',
+				kill: (_pid, signal) => signals.push(signal),
+			},
+		);
+		const forced = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32000,
+				watchers: cancelling, isAlive: () => true,
+				readClaim: () => '1970-01-01T00:00:01.000Z', kill: (_pid, signal) => signals.push(signal),
+			},
+		);
+		expect(signals).toEqual([undefined, 'SIGKILL']);
+		expect(forced[0].lifecycle.state.phase).toBe('FORCE_KILL_REQUESTED');
+
+		const reaped = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{ projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32001, watchers: forced, isAlive: () => false },
+		);
+		expect(reaped).toEqual([]);
+	});
+
 	test('provider loss fails closed before terminating a watcher', async () => {
 		let killed = false;
 		await expect(executor.execute(
@@ -1106,6 +1135,47 @@ describe('finding 4 — retire never strands an un-exited zombie on release fail
 		});
 		expect(exited).toBe(0);
 		if (res && res.timer) clearInterval(res.timer);
+	});
+});
+
+describe('daemon retirement waits for watcher termination', () => {
+	test('no desired PRs does not retire while a cancellation-requested watcher is retained', async () => {
+		let released = false;
+		let exited = false;
+		const watcher = {
+			pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z',
+			lifecycle: { state: { phase: 'CANCEL_REQUESTED', terminal: false } },
+		};
+		const res = await executor.runDaemon('/repo', {
+			gitCommonDir: '/g', intervalMs: 100000,
+			acquire: () => ({ ok: true, token: 't' }),
+			startHeartbeat: () => ({}), stopHeartbeat: () => {},
+			release: () => { released = true; },
+			exit: () => { exited = true; },
+			convergeOnce: async () => ({ actions: [], watchers: [watcher], desiredCount: 0 }),
+		});
+
+		expect(res.retired).not.toBe(true);
+		expect(released).toBe(false);
+		expect(exited).toBe(false);
+		clearInterval(res.timer);
+	});
+
+	test('once mode keeps the lease when cancellation is still awaiting acknowledgement', async () => {
+		let released = false;
+		const res = await executor.runDaemon('/repo', {
+			gitCommonDir: '/g', once: true,
+			acquire: () => ({ ok: true, token: 't' }),
+			startHeartbeat: () => ({}), stopHeartbeat: () => {},
+			release: () => { released = true; },
+			convergeOnce: async () => ({
+				actions: [], desiredCount: 0,
+				watchers: [{ pr: 5, pid: 999, lifecycle: { state: { phase: 'CANCEL_REQUESTED', terminal: false } } }],
+			}),
+		});
+
+		expect(released).toBe(false);
+		expect(res.watchers).toHaveLength(1);
 	});
 });
 
