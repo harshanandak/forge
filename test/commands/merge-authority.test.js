@@ -1,6 +1,9 @@
 'use strict';
 
 const { describe, test, expect } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const mergeCmd = require('../../lib/commands/merge');
 const { MEMORY_AUTHORITY_METHODS } = require('../../packages/memory');
@@ -68,6 +71,27 @@ function deps(overrides = {}) {
 }
 
 describe('merge command — mandatory release authority', () => {
+  test('default merge-gate verification honors a disabled configured gate', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-merge-gate-'));
+    try {
+      fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
+      fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), [
+        'workflow:',
+        '  gates:',
+        '    gate.merge:',
+        '      enabled: false',
+        '',
+      ].join('\n'));
+      expect(await mergeCmd.defaultVerifyMergeGate({
+        issueId: ISSUE,
+        projectRoot: root,
+        now: Date.parse('2026-08-01T12:00:00Z'),
+      })).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('records one terminal decision only after exact-head merge succeeds', async () => {
     const order = [];
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({

@@ -152,6 +152,28 @@ describe('resolveChangeSet — strict base detection (B2)', () => {
     expect(calls.some((c) => c.startsWith('diff --name-only abc123...HEAD'))).toBe(true);
   });
 
+  test('an explicit PR base overrides origin HEAD for change-set resolution', () => {
+    const calls = [];
+    const exec = (_cmd, args) => {
+      const command = args.join(' ');
+      calls.push(command);
+      if (command === 'rev-parse --verify --quiet origin/release/2.0') return 'release-sha\n';
+      if (command === 'merge-base HEAD origin/release/2.0') return 'release-base\n';
+      if (command === 'diff --name-only release-base...HEAD') return 'lib/release.js\n';
+      if (command.includes('origin/HEAD')) return 'origin/master\n';
+      throw new Error(`unexpected git: ${command}`);
+    };
+
+    const changeSet = resolveChangeSet(exec, { baseRef: 'origin/release/2.0' });
+
+    expect(changeSet).toMatchObject({
+      resolved: true,
+      baseRef: 'origin/release/2.0',
+      changedFiles: ['lib/release.js'],
+    });
+    expect(calls.some(command => command.includes('origin/HEAD'))).toBe(false);
+  });
+
   test('git diff failure leaves the change set unresolved and preflight fails closed', async () => {
     const exec = (_cmd, args) => {
       const command = args.join(' ');

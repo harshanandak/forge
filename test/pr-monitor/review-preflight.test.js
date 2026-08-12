@@ -2,13 +2,40 @@
 
 const { describe, expect, test } = require('bun:test');
 
-const { runLocalReviewPreflight } = require('../../lib/pr-monitor/review-preflight');
+const preflightCommand = require('../../lib/commands/preflight');
+const {
+  defaultRunDeterministic,
+  runLocalReviewPreflight,
+} = require('../../lib/pr-monitor/review-preflight');
 
 const EXACT_HEAD_CONTEXT = {
   projectRoot: '/repo', base: 'master', expectedHead: 'a'.repeat(40), localHead: 'a'.repeat(40),
 };
 
 describe('bounded local review preflight', () => {
+  test('deterministic preflight resolves changes against the PR target branch', async () => {
+    const originalHandler = preflightCommand.handler;
+    let changeSet;
+    preflightCommand.handler = async (_args, _flags, _root, deps) => {
+      changeSet = deps.resolveChangeSet({ runAll: false });
+      return { success: true, results: [] };
+    };
+    const exec = (_command, args) => {
+      const joined = args.join(' ');
+      if (joined === 'rev-parse --verify --quiet origin/release/2.0') return 'release-sha\n';
+      if (joined === 'merge-base HEAD origin/release/2.0') return 'release-base\n';
+      if (joined === 'diff --name-only release-base...HEAD') return 'lib/release.js\n';
+      throw new Error(`unexpected git: ${joined}`);
+    };
+    try {
+      await defaultRunDeterministic({ projectRoot: '/repo', base: 'release/2.0' }, exec);
+    } finally {
+      preflightCommand.handler = originalHandler;
+    }
+
+    expect(changeSet).toMatchObject({ baseRef: 'origin/release/2.0', changedFiles: ['lib/release.js'] });
+  });
+
   test('does not review an unrelated local checkout as if it were the PR head', async () => {
     let calls = 0;
     const result = await runLocalReviewPreflight({
