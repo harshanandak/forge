@@ -3,6 +3,7 @@
 const { describe, test, expect } = require('bun:test');
 
 const mergeCmd = require('../../lib/commands/merge');
+const { MEMORY_AUTHORITY_METHODS } = require('../../packages/memory');
 
 const HEAD = 'a'.repeat(40);
 const OTHER_HEAD = 'b'.repeat(40);
@@ -56,6 +57,9 @@ function deps(overrides = {}) {
     loadConfig: () => ENABLED,
     verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
     verifyPrIssueBinding: async () => ({ bound: true }),
+    verifyMergeGate: async () => true,
+    prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
+    recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
     env: { FORGE_ACTOR: 'release-actor' },
     fetchPrContext: async () => context(),
     mergePr: async () => ({ merged: true }),
@@ -64,6 +68,110 @@ function deps(overrides = {}) {
 }
 
 describe('merge command — mandatory release authority', () => {
+  test('records one terminal decision only after exact-head merge succeeds', async () => {
+    const order = [];
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      verifyMergeGate: async () => { order.push('gate'); return true; },
+      prepareMergeDecision: async () => { order.push('decision'); return { decisionId: 'decision-42' }; },
+      mergePr: async () => { order.push('merge'); return { merged: true }; },
+      recordMergeDecision: async ({ decision }) => {
+        order.push('receipt');
+        expect(decision.decisionId).toBe('decision-42');
+        return { receiptId: 'receipt-42' };
+      },
+    }));
+
+    expect(order).toEqual(['gate', 'decision', 'merge', 'receipt']);
+    expect(out).toMatchObject({ success: true, merged: true, decisionId: 'decision-42', receiptId: 'receipt-42' });
+  });
+
+  test('never writes terminal linkage when the external merge fails', async () => {
+    let receipts = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      mergePr: async () => { throw new Error('provider rejected'); },
+      recordMergeDecision: async () => { receipts += 1; },
+    }));
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(receipts).toBe(0);
+  });
+
+  test('requires the human merge gate before preparing evidence or mutating GitHub', async () => {
+    let decisions = 0;
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      verifyMergeGate: async () => false,
+      prepareMergeDecision: async () => { decisions += 1; },
+      mergePr: async () => { merges += 1; },
+    }));
+
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(out.error).toContain('gate.merge');
+    expect(decisions).toBe(0);
+    expect(merges).toBe(0);
+  });
+
+  test('reports an already-completed merge when terminal linkage cannot be recorded', async () => {
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      recordMergeDecision: async () => { throw new Error('receipt store unavailable'); },
+    }));
+
+    expect(out).toMatchObject({ success: false, merged: true, decisionId: 'decision-1' });
+    expect(out.error).toContain('terminal linkage failed');
+  });
+
+  test('default evidence binds the live issue revision and terminal merged linkage', async () => {
+    const decision = await mergeCmd.defaultPrepareMergeDecision({
+      issueId: ISSUE,
+      pr: 42,
+      expectedHead: HEAD,
+      repository: 'acme/forge',
+      binding: { branch: 'feature/merge', gitCommonDir: 'C:/repo/.git' },
+      actor: 'release-actor',
+      sessionId: 'release-session',
+      config: ENABLED,
+      projectRoot: process.cwd(),
+      now: '2026-08-01T12:00:00.000Z',
+      runIssue: async () => ({ ok: true, data: { revision: 7 } }),
+    });
+    expect(decision.packet.payload).toMatchObject({
+      issue_id: ISSUE,
+      expected_issue_revision: 7,
+      target_head: HEAD,
+      allowed_mutations: ['pr.merged'],
+      receipt_requirements: { gate_ids: ['gate.merge'] },
+    });
+
+    const calls = [];
+    const broker = Object.fromEntries(MEMORY_AUTHORITY_METHODS.map(method => [method, async () => ({})]));
+    broker.recordPrLinkage = async (...callArgs) => { calls.push(callArgs); return { success: true }; };
+    broker.recordOpenedPrLinkage = async () => ({ success: true });
+    broker.readTrace = async () => [];
+    const terminal = await mergeCmd.defaultRecordMergeDecision({
+      decision,
+      pr: 42,
+      expectedHead: HEAD,
+      repository: 'acme/forge',
+      projectRoot: process.cwd(),
+      buildBroker: async () => ({ broker }),
+    });
+
+    expect(terminal.receiptId).toBeString();
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toMatchObject({
+      phase: 'merged',
+      repo: 'acme/forge',
+      number: 42,
+      branch: 'feature/merge',
+      work_packet: decision.packet,
+      run_receipt: { payload: { exact_head: HEAD, mutations_authorized: ['pr.merged'] } },
+    });
+    expect(calls[0][1]).toEqual({
+      actor: 'release-actor',
+      sessionId: 'release-session',
+      requireExactLifecycleOwnership: true,
+    });
+  });
+
   test('requires one full expected head and issue before ownership or provider I/O', async () => {
     for (const argv of [
       ['42', '--auto', '--issue', ISSUE],

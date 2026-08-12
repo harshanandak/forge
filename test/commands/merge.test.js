@@ -45,6 +45,9 @@ const AUTHORITY_DEPS = {
   env: { FORGE_ACTOR: 'release-actor' },
   verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
   verifyPrIssueBinding: async () => ({ bound: true }),
+  verifyMergeGate: async () => true,
+  prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
+  recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
 };
 
 /** Create an isolated temp project; when `configObj` is given, write it to `.forge/config.yaml`. */
