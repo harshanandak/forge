@@ -4,8 +4,8 @@
   "static": {
     "token_cost": {
       "desc_chars": 987,
-      "body_lines": 92,
-      "score": 43
+      "body_lines": 108,
+      "score": 41
     },
     "caps": {
       "desc_within": true,
@@ -37,5 +37,5 @@
     "variance": null,
     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
   },
-  "composite": 83
+  "composite": 82
 }
