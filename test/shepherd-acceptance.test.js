@@ -238,7 +238,8 @@ describe('shepherd acceptance §5', () => {
     const s = scriptedAdapter([{ required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }], behind: 0 }]);
     const out = await shepherdCmd.handler(['123'], {}, ROOT, {
       adapter: s.adapter,
-      buildContext: async () => BASE_CTX,
+      buildContext: async () => ({ ...BASE_CTX, headSha: 'a'.repeat(40), localHead: 'a'.repeat(40) }),
+      git: (_command, args) => (args[0] === 'rev-parse' ? `${'a'.repeat(40)}\n` : ''),
       runLocalPreflight: async () => ({ status: 'PASS', blocking: false, providers: {}, findings: [] }),
       collectConvergenceEvidence: async () => ({
         deltas: [], deltaOverflow: false, receiptIds: [], exactHead: 'a'.repeat(40),
