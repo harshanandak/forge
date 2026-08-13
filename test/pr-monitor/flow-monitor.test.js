@@ -245,6 +245,80 @@ describe('Flow-backed PR monitor authority', () => {
     expect(resumed.terminalReceiptId).toBeString();
   });
 
+  test('recovers an accepted transition batch larger than the retained history tail', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let next = snapshot({ checks });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    const appendEvent = store.appendEvent;
+    let appends = 0;
+    store.appendEvent = async (...args) => {
+      appends += 1;
+      if (appends === 2) throw new Error('mid-batch storage failure');
+      return appendEvent(...args);
+    };
+
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    store.appendEvent = appendEvent;
+    ctx.gather = async () => { throw new Error('accepted batch recovery must precede provider state'); };
+
+    const resumed = await runFlowMonitorPass(ctx);
+
+    expect(resumed.events).toHaveLength(129);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+  });
+
+  test('recovers a retained suffix of an accepted transition batch', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let next = snapshot({ checks });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    const appendEvent = store.appendEvent;
+    let appends = 0;
+    store.appendEvent = async (...args) => {
+      appends += 1;
+      if (appends === 130) throw new Error('late storage failure');
+      return appendEvent(...args);
+    };
+
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    store.appendEvent = appendEvent;
+    ctx.gather = async () => { throw new Error('retained suffix recovery must precede provider state'); };
+
+    const resumed = await runFlowMonitorPass(ctx);
+
+    expect(resumed.events).toHaveLength(1);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+  });
+
+  test('validates every transition record before the first durable mutation', async () => {
+    const store = durableStore();
+    let next = snapshot({ prState: 'OPEN', checks: [{ name: 'ci', class: 'green' }] });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+    const before = store.events.length;
+
+    next = snapshot({ prState: 'MERGED', checks: [{ name: 'ci', class: 'failed' }] });
+    ctx.enrich = async records => {
+      expect(records.length).toBeGreaterThan(1);
+      Object.assign(records[1].data, Object.fromEntries(Array.from({ length: 24 }, (_, outer) => [
+        `group-${outer}`,
+        Object.fromEntries(Array.from({ length: 24 }, (_, inner) => [`item-${inner}`, 'x'.repeat(64)])),
+      ])));
+    };
+
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({
+      code: 'INVALID_OBSERVATION', message: 'MonitorEvent validation failed',
+    });
+    expect(store.events).toHaveLength(before);
+  });
+
   test('preserves the provider root cause when durable history is unavailable', async () => {
     const store = durableStore();
     const cause = new Error('socket closed');
