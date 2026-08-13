@@ -277,6 +277,24 @@ describe('Flow-backed PR monitor authority', () => {
     expect(Buffer.byteLength(JSON.stringify(store.events.at(-1).payload.bounded_payload))).toBeLessThanOrEqual(16_384);
   });
 
+  test('redacts unsafe degraded provider diagnostics before durable and legacy persistence', async () => {
+    const store = durableStore();
+    const delivered = [];
+    const unsafe = 'token=supersecret123 from /home/runner/work/private/repo';
+
+    await runFlowMonitorPass(context(
+      store,
+      async () => snapshot({ degraded: [{ surface: 'checks', error: unsafe }] }),
+      async record => delivered.push(record),
+    ));
+
+    const durable = store.events.find(event => event.payload.type === 'monitor.degraded')
+      ?.payload.bounded_payload.record.data.error;
+    const legacy = delivered.find(record => record.type === 'monitor.degraded')?.data.error;
+    expect(durable).toBe('[provider diagnostic redacted]');
+    expect(legacy).toBe('[provider diagnostic redacted]');
+  });
+
   test('preserves valid enriched job URLs longer than the generic snapshot text bound', async () => {
     const store = durableStore();
     let next = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
