@@ -336,7 +336,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
 
 	test('MISMATCH: pid alive but journal marker startedAt differs → kill is NOT called', async () => {
 		const kills = [];
-		await executor.execute(
+		const watchers = await executor.execute(
 			[{ type: 'reapOrphan', pid: 999, startedAt: 't1' }],
 			{
 				projectRoot: '/repo',
@@ -348,6 +348,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
 			},
 		);
 		expect(kills).toHaveLength(0);
+		expect(watchers).toEqual([]);
 	});
 
 	test('MATCH: pid alive AND marker startedAt equals watcher entry → kill called exactly once', async () => {
@@ -405,7 +406,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
 
 	test('absent marker → never killed', async () => {
 		const kills = [];
-		await executor.execute(
+		const watchers = await executor.execute(
 			[{ type: 'stopWatcher', pr: { number: 5 } }],
 			{
 				projectRoot: '/repo',
@@ -417,6 +418,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
 			},
 		);
 		expect(kills).toHaveLength(0);
+		expect(watchers).toEqual([]);
 	});
 });
 

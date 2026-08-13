@@ -314,6 +314,24 @@ describe('Flow-backed PR monitor authority', () => {
     expect(store.events.at(-1).payload.bounded_payload.record.data.jobUrl).toBe(jobUrl);
   });
 
+  test('omits credential-bearing enriched job URLs before durable and legacy persistence', async () => {
+    const store = durableStore();
+    let next = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
+    ctx.enrich = async records => {
+      records.find(record => record.type === 'check.failed').data.jobUrl = 'https://ci.example/job/1?token=supersecret123';
+    };
+
+    await runFlowMonitorPass(ctx);
+
+    const failure = delivered.find(record => record.type === 'check.failed');
+    expect(failure.data.jobUrl).toBeUndefined();
+    expect(store.events.at(-1).payload.bounded_payload.record.data.jobUrl).toBeUndefined();
+  });
+
   test('preserves long repository identity in bounded durable and compatibility records', async () => {
     const store = durableStore();
     const repo = `owner/${'repository'.repeat(10)}`;
