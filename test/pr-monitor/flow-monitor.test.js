@@ -219,6 +219,31 @@ describe('Flow-backed PR monitor authority', () => {
     expect(deliveries).toBe(0);
   });
 
+  test('recovers the remaining transition records after a mid-batch append failure', async () => {
+    const store = durableStore();
+    const appendEvent = store.appendEvent.bind(store);
+    let appends = 0;
+    store.appendEvent = async (...args) => {
+      appends += 1;
+      if (appends === 2) throw new Error('mid-batch storage failure');
+      return appendEvent(...args);
+    };
+    const delivered = [];
+    const merged = snapshot({ prState: 'MERGED' });
+    const ctx = context(store, async () => merged, async record => delivered.push(record));
+
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(store.events.map(event => event.payload.type)).toEqual(['verdict.changed']);
+    expect(store.events[0].payload.bounded_payload.snapshot).toBeNull();
+
+    store.appendEvent = appendEvent;
+    const resumed = await runFlowMonitorPass(ctx);
+
+    expect(resumed.events.map(event => event.type)).toEqual(['pr.merged']);
+    expect(delivered.map(event => event.type)).toEqual(['verdict.changed', 'pr.merged']);
+    expect(resumed.terminalReceiptId).toBeString();
+  });
+
   test('preserves the provider root cause when durable history is unavailable', async () => {
     const store = durableStore();
     const cause = new Error('socket closed');
