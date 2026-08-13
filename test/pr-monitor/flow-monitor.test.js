@@ -163,6 +163,29 @@ describe('Flow-backed PR monitor authority', () => {
     expect(delivered).toHaveLength(1);
   });
 
+  test('normalizes a legacy raw snapshot before comparing compact transition identities', async () => {
+    const store = durableStore();
+    const current = snapshot({
+      checks: [{ name: 'Windows / test', class: 'failed' }],
+      reviews: [{ author: 'coderabbitai', state: 'COMMENTED', commitOid: 'a'.repeat(40), submittedAt: 't1' }],
+    });
+    const delivered = [];
+    await runFlowMonitorPass(context(store, async () => current, async record => delivered.push(record)));
+
+    const event = store.events.at(-1);
+    event.payload.bounded_payload.snapshot = structuredClone(current);
+    event.content_hash = computeContentHash(event);
+    const before = delivered.length;
+
+    const restarted = await runFlowMonitorPass(context(
+      store, async () => structuredClone(current), async record => delivered.push(record),
+    ));
+
+    expect(restarted.events.map(record => record.type)).not.toContain('check.failed');
+    expect(restarted.events.map(record => record.type)).not.toContain('review.submitted');
+    expect(delivered).toHaveLength(before);
+  });
+
   test('fails closed without writing legacy compatibility state when Memory is unavailable', async () => {
     const store = durableStore();
     store.appendEvent = async () => {

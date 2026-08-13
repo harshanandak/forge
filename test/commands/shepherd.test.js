@@ -154,6 +154,20 @@ describe('shepherd command handler', () => {
     expect(out.localPreflight.findings).toEqual([{ provider: 'lint', detail: 'error' }]);
   });
 
+  test('preserves an incomplete local preflight instead of reporting a pending remote result', async () => {
+    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
+      runLocalPreflight: async () => ({
+        status: 'INCOMPLETE', blocking: true, providers: {}, findings: [],
+      }),
+      runPass: async () => ({ state: 'MERGE_READY', actions: [], reason: 'remote ready' }),
+      buildContext: async () => ({ pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' }),
+    });
+
+    expect(out).toMatchObject({ state: 'INCOMPLETE', remoteState: 'MERGE_READY' });
+    expect(out.reason).toMatch(/local review preflight is incomplete/i);
+  });
+
   test('fails closed when the PR head changes immediately before merge handoff', async () => {
     const oldHead = 'a'.repeat(40);
     const newHead = 'b'.repeat(40);

@@ -4,6 +4,7 @@ const { describe, expect, test } = require('bun:test');
 
 const preflightCommand = require('../../lib/commands/preflight');
 const {
+  defaultResolveBaseCommit,
   defaultRunCodeRabbit,
   defaultRunDeterministic,
   runLocalReviewPreflight,
@@ -14,6 +15,21 @@ const EXACT_HEAD_CONTEXT = {
 };
 
 describe('bounded local review preflight', () => {
+  test('resolves the target ref to one exact commit', async () => {
+    const calls = [];
+    const sha = await defaultResolveBaseCommit({
+      projectRoot: '/repo', base: 'master', baseRef: 'upstream/master',
+    }, (command, args, options) => {
+      calls.push({ command, args, cwd: options.cwd });
+      return `${'B'.repeat(40)}\n`;
+    });
+
+    expect(sha).toBe('b'.repeat(40));
+    expect(calls).toEqual([{
+      command: 'git', args: ['rev-parse', '--verify', '--quiet', 'upstream/master^{commit}'], cwd: '/repo',
+    }]);
+  });
+
   test('accepts only a structured terminal CodeRabbit result with zero findings', async () => {
     const result = await defaultRunCodeRabbit({ projectRoot: '/repo', base: 'master' }, () => [
       JSON.stringify({ type: 'status', phase: 'reviewing' }),
@@ -82,6 +98,33 @@ describe('bounded local review preflight', () => {
       preflightCommand.handler = originalHandler;
     }
     expect(changeSet.baseRef).toBe('upstream/master');
+  });
+
+  test('uses one exact resolved base commit for both local review providers', async () => {
+    const seen = [];
+    const result = await runLocalReviewPreflight({
+      ...EXACT_HEAD_CONTEXT, baseRef: 'origin/master',
+    }, {
+      resolveBaseCommit: async context => {
+        expect(context.baseRef).toBe('origin/master');
+        return 'b'.repeat(40);
+      },
+      probeCodeRabbit: async () => ({ available: true }),
+      runCodeRabbit: async context => {
+        seen.push(['coderabbit', context.baseCommit]);
+        return { ok: true, summary: 'clean', findings: [] };
+      },
+      runDeterministic: async context => {
+        seen.push(['deterministic', context.baseCommit]);
+        return { success: true, results: [] };
+      },
+    });
+
+    expect(result.status).toBe('PASS');
+    expect(seen).toEqual([
+      ['coderabbit', 'b'.repeat(40)],
+      ['deterministic', 'b'.repeat(40)],
+    ]);
   });
 
   test('does not review an unrelated local checkout as if it were the PR head', async () => {
