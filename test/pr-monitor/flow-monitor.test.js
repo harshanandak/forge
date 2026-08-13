@@ -237,6 +237,7 @@ describe('Flow-backed PR monitor authority', () => {
     expect(store.events[0].payload.bounded_payload.snapshot).toBeNull();
 
     store.appendEvent = appendEvent;
+    ctx.gather = async () => { throw new Error('pending recovery must precede changed provider state'); };
     const resumed = await runFlowMonitorPass(ctx);
 
     expect(resumed.events.map(event => event.type)).toEqual(['pr.merged']);
