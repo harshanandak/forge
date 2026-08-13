@@ -332,6 +332,24 @@ describe('Flow-backed PR monitor authority', () => {
     expect(store.events.at(-1).payload.bounded_payload.record.data.jobUrl).toBeUndefined();
   });
 
+  test.each([
+    'https://user:password@ci.example/job/1',
+    'https://ci.example/job/1?sig=opaque',
+    'https://ci.example/job/1#credential',
+  ])('omits non-public enriched job URL %s', async (jobUrl) => {
+    const store = durableStore();
+    let next = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
+    ctx.enrich = async records => { records.find(record => record.type === 'check.failed').data.jobUrl = jobUrl; };
+
+    await runFlowMonitorPass(ctx);
+
+    expect(delivered.find(record => record.type === 'check.failed')?.data.jobUrl).toBeUndefined();
+  });
+
   test('preserves long repository identity in bounded durable and compatibility records', async () => {
     const store = durableStore();
     const repo = `owner/${'repository'.repeat(10)}`;

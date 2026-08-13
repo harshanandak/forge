@@ -140,6 +140,32 @@ describe('shepherd command handler', () => {
     expect(out.handoff).toMatchObject({ next: 'review' });
   });
 
+  test('persists a state change observed during merge-readiness confirmation', async () => {
+    let passes = 0;
+    let evidenceCalls = 0;
+    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
+      runPass: async () => (++passes === 1
+        ? { state: 'MERGE_READY', actions: [], reason: 'ready', expectedHead: 'a'.repeat(40) }
+        : { state: 'MERGED', actions: [], reason: 'merged concurrently', expectedHead: 'a'.repeat(40) }),
+      collectConvergenceEvidence: async () => {
+        evidenceCalls += 1;
+        return {
+          deltas: [], deltaOverflow: false, receiptIds: [`receipt-${evidenceCalls}`],
+          exactHead: 'a'.repeat(40), ...(evidenceCalls === 2 ? { terminalReceiptId: 'terminal-2' } : {}),
+        };
+      },
+      buildContext: async () => ({
+        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+        headSha: 'a'.repeat(40), localHead: 'a'.repeat(40),
+      }),
+      git: (_command, args) => (args[0] === 'rev-parse' ? `${'a'.repeat(40)}\n` : ''),
+    });
+
+    expect(evidenceCalls).toBe(2);
+    expect(out).toMatchObject({ state: 'MERGED', terminalReceiptId: 'terminal-2', receiptIds: ['receipt-2'] });
+  });
+
   test('consolidates blocking local findings before a read-only remote decision', async () => {
     let dryRun;
     const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
