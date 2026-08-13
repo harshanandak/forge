@@ -202,7 +202,11 @@ function isKnownTargetablePath(file) {
     // SKILL_TEST_TARGETS in lib/commands/test.js); a skills-only PR stays on the
     // targeted lane instead of the full suite.
     || file.startsWith('skills/')
-    || file.startsWith('.agents/skills/')) {
+    || file.startsWith('.agents/skills/')
+    // Maintainer-only contributor skills (tracked, never published). They map to
+    // the AGENTS.md docs-bleed gate in lib/commands/test.js, so a contributor-docs
+    // PR stays on the targeted lane instead of the full suite.
+    || file.startsWith('.forge/contributor-skills/')) {
     return true;
   }
 
