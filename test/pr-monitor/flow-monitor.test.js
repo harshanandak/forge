@@ -1,6 +1,7 @@
 'use strict';
 
 const { describe, expect, test } = require('bun:test');
+const zlib = require('node:zlib');
 
 const { runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
 const { computeContentHash } = require('../../packages/memory-contracts');
@@ -184,6 +185,24 @@ describe('Flow-backed PR monitor authority', () => {
     expect(restarted.events.map(record => record.type)).not.toContain('check.failed');
     expect(restarted.events.map(record => record.type)).not.toContain('review.submitted');
     expect(delivered).toHaveLength(before);
+  });
+
+  test('does not checkpoint when only the gzip representation of snapshot evidence changes', async () => {
+    const store = durableStore();
+    const current = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
+    await runFlowMonitorPass(context(store, async () => current, async () => {}));
+    const before = store.events.length;
+    const event = store.events.at(-1);
+    const evidence = zlib.gunzipSync(Buffer.from(
+      event.payload.bounded_payload.snapshot._snapshotEvidence, 'base64url',
+    ));
+    event.payload.bounded_payload.snapshot._snapshotEvidence = zlib.gzipSync(evidence, { level: 1 }).toString('base64url');
+    event.content_hash = computeContentHash(event);
+
+    const restarted = await runFlowMonitorPass(context(store, async () => current, async () => {}));
+
+    expect(restarted.events).toEqual([]);
+    expect(store.events).toHaveLength(before);
   });
 
   test('fails closed without writing legacy compatibility state when Memory is unavailable', async () => {

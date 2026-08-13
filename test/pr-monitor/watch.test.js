@@ -110,8 +110,12 @@ describe('watchLoop', () => {
     await runWatchPass({ pending: new Map() }, {
       dir,
       runMonitorPass: async () => {
+        journal.appendEvents(dir, [{
+          ...compatibility, seq: 1, type: T.COMMENT_POSTED, key: 'pre-pass',
+        }]);
         journal.appendEvents(dir, [compatibility]);
         return {
+          journalCursor: 1,
           events: [
             { ...compatibility, seq: 2, type: 'monitor.checkpoint' },
             { ...compatibility, seq: 3 },

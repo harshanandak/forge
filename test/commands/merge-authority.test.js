@@ -298,20 +298,17 @@ describe('merge command — mandatory release authority', () => {
     expect(records).toBe(0);
   });
 
-  test('reconciles a merged PR without requiring a receipt for a disabled merge gate', async () => {
-    let receiptRequirements;
+  test('fails closed before recovery evidence when a disabled gate cannot satisfy the broker contract', async () => {
+    let decisions = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
       fetchPrContext: async () => context({ state: 'MERGED' }),
       verifyMergeGate: async () => ({ success: true, disabled: true }),
-      prepareMergeDecision: async input => {
-        receiptRequirements = input.requireMergeGate;
-        return { decisionId: 'decision-disabled-gate' };
-      },
-      recordMergeDecision: async () => ({ receiptId: 'receipt-disabled-gate' }),
+      prepareMergeDecision: async () => { decisions += 1; },
     }));
 
-    expect(out).toMatchObject({ success: true, merged: true, recovered: true });
-    expect(receiptRequirements).toBe(false);
+    expect(out).toMatchObject({ success: false, merged: true });
+    expect(out.error).toMatch(/disabled.*terminal authority/i);
+    expect(decisions).toBe(0);
   });
 
   test('default evidence binds the live issue revision and terminal merged linkage', async () => {
@@ -386,12 +383,12 @@ describe('merge command — mandatory release authority', () => {
     });
     expect(calls[0][0].run_receipt.payload).toMatchObject({
       executor: { mode: 'guarded-exact-head-recovery' },
-      mutations_attempted: [],
+      mutations_attempted: ['pr.merged'],
     });
   });
 
-  test('omits a disabled merge gate from terminal receipt requirements', async () => {
-    const decision = await mergeCmd.defaultPrepareMergeDecision({
+  test('refuses to construct broker-invalid terminal evidence for a disabled merge gate', async () => {
+    await expect(mergeCmd.defaultPrepareMergeDecision({
       issueId: ISSUE,
       pr: 42,
       expectedHead: HEAD,
@@ -404,9 +401,19 @@ describe('merge command — mandatory release authority', () => {
       projectRoot: process.cwd(),
       now: '2026-08-01T12:00:00.000Z',
       runIssue: async () => ({ ok: true, data: { revision: 7 } }),
-    });
+    })).rejects.toThrow(/disabled.*terminal authority/i);
+  });
 
-    expect(decision.packet.payload.receipt_requirements).toEqual({ gate_ids: [] });
+  test('fails closed before GitHub mutation when a disabled gate cannot satisfy terminal authority', async () => {
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      verifyMergeGate: async () => ({ success: true, disabled: true }),
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
+
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(out.error).toMatch(/disabled.*terminal authority/i);
+    expect(merges).toBe(0);
   });
 
   test('requires one full expected head and issue before ownership or provider I/O', async () => {

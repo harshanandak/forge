@@ -618,8 +618,9 @@ describe('merge authority — exact reviewer regressions', () => {
         occurredAt: '2026-08-01T12:00:00.000Z', receiptHash: 'b'.repeat(64),
       },
     });
-    expect(result.terminalEvidence.decisionId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(result.terminalEvidence.receiptId).toMatch(/^[0-9a-f-]{36}$/);
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    expect(result.terminalEvidence.decisionId).toMatch(uuid);
+    expect(result.terminalEvidence.receiptId).toMatch(uuid);
   });
 
   test('retired binding errors report a wrong issue without claiming the row must be open', async () => {

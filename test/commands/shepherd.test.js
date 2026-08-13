@@ -107,7 +107,11 @@ describe('shepherd command handler', () => {
       runPass: async () => ({
         state: 'MERGE_READY', actions: [], reason: 'ready', expectedHead: 'a'.repeat(40),
       }),
-      buildContext: async () => ({ pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' }),
+      buildContext: async () => ({
+        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+        headSha: 'a'.repeat(40), localHead: 'a'.repeat(40),
+      }),
+      git: (_command, args) => (args[0] === 'rev-parse' ? `${'a'.repeat(40)}\n` : ''),
     });
     expect(out.state).toBe('MERGE_READY');
     expect((out.actions || []).some((a) => a.type === 'merge')).toBe(false);
@@ -125,8 +129,10 @@ describe('shepherd command handler', () => {
           : { state: 'NEEDS_REVIEW', actions: [], reason: 'new review feedback' };
       },
       buildContext: async () => ({
-        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master', headSha: 'a'.repeat(40),
+        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+        headSha: 'a'.repeat(40), localHead: 'a'.repeat(40),
       }),
+      git: (_command, args) => (args[0] === 'rev-parse' ? `${'a'.repeat(40)}\n` : ''),
     });
 
     expect(passes).toBe(2);
@@ -165,7 +171,31 @@ describe('shepherd command handler', () => {
     });
 
     expect(out).toMatchObject({ state: 'INCOMPLETE', remoteState: 'MERGE_READY' });
+    expect(out.success).toBe(false);
     expect(out.reason).toMatch(/local review preflight is incomplete/i);
+  });
+
+  test('fails closed when the checkout changes while local providers are running', async () => {
+    const oldHead = 'a'.repeat(40);
+    const newHead = 'b'.repeat(40);
+    let dryRun;
+    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
+      runLocalPreflight: async () => ({ status: 'PASS', blocking: false, providers: {}, findings: [] }),
+      runPass: async context => {
+        dryRun = context.dryRun;
+        return { state: 'MERGE_READY', actions: [], reason: 'remote ready' };
+      },
+      buildContext: async () => ({
+        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+        headSha: oldHead, localHead: oldHead,
+      }),
+      git: (_command, args) => (args[0] === 'rev-parse' ? `${newHead}\n` : ''),
+    });
+
+    expect(dryRun).toBe(true);
+    expect(out).toMatchObject({ success: false, state: 'INCOMPLETE', remoteState: 'MERGE_READY' });
+    expect(out.localPreflight.findings[0].detail).toMatch(/changed during local review/i);
   });
 
   test('fails closed when the PR head changes immediately before merge handoff', async () => {
@@ -237,7 +267,7 @@ describe('shepherd command handler', () => {
         rerunFailedChecks: async () => {}, replyToThread: async () => {},
       },
       store: {}, monitorId: 'pr:o/r:7', ownerRunId: 'run-7', packetId: 'packet-7', subjectId: 'o/r#7',
-      git: () => '',
+      git: (_command, args) => (args[0] === 'rev-parse' ? `${lowerHead}\n` : ''),
     });
 
     expect(out).toMatchObject({ success: true, state: 'MERGE_READY' });
@@ -257,7 +287,7 @@ describe('shepherd command handler', () => {
         pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
         headSha: oldHead, localHead: oldHead,
       }),
-      git: () => '',
+      git: (_command, args) => (args[0] === 'rev-parse' ? `${oldHead}\n` : ''),
     });
 
     expect(out).toMatchObject({ success: false, state: 'INCOMPLETE', remoteState: 'MERGE_READY' });

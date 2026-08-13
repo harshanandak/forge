@@ -125,6 +125,18 @@ describe('runMonitorPass', () => {
     expect(delivered[0].seq).toBe(41);
   });
 
+  test('returns the lock-protected compatibility cursor for watch consumers', async () => {
+    journal.appendEvents(dir, [{
+      seq: 40, ts: now(), type: T.VERDICT_CHANGED, key: 'legacy',
+      repo: 'acme-forge', pr: '1', headSha: 'old', data: {},
+    }]);
+
+    const result = await runMonitorPass(memoryContext(memoryStore(), async () => snap()));
+
+    expect(result.journalCursor).toBe(40);
+    expect(journal.readEventsSince(dir, result.journalCursor)).toHaveLength(1);
+  });
+
   test('Memory compatibility delivery preserves recurring event identities', async () => {
     const store = memoryStore();
     const current = { value: snap({ headSha: 'shaX', checks: [{ name: 'ci', class: 'green' }] }) };

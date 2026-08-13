@@ -11,7 +11,8 @@ const {
 } = require('../../lib/pr-monitor/review-preflight');
 
 const EXACT_HEAD_CONTEXT = {
-  projectRoot: '/repo', base: 'master', expectedHead: 'a'.repeat(40), localHead: 'a'.repeat(40), cleanTree: true,
+  projectRoot: '/repo', base: 'master', baseCommit: 'b'.repeat(40),
+  expectedHead: 'a'.repeat(40), localHead: 'a'.repeat(40), cleanTree: true,
 };
 
 describe('bounded local review preflight', () => {
@@ -103,7 +104,7 @@ describe('bounded local review preflight', () => {
   test('uses one exact resolved base commit for both local review providers', async () => {
     const seen = [];
     const result = await runLocalReviewPreflight({
-      ...EXACT_HEAD_CONTEXT, baseRef: 'origin/master',
+      ...EXACT_HEAD_CONTEXT, baseRef: 'origin/master', baseCommit: undefined,
     }, {
       resolveBaseCommit: async context => {
         expect(context.baseRef).toBe('origin/master');
@@ -125,6 +126,22 @@ describe('bounded local review preflight', () => {
       ['coderabbit', 'b'.repeat(40)],
       ['deterministic', 'b'.repeat(40)],
     ]);
+  });
+
+  test('explicitly opts out of base resolution without coupling behavior to injected providers', async () => {
+    const result = await runLocalReviewPreflight({
+      ...EXACT_HEAD_CONTEXT, baseCommit: undefined,
+    }, {
+      resolveBaseCommit: false,
+      probeCodeRabbit: async () => ({ available: true }),
+      runCodeRabbit: async context => {
+        expect(context.baseCommit).toBeUndefined();
+        return { ok: true, summary: 'clean', findings: [] };
+      },
+      runDeterministic: async () => ({ success: true, results: [] }),
+    });
+
+    expect(result.status).toBe('PASS');
   });
 
   test('does not review an unrelated local checkout as if it were the PR head', async () => {
