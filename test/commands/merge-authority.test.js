@@ -116,6 +116,7 @@ describe('merge command — mandatory release authority', () => {
       mergePr: async () => ({
         merged: true, success: false, enabled: false, allowed: false,
         reason: 'provider override', decisionId: 'provider-decision', receiptId: 'provider-receipt',
+        method: 'squash', error: 'provider detail', state: 'FAILED', unmet: [{ rule: 'checks_green' }],
       }),
       prepareMergeDecision: async () => ({ decisionId: 'authority-decision' }),
       recordMergeDecision: async () => ({ receiptId: 'authority-receipt', receiptHash: 'f'.repeat(64) }),
@@ -123,8 +124,11 @@ describe('merge command — mandatory release authority', () => {
 
     expect(out).toMatchObject({
       success: true, merged: true, enabled: true, allowed: true,
-      reason: 'all merge rules passed', decisionId: 'authority-decision', receiptId: 'authority-receipt',
+      reason: 'all merge rules passed', decisionId: 'authority-decision', receiptId: 'authority-receipt', method: 'squash',
     });
+    expect(out).not.toHaveProperty('error');
+    expect(out).not.toHaveProperty('state');
+    expect(out).not.toHaveProperty('unmet');
   });
 
   test('never writes terminal linkage when the external merge fails', async () => {
@@ -382,7 +386,7 @@ describe('merge command — mandatory release authority', () => {
     });
     expect(calls[0][0].run_receipt.payload).toMatchObject({
       executor: { mode: 'guarded-exact-head-recovery' },
-      mutations_attempted: ['pr.merged'],
+      mutations_attempted: [],
     });
   });
 

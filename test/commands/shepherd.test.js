@@ -456,4 +456,22 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
     expect(cf.data.excerpt).toBe('AssertionError: boom');
     expect(cf.data.jobUrl).toBe('https://ci/job/1');
   });
+
+  test('unsafe CI excerpts are omitted before durable monitor persistence', async () => {
+    const records = [{ type: T.CHECK_FAILED, data: { name: 'ci' } }];
+    const enrich = shepherdCmd.makeCheckFailureEnricher({
+      gatherPull: async () => ({
+        failures: [{
+          name: 'ci',
+          excerpt: 'failure at /home/runner/work/private-repo/build.js\ntoken=super-secret-value',
+          jobUrl: 'https://github.com/acme/forge/actions/runs/1/job/2',
+        }],
+      }),
+    });
+
+    await enrich(records);
+
+    expect(records[0].data.excerpt).toBeUndefined();
+    expect(records[0].data.jobUrl).toBe('https://github.com/acme/forge/actions/runs/1/job/2');
+  });
 });
