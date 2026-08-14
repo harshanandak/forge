@@ -8,9 +8,9 @@ protected surface `generated_harness`, and the only command that can issue a
 protected-state authorization is `forge release generate-npm-workflow`
 (`NPM_WORKFLOW_SOURCE_COMMAND`, `lib/protected-state-authority.js`). There is no
 writer for a USER-block edit — the product invites users to write in that block
-and then refuses the commit. That is filed as a product bug; this file holds the
-content until the gate has a writer, at which point applying it is a copy-paste
-plus one `forge setup` run.
+and then refuses the commit. That is filed as a product bug (kernel `46faa8d1`);
+this file holds the content until the gate has a writer, at which point applying
+it is a copy-paste plus one `forge setup` run.
 
 Verified while writing this (2026-08-13):
 
@@ -146,14 +146,19 @@ Mined from real corrections in this repo, most frequent first.
 5. **Weakening a gate or a test to make it pass** — a bumped timeout, a
    softened assertion, a narrowed scope so the check stops firing. If a gate
    caught you, it worked. [Forge #9 ×3]
-6. **Skipping the manifest regen** after adding a command file. Dev-mode
+6. **Reading the working tree instead of the tracked ref.** A grep with zero
+   hits proves nothing if you grepped a stale or detached checkout. Check the
+   ref that actually matters — `git show origin/master:<path>`, not the file on
+   disk. **This repo's default branch is `master`, not `main`**; a check written
+   against `origin/main` silently reads nothing. Struck twice on 2026-08-13.
+7. **Skipping the manifest regen** after adding a command file. Dev-mode
    discovery hides it locally; the compiled binary does not.
-7. **`--no-verify` / `LEFTHOOK=0`.** Forbidden for agents, no exceptions.
-8. **Letting a PR sit.** Over-analysis instead of merging is the second most
+8. **`--no-verify` / `LEFTHOOK=0`.** Forbidden for agents, no exceptions.
+9. **Letting a PR sit.** Over-analysis instead of merging is the second most
    common complaint in this repo. [Forge #2 ×9]
-9. **Pulling unrelated fixes into the current PR.** New problem → new issue →
-   new PR. [Forge #3 ×6]
-10. **Leaving something discussed unfiled.** If it was said, it is an issue.
+10. **Pulling unrelated fixes into the current PR.** New problem → new issue →
+    new PR. [Forge #3 ×6]
+11. **Leaving something discussed unfiled.** If it was said, it is an issue.
     [Forge #7 ×3]
 
 ### Hit every surface
