@@ -55,6 +55,7 @@ const KNOWN_TARGETABLE_FILES = new Set([
   'bun.lock',
   'lefthook.yml',
   'eslint.config.js',
+  '.coderabbit.yaml',
   '.claude-plugin/marketplace.json',
 ]);
 
