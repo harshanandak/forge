@@ -209,6 +209,24 @@ Pull requests: problem first in plain English, then the solution — never an
 implementation inventory. No draft PRs (bots don't run on drafts). One lead
 agent per PR. End with the model and harness that produced it.
 
+### Shipping regime (pre-user)
+
+Forge has exactly one user today. Its gates are dogfooded product features and
+stay on — but its own PR process runs at speed:
+
+- **The merge artifact is a demo**, not a diff read: a recording or terminal
+  transcript from the dev runbook above, plus the plan's acceptance checklist
+  walked out loud, plus a problem-first description. Line-level correctness
+  belongs to the in-PR agent loop — implementer, spec review, quality review.
+- **Completeness is the gate; size is not.** The "hit every surface" table above
+  *is* the checklist — reverse states, per-harness decisions, all of it. Walk it
+  before ship. Half-built is the failure mode; big is not.
+- **Bot review advises.** It blocks on secrets, injection, and a broken build;
+  everything else is a suggestion, and no review comment expands the PR — file
+  the issue instead.
+- **Master is recoverable:** squash-only, branch deleted on merge, revert or fix
+  forward inside the hour, never debug on a red master. No merge queue.
+
 ### Standards, as a user would feel them
 
 The CLI feels instant. No spinner that lies about what it's doing. Hooks add no
