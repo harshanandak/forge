@@ -24,15 +24,23 @@ on:
       - 'scripts/**'
       - 'packages/**'
       - 'skills/**'
+      - 'test/**'
+      - 'test-env/**'
       - 'package.json'
+      - 'bunfig.toml'
       - '*.js'
       - '.claude/**/*.js'
       - '.forge/hooks/**'
       - '.github/workflows/**'
+      - '.github/agentic-workflows/**'
 
 # Limit permissions — most jobs only echo a message. The test-suite job needs
 # `contents: read` to check the repo out, so it grants that at the job level.
 permissions: {}
+
+concurrency:
+  group: required-checks-bypass-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Job names MUST match the required check names exactly.
@@ -47,6 +55,7 @@ jobs:
   test-suite:
     name: Test Suite
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -67,23 +76,39 @@ jobs:
   code-coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - run: echo "No code changes — coverage check not needed"
 
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - run: echo "No code changes — E2E tests not needed"
 
   test-dashboard:
     name: Test Dashboard (PR)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - run: echo "No code changes — dashboard not needed"
 
   cross-os-gate:
     name: Cross-OS Gate
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - run: echo "No code changes — cross-OS smoke not needed"
+
+  # Aggregate gate from .github/workflows/test.yml. Same bypass contract as the
+  # lanes above: when a PR changes no code paths the Tests workflow never runs, so
+  # this no-op satisfies the required "CI Gate" context. The Test Suite job above
+  # still runs the doc-asserting suites for changed markdown, so a doc-only PR is
+  # not merged without the checks that actually read that markdown.
+  ci-gate:
+    name: CI Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "No code changes — full test workflow not needed"

@@ -118,6 +118,10 @@ Task 2: Validation logic
   ✓ Quality review: ✅
 ```
 
+**Flaky tests:** a test that changes result without the code changing gets
+quarantined and an issue filed — never retried until green. Register it in
+`test/QUARANTINE.md`. Reviewers reject a "re-run CI" as a fix.
+
 ## State Management (Single Source of Truth)
 
 **Current implementation**: The Forge Kernel is the sole issue-state authority — every issue command reads and writes the kernel store, with no backend to select. Beads exists only as an inbound migration path: `forge migrate --from beads` imports an existing Beads store into the kernel once, and no Forge command depends on Beads at runtime. **Direction (D45)**: the Kernel owns issue/workflow/run authority outright; Beads is retired as a live feature. New authority work must follow [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) and [docs/reference/FORGE_KERNEL_STORAGE_MODEL.md](docs/reference/FORGE_KERNEL_STORAGE_MODEL.md).

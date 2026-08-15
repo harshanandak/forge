@@ -73,12 +73,33 @@ describe('CI Workflow Configuration', () => {
   });
 
   describe('Confidence Lane', () => {
-    test('full matrix job runs for PR events', () => {
+    test('full matrix job is gated on the changed-path classifier, not skipped outright', () => {
       expectSection('full-matrix');
       expect(workflowContent.includes("full-matrix:\n    name: Full Matrix")).toBe(true);
-      expect(workflowContent.includes("full-matrix:\n    name: Full Matrix (${{ matrix.os }} / Node ${{ matrix.node-version }})\n    if:")).toBe(false);
+      // The matrix is the slowest lane in the pipeline (Windows median ~11.5 min vs
+      // ~2.2 min on ubuntu) and ran on 100% of PRs. It is now conditioned on the
+      // `changes` classifier, which returns true for every non-pull_request event —
+      // so push to master, merge_group, schedule and workflow_dispatch still run the
+      // full 3-OS x 2-Node matrix unconditionally.
+      expect(workflowContent.includes('needs: [changes]')).toBe(true);
+      expect(workflowContent.includes("if: ${{ needs.changes.outputs.os_sensitive == 'true' }}")).toBe(true);
       expect(workflowContent.includes('os: [ubuntu-latest, macos-latest, windows-latest]')).toBe(true);
       expect(workflowContent.includes('node-version: [22, 24]')).toBe(true);
+    });
+
+    test('changes classifier always demands the full matrix off pull requests', () => {
+      expectSection('changes');
+      expect(workflowContent.includes('os_sensitive: ${{ steps.filter.outputs.os_sensitive }}')).toBe(true);
+      expect(workflowContent.includes('if [ "$EVENT_NAME" != "pull_request" ]; then')).toBe(true);
+      // A diff that cannot be resolved must fail safe to the expensive lane.
+      expect(workflowContent.includes('failing safe to the full matrix')).toBe(true);
+    });
+
+    test('cross-OS smoke still covers every pull request', () => {
+      // The lanes that keep Windows/macOS signal on PRs where the matrix is skipped.
+      expect(workflowContent.includes("windows-smoke:\n    name: Windows Smoke\n    if: github.event_name == 'pull_request'")).toBe(true);
+      expect(workflowContent.includes("macos-smoke:\n    name: macOS Smoke\n    if: github.event_name == 'pull_request'")).toBe(true);
+      expect(workflowContent.includes('label: windows-node22')).toBe(true);
     });
 
     test('Bun test commands use the repo timeout in CI', () => {
@@ -138,6 +159,56 @@ describe('CI Workflow Configuration', () => {
     test('workflow retains schedule and workflow_dispatch triggers', () => {
       expect(workflowContent.includes('workflow_dispatch:')).toBe(true);
       expect(workflowContent.includes('schedule:')).toBe(true);
+    });
+
+    test('workflow runs in the merge queue so skipped PR lanes are re-run before merge', () => {
+      expect(workflowContent.includes('merge_group:')).toBe(true);
+    });
+  });
+
+  describe('Aggregate Gate', () => {
+    test('ci-gate aggregates every real lane and tolerates path-gated skips', () => {
+      expectSection('ci-gate');
+      expect(workflowContent.includes('name: CI Gate')).toBe(true);
+      expect(workflowContent.includes('if: ${{ always() }}')).toBe(true);
+      for (const lane of [
+        'changes',
+        'full-matrix',
+        'unit-shard',
+        'windows-smoke',
+        'macos-smoke',
+        'cross-os-gate',
+        'followup-tests',
+        'coverage',
+        'e2e',
+      ]) {
+        expect(workflowContent.includes(`      - ${lane}\n`)).toBe(true);
+        expect(workflowContent.includes(`${lane}=\${{ needs.${lane}.result }}`)).toBe(true);
+      }
+      expect(workflowContent.includes('success|skipped) ;;')).toBe(true);
+    });
+
+    test('every job declares a timeout so a hung runner cannot poison the queue', () => {
+      const lines = workflowContent.split('\n');
+      const jobsStart = lines.indexOf('jobs:');
+      expect(jobsStart).toBeGreaterThan(-1);
+      const jobHeaders = lines
+        .map((line, index) => ({ line, index }))
+        .filter(({ line, index }) => index > jobsStart && /^ {2}[a-z0-9-]+:$/.test(line));
+
+      expect(jobHeaders.length).toBeGreaterThan(0);
+      for (const { line, index } of jobHeaders) {
+        let end = lines.length;
+        for (let i = index + 1; i < lines.length; i += 1) {
+          if (/^ {2}[a-z0-9-]+:$/.test(lines[i])) {
+            end = i;
+            break;
+          }
+        }
+        const body = lines.slice(index, end).join('\n');
+        expect({ job: line.trim(), hasTimeout: / {4}timeout-minutes: \d+/.test(body) })
+          .toEqual({ job: line.trim(), hasTimeout: true });
+      }
     });
   });
 });

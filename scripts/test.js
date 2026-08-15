@@ -41,7 +41,22 @@ const KNOWN_TARGETABLE_PREFIXES = [
   '.github/agentic-workflows/',
   '.github/workflows/',
   'test/',
+  // Source trees with a dedicated suite; see PREFIX_TEST_TARGETS in
+  // lib/commands/test.js for the tests each one resolves to. Without both halves
+  // (targetable here + a resolved test there) a change falls to the full-suite lane.
+  'validation/',
+  'eval/',
+  'rules/',
+  'plugin/',
 ];
+
+// Individually mapped root files (see DIRECT_TEST_CANDIDATES in lib/commands/test.js).
+const KNOWN_TARGETABLE_FILES = new Set([
+  'bun.lock',
+  'lefthook.yml',
+  'eslint.config.js',
+  '.claude-plugin/marketplace.json',
+]);
 
 const ALWAYS_RUN_RISK_TEST_TARGETS = [
   // Windows + concurrent filesystem locking has failed post-merge; keep this
@@ -180,6 +195,10 @@ function stripGitHookEnv(sourceEnv = process.env) {
  */
 function isKnownTargetablePath(file) {
   if (file === '.gitignore') {
+    return true;
+  }
+
+  if (KNOWN_TARGETABLE_FILES.has(file)) {
     return true;
   }
 

@@ -30,10 +30,15 @@ on:
       - 'AGENTS.md'
       - 'lefthook.yml'
 
+concurrency:
+  group: size-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   size-check:
     name: Check Package Size
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write

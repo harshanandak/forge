@@ -28,6 +28,7 @@ on:
       - 'bunfig.toml'
       - '.github/workflows/**'
       - '.github/agentic-workflows/**'
+  merge_group:
   workflow_dispatch:
   schedule:
     - cron: '0 3 * * 0'
@@ -40,9 +41,64 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    # Classifies the PR diff so the expensive 3-OS x 2-Node Full Matrix only runs
+    # when the change can plausibly behave differently per operating system.
+    # Anything that is not a pull_request (push to master, merge_group, schedule,
+    # workflow_dispatch) is always treated as OS-sensitive.
+    name: Classify Changed Paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      os_sensitive: ${{ steps.filter.outputs.os_sensitive }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Classify diff
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "Non-PR event ($EVENT_NAME): full matrix always runs."
+            echo "os_sensitive=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"; then
+            echo "::warning::Could not resolve the PR diff; failing safe to the full matrix."
+            echo "os_sensitive=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Surfaces where Windows/macOS genuinely diverge from Linux:
+          # process/CLI entry points, native + packaged deps, filesystem/path/symlink
+          # helpers, git-hook + installer plumbing, the SQLite kernel (Windows file
+          # handle/EBUSY history), and this workflow itself.
+          os_sensitive_pattern='^(bin/|packages/|test-env/|plugin/hooks/|lib/core/|lib/kernel/|lib/activation/|lib/preflight/|lib/commands/(worktree|setup|init|install)|lib/(shell-utils|symlink-utils|file-utils|file-hash|package-root|forge-lock|detect-worktree|protected-path-manifest|hook-global-installer|hook-renderer|lefthook-check|lefthook-wiring|husky-migration|setup|setup-utils|reset)\.js$|install\.sh$|scripts/install\.|lefthook\.yml$|bunfig\.toml$|package\.json$|bun\.lock$|\.github/workflows/test\.yml$)'
+          echo "Changed files:"
+          printf '%s\n' "$changed"
+          if printf '%s\n' "$changed" | grep -Eq "$os_sensitive_pattern"; then
+            echo "OS-sensitive paths changed: running the full matrix."
+            echo "os_sensitive=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No OS-sensitive paths changed: full matrix skipped on this PR."
+            echo "Cross-OS coverage on this PR still comes from Windows Smoke, macOS Smoke"
+            echo "and the windows-node22 Targeted PR Tests lane; the full matrix re-runs on"
+            echo "merge_group, on every push to master, and on the weekly schedule."
+            echo "os_sensitive=false" >> "$GITHUB_OUTPUT"
+          fi
+
   full-matrix:
     name: Full Matrix (${{ matrix.os }} / Node ${{ matrix.node-version }})
+    needs: [changes]
+    if: ${{ needs.changes.outputs.os_sensitive == 'true' }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -88,6 +144,7 @@ jobs:
     name: Unit Shard ${{ matrix.shard-index }}
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -134,6 +191,7 @@ jobs:
     name: Windows Smoke
     if: github.event_name == 'pull_request'
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -173,6 +231,7 @@ jobs:
     name: macOS Smoke
     if: github.event_name == 'pull_request'
     runs-on: macos-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -219,6 +278,7 @@ jobs:
     if: ${{ always() && github.event_name == 'pull_request' }}
     needs: [windows-smoke, macos-smoke]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Require Windows + macOS smoke to pass
         run: |
@@ -237,6 +297,7 @@ jobs:
     name: Targeted PR Tests (${{ matrix.label }})
     if: github.event_name == 'pull_request'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -352,6 +413,7 @@ jobs:
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -407,6 +469,7 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -445,6 +508,7 @@ jobs:
   mutation:
     name: Mutation Testing
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     steps:
       - name: Checkout code
@@ -477,6 +541,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     needs: [unit-shard, windows-smoke, macos-smoke, coverage, e2e]
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -503,11 +568,62 @@ jobs:
             cat test-dashboard.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Tests: {d[\"testCount\"]}'); print(f'Suite duration: {d[\"suiteDurationMs\"]}ms'); print(f'Integration skipped: {d[\"integrationSkipped\"]}'); print('Slowest files:'); [print(f'- {item[\"file\"]}: {item[\"durationMs\"]}ms') for item in d.get(\"slowestFiles\", [])[:5]]" >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Dashboard generated" >> $GITHUB_STEP_SUMMARY
           fi
 
+  ci-gate:
+    # Single aggregate status for the whole Tests workflow. Mark THIS Required in
+    # branch protection instead of the individual lanes: it stays green when a lane
+    # is legitimately skipped by the path gate above, and red the moment any lane
+    # fails or is cancelled. Adding a lane to `needs` is all that is required to
+    # bring it under the gate.
+    name: CI Gate
+    if: ${{ always() }}
+    needs:
+      - changes
+      - full-matrix
+      - unit-shard
+      - windows-smoke
+      - macos-smoke
+      - cross-os-gate
+      - followup-tests
+      - coverage
+      - e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Aggregate lane results
+        shell: bash
+        env:
+          RESULTS: |
+            changes=${{ needs.changes.result }}
+            full-matrix=${{ needs.full-matrix.result }}
+            unit-shard=${{ needs.unit-shard.result }}
+            windows-smoke=${{ needs.windows-smoke.result }}
+            macos-smoke=${{ needs.macos-smoke.result }}
+            cross-os-gate=${{ needs.cross-os-gate.result }}
+            followup-tests=${{ needs.followup-tests.result }}
+            coverage=${{ needs.coverage.result }}
+            e2e=${{ needs.e2e.result }}
+        run: |
+          set -uo pipefail
+          echo "$RESULTS"
+          failed=0
+          while IFS='=' read -r lane result; do
+            [ -n "$lane" ] || continue
+            case "$result" in
+              success|skipped) ;;
+              *) echo "::error::Lane '$lane' finished as '$result'"; failed=1 ;;
+            esac
+          done <<< "$RESULTS"
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+          echo "All test lanes passed or were skipped by the path gate."
+
   dashboard-confidence:
     name: Test Dashboard (Confidence Lane)
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     needs: [full-matrix, coverage, e2e]
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v7

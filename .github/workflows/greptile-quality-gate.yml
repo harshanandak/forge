@@ -8,6 +8,7 @@ jobs:
   quality-gate:
     name: Greptile Quality Gate (≥4/5)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: github.event.check_run.name == 'Greptile Review'
     permissions:
       contents: read
