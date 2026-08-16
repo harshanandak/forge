@@ -138,8 +138,9 @@ test-env/fixtures/*
 .forge-push-token
 .forge/*-body.md
 
-# Kernel issue store (machine-local runtime state, exported via git sync)
-.forge/kernel/
+# Kernel export publish debris (the JSONL projection and manifest are git-tracked)
+.forge/kernel/.export.lock
+.forge/kernel/.tmp-*
 # Archived per-worktree config snapshots (local bookkeeping)
 .forge/worktree-config-archive/
 # Per-directory worktree/issue association marker written by `forge worktree create`

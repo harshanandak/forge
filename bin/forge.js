@@ -1696,6 +1696,13 @@ function ensureDirWithNote(dir, purpose) {
 
 // Setup core documentation and directories
 function setupCoreDocs() {
+  // Review skills reference this root contract in every installed repository.
+  // It is a consumer-owned extension point after creation, so setup never overwrites it.
+  const codingStandardsDest = path.join(projectRoot, 'CODING_STANDARDS.md');
+  if (!fs.existsSync(codingStandardsDest)) {
+    copyFile(path.join(packageDir, 'CODING_STANDARDS.md'), 'CODING_STANDARDS.md');
+  }
+
   // docs/planning/ and docs/research/ are created lazily on first use
   // by /plan Phase 1 and Phase 2 respectively, via ensureDirWithNote().
   // TEMPLATE.md and PROGRESS.md are also deferred to first use.

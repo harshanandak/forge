@@ -21,6 +21,10 @@ describe('Lazy directory creation', () => {
       expect(funcStart).toBeGreaterThan(-1);
     });
 
+    test('preserves an existing consumer coding standards file', () => {
+      expect(funcBody).toContain("if (!fs.existsSync(codingStandardsDest))");
+    });
+
     test('does NOT call ensureDir("docs/planning")', () => {
       expect(funcBody).not.toContain("ensureDir('docs/planning')");
       expect(funcBody).not.toContain('ensureDir("docs/planning")');
