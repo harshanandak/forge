@@ -12,6 +12,7 @@ permissions:
 jobs:
   detect:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Command files changed
         run: echo "Command file changes detected — triggering behavioral test via workflow_run"

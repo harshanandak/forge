@@ -8,7 +8,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | Group | Call sites | Files |
 | --- | ---: | ---: |
 | command | 28 | 5 |
-| runtime | 116 | 20 |
+| runtime | 118 | 21 |
 | docs | 386 | 45 |
 | skills | 1 | 1 |
 | hooks | 0 | 0 |
@@ -28,6 +28,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 ## runtime
 
+- [ ] .forge/contributor-skills/protected-commit/SKILL.md (2)
+  - lines: 6 (.beads), 58 (.beads)
 - [ ] .forge/protected-paths.yaml (10)
   - lines: 21 (.beads), 25 (.beads), 26 (.beads), 27 (bd), 127 (.beads), 128 (.beads), 145 (bd), 147 (.beads), 148 (bd), 149 (bd)
 - [ ] lib/adapters/beads-kernel-compat.js (5)

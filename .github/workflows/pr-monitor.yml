@@ -70,6 +70,7 @@ jobs:
   monitor:
     name: Surface PR review + check state
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Resolve PR number
         id: resolve

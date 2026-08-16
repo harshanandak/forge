@@ -15,10 +15,15 @@ on:
   pull_request:
     branches: [ "master" ]
 
+concurrency:
+  group: eslint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   eslint:
     name: Run eslint scanning
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write

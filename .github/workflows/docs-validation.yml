@@ -47,6 +47,7 @@ jobs:
   docs:
     name: Docs Linker And Docstring Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
@@ -68,6 +69,7 @@ jobs:
   doc-gate:
     name: Doc Gate (code change requires a doc update)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # PR-only: the gate compares the PR's base...head. On push there is no PR.
     if: github.event_name == 'pull_request'
     steps:

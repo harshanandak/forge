@@ -28,6 +28,7 @@ const { createProcessTree, signalExitCode } = require('./process-tree');
 
 const PACKAGE_LEVEL_PATHS = new Set([
   'package.json',
+  'bun.lock',
   'bun.lockb',
   'pnpm-lock.yaml',
   'yarn.lock',
@@ -41,7 +42,22 @@ const KNOWN_TARGETABLE_PREFIXES = [
   '.github/agentic-workflows/',
   '.github/workflows/',
   'test/',
+  // Source trees with a dedicated suite; see PREFIX_TEST_TARGETS in
+  // lib/commands/test.js for the tests each one resolves to. Without both halves
+  // (targetable here + a resolved test there) a change falls to the full-suite lane.
+  'validation/',
+  'eval/',
+  'rules/',
+  'plugin/',
 ];
+
+// Individually mapped root files (see DIRECT_TEST_CANDIDATES in lib/commands/test.js).
+const KNOWN_TARGETABLE_FILES = new Set([
+  'lefthook.yml',
+  'eslint.config.js',
+  '.coderabbit.yaml',
+  '.claude-plugin/marketplace.json',
+]);
 
 const ALWAYS_RUN_RISK_TEST_TARGETS = [
   // Windows + concurrent filesystem locking has failed post-merge; keep this
@@ -183,6 +199,10 @@ function isKnownTargetablePath(file) {
     return true;
   }
 
+  if (KNOWN_TARGETABLE_FILES.has(file)) {
+    return true;
+  }
+
   if (file === 'README.md'
     || file === 'bin/forge.js'
     || file === 'bin/forge-cmd.js'
@@ -202,7 +222,11 @@ function isKnownTargetablePath(file) {
     // SKILL_TEST_TARGETS in lib/commands/test.js); a skills-only PR stays on the
     // targeted lane instead of the full suite.
     || file.startsWith('skills/')
-    || file.startsWith('.agents/skills/')) {
+    || file.startsWith('.agents/skills/')
+    // Maintainer-only contributor skills (tracked, never published). They map to
+    // the AGENTS.md docs-bleed gate in lib/commands/test.js, so a contributor-docs
+    // PR stays on the targeted lane instead of the full suite.
+    || file.startsWith('.forge/contributor-skills/')) {
     return true;
   }
 

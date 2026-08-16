@@ -312,6 +312,7 @@ describe('scripts/test pre-push runner', () => {
       'test/rules-sync.test.js',
       'test/setup-workflow-removal.test.js',
       'test/stage-naming.test.js',
+      'test/structural/agents-docs-bleed.test.js',
       'test/workflows/size-check.test.js',
       ...riskTargets,
     ]);
