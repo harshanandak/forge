@@ -3487,8 +3487,9 @@ function dryRunSetup(agents) {
     }
   }
 
-  // AGENTS.md
+  // Root policy files
   addFileAction('AGENTS.md', 'Copy workflow documentation');
+  addFileAction('CODING_STANDARDS.md', 'Install Forge coding standards');
 
   // Per-agent planned actions
   for (const agentKey of agents) {

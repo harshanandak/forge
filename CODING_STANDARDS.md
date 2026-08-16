@@ -66,6 +66,7 @@ evidence stops recurring.
 
 ## Repository hygiene
 
-12. Machine-local runtime state (kernel exports, per-session caches, saved PR
-    diffs, symlinks into worktrees, stray shell artifacts) is gitignored, never
-    committed. `[git: triage 2026-08-15 found NUL, gw/, .hermes/, .forge/kernel/, pr*.diff untracked at repo root]`
+12. Machine-local runtime state (per-session caches, saved PR diffs, symlinks
+    into worktrees, stray shell artifacts, and transient kernel .export.lock /
+    .tmp-* files) is gitignored, never committed. Deterministic .forge/kernel/
+    JSONL and manifest projections are tracked export/import artifacts. `[git: triage 2026-08-15 found NUL, gw/, .hermes/, .forge/kernel/, pr*.diff untracked at repo root]`
