@@ -4,7 +4,7 @@
   "static": {
     "token_cost": {
       "desc_chars": 995,
-      "body_lines": 300,
+      "body_lines": 303,
       "score": 21
     },
     "caps": {

@@ -102,6 +102,7 @@
     ".forge/hooks/",
     ".forge/protected-paths.yaml",
     "CHANGELOG.md",
+    "CODING_STANDARDS.md",
     "QUICKSTART.md",
     "docs/*.md",
     "docs/architecture/**/*.md",
