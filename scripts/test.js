@@ -56,6 +56,7 @@ const KNOWN_TARGETABLE_FILES = new Set([
   'lefthook.yml',
   'eslint.config.js',
   '.coderabbit.yaml',
+  'CODING_STANDARDS.md',
   '.claude-plugin/marketplace.json',
 ]);
 
