@@ -29,11 +29,13 @@ Verified while writing this (2026-08-13):
 
 ## For people building Forge
 
-Everything above this line is the **product contract**. It is rendered by Forge,
-it ships to every user, and it must read as if written for someone who has never
-seen this repository — no repo-local paths, no script names, no hook files, no
-maintainer trivia. Do not hand-edit it to record something you learned while
-building Forge; that belongs here.
+The `<!-- FORGE:START -->` … `<!-- FORGE:END -->` block is the **product
+contract** — not "everything above this line", since `smartMergeAgentsMd`
+re-emits this USER block above it. It is rendered by Forge, it ships to every
+user, and it must read as if written for someone who has never seen this
+repository — no repo-local paths, no script names, no hook files, no maintainer
+trivia. Do not hand-edit it to record something you learned while building
+Forge; that belongs here.
 
 This block is ours. It survives `forge setup`. If you are changing Forge, read
 this and the skills in `.forge/contributor-skills/`. Do **not** read

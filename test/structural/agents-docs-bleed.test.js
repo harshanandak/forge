@@ -63,9 +63,24 @@ function readAgentsMd() {
   return fs.readFileSync(agentsPath, 'utf8').replace(/\r\n?/g, '\n');
 }
 
+function extractBlocks(content, name) {
+  const pattern = new RegExp(`<!-- ${name}:START.*?-->([\\s\\S]*?)<!-- ${name}:END -->`, 'g');
+  return [...content.matchAll(pattern)].map((match) => match[1]);
+}
+
 function extractBlock(content, name) {
-  const match = new RegExp(`<!-- ${name}:START.*?-->([\\s\\S]*?)<!-- ${name}:END -->`).exec(content);
-  return match ? match[1] : null;
+  const blocks = extractBlocks(content, name);
+  return blocks.length === 1 ? blocks[0] : null;
+}
+
+// Content assertions are only meaningful against a block that exists. Without
+// this the delimiter failure is buried under `.includes of null` noise.
+function requireBlock(name) {
+  const blocks = extractBlocks(readAgentsMd(), name);
+  if (blocks.length !== 1) {
+    throw new Error(`Expected exactly one ${name} block in AGENTS.md, found ${blocks.length}.`);
+  }
+  return blocks[0];
 }
 
 function countOccurrences(haystack, needle) {
@@ -80,7 +95,7 @@ describe('AGENTS.md docs bleed', () => {
   });
 
   test('the FORGE block names no repo-local machinery or machine paths', () => {
-    const forgeBlock = extractBlock(readAgentsMd(), 'FORGE');
+    const forgeBlock = requireBlock('FORGE');
     const offenders = CLEAN_PATTERNS
       .filter((pattern) => forgeBlock.includes(pattern))
       .map((pattern) => `  "${pattern}" appears in the FORGE block`);
@@ -96,7 +111,7 @@ describe('AGENTS.md docs bleed', () => {
   });
 
   test('pre-existing bleed never grows, and a cleaned-up entry is removed from the list', () => {
-    const forgeBlock = extractBlock(readAgentsMd(), 'FORGE');
+    const forgeBlock = requireBlock('FORGE');
     for (const { pattern, max } of KNOWN_BLEED) {
       const count = countOccurrences(forgeBlock, pattern);
       expect(count).toBeLessThanOrEqual(max);
