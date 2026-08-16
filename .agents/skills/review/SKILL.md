@@ -28,6 +28,8 @@ This skill handles ALL issues that arise after creating a pull request.
 
 ## What This Skill Does
 
+Before reviewing a diff, read `CODING_STANDARDS.md` from the repository root and apply every relevant rule.
+
 ### Step 1: Fetch Complete PR Status
 ```bash
 # Get full PR details including all checks

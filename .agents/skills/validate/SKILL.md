@@ -105,6 +105,9 @@ bun run lint    # or: npm run lint, eslint ., etc.
 - Best practices compliance
 
 ### Step 3: Code Review (if available)
+
+Read `CODING_STANDARDS.md` from the repository root before invoking the reviewer so the review applies the repository's diff-level contract.
+
 ```bash
 /code-review:code-review
 ```

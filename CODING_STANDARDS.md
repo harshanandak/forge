@@ -32,9 +32,10 @@ evidence stops recurring.
 4. Tests synchronize on an observable condition (poll until true, await the
    event), never on a fixed sleep or timer duration.
    `[mined: waiting a fixed 10 min when reviewers already settled ×2]`
-5. A new or moved source path lands with both its `isKnownTargetablePath` entry
-   and its `DIRECT_TEST_CANDIDATES` mapping in `scripts/test.js`, so it does not
-   silently fall into the full-suite lane.
+5. A new or moved source path that needs targeted tests lands in both the
+   targetability checks in `scripts/test.js` and the `DIRECT_TEST_CANDIDATES`
+   mapping in `lib/commands/test.js`, so it does not silently fall into the
+   full-suite lane.
    `[mined: slow test/CI lanes accepted as normal ×3]` `[git: 13 fix commits touch scripts/test.js]`
 
 ## Generated artifacts and single source of truth
