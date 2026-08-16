@@ -28,6 +28,7 @@ const { createProcessTree, signalExitCode } = require('./process-tree');
 
 const PACKAGE_LEVEL_PATHS = new Set([
   'package.json',
+  'bun.lock',
   'bun.lockb',
   'pnpm-lock.yaml',
   'yarn.lock',
@@ -52,7 +53,6 @@ const KNOWN_TARGETABLE_PREFIXES = [
 
 // Individually mapped root files (see DIRECT_TEST_CANDIDATES in lib/commands/test.js).
 const KNOWN_TARGETABLE_FILES = new Set([
-  'bun.lock',
   'lefthook.yml',
   'eslint.config.js',
   '.coderabbit.yaml',
