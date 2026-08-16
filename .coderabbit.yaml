@@ -2,12 +2,11 @@
 #
 # Pre-user shipping regime (decided 2026-08-16): review feedback is advisory
 # except secrets, injection, and a broken build — and it never expands the PR.
+# Keep under 250 characters — CodeRabbit's schema rejects anything longer.
 tone_instructions: >-
-  Forge has one user and ships fast. Only flag what is always wrong: leaked
-  secrets or credentials, injection and auth holes, and changes that break the
-  build or documented behaviour. Style, naming, micro-performance and nits are
-  optional suggestions — say so plainly. Never propose widening the scope of
-  the pull request; if something else needs doing, say it belongs in a
+  Block only on leaked secrets, injection, auth holes, and breaks to the build
+  or documented behaviour. Style, naming, micro-performance and nits are
+  optional suggestions; say so. Never widen the PR — send extra work to a
   follow-up issue.
 reviews:
   profile: chill
