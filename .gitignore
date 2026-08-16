@@ -137,3 +137,27 @@ test-env/fixtures/*
 # Forge push nonce token (ephemeral one-time lefthook skip)
 .forge-push-token
 .forge/*-body.md
+
+# Kernel issue store (machine-local runtime state, exported via git sync)
+.forge/kernel/
+# Archived per-worktree config snapshots (local bookkeeping)
+.forge/worktree-config-archive/
+# Per-directory worktree/issue association marker written by `forge worktree create`
+**/.forge-issue
+
+# Hermes harness runtime state (local scratch)
+.hermes/
+
+# Local-only Claude notes and hookify rules
+.claude/*.local.md
+
+# Accidental artifacts
+# `> NUL` redirect on Windows creates a literal file named NUL
+NUL
+# Local scratch worktree/symlink
+/gw
+# Saved PR diffs pulled for review
+/pr*.diff
+
+# Managed by `forge` config commands, not by hand (protected-state gate blocks direct commits)
+.forge/config.yaml
