@@ -7,12 +7,14 @@ const {
 	PROTECTED_STATE_AUTHORIZATION_ISSUED,
 	authorizationEntityId,
 	evaluateAuthorization,
+	issueGeneratedHarnessClaudeAuthorization,
 	issueGeneratedHarnessSkillAuthorization,
 	resolveWorktreeScope,
 } = require('../lib/protected-state-authority');
 
 const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
 const SKILL_MIRROR_SOURCE_COMMAND = 'scripts/sync-agent-skills.js';
+const CLAUDE_SETUP_SOURCE_COMMAND = 'forge setup';
 const PROTECTED_STATE_WRITE_COMPLETED = 'protected_state.write.completed';
 const TEST_HEAD = 'a'.repeat(40);
 
@@ -22,6 +24,15 @@ const target = {
 	path: '.github/workflows/npm-publish.yml',
 	content: 'generated: true\n',
 	worktreeScope: 'scope-a',
+	sourceHead: TEST_HEAD,
+};
+
+const claudePointerTarget = {
+	actor: 'forge-setup',
+	surface: 'generated_harness',
+	path: 'CLAUDE.md',
+	content: '@AGENTS.md\n',
+	worktreeScope: 'scope-claude',
 	sourceHead: TEST_HEAD,
 };
 
@@ -61,6 +72,37 @@ function eventRow(eventType, capabilityId, overrides = {}) {
 					? NPM_WORKFLOW_SOURCE_COMMAND
 					: 'scripts/protected-state-check.js'
 			),
+		}),
+	};
+}
+
+function claudePointerEvent(eventType, capabilityId, overrides = {}) {
+	const actor = overrides.actor || claudePointerTarget.actor;
+	const filePath = overrides.path || claudePointerTarget.path;
+	const surface = overrides.surface || claudePointerTarget.surface;
+	const content = overrides.content || claudePointerTarget.content;
+	return {
+		entity_type: 'protected_state',
+		entity_id: authorizationEntityId(overrides.worktreeScope || claudePointerTarget.worktreeScope, filePath),
+		event_type: eventType,
+		actor,
+		origin: 'cli',
+		created_at: '2026-08-17T00:00:00.000Z',
+		payload_json: JSON.stringify({
+			version: 1,
+			capabilityId,
+			actor,
+			path: filePath,
+			surface,
+			contentHash: hashProtectedContent(content),
+			worktreeScope: overrides.worktreeScope || claudePointerTarget.worktreeScope,
+			writeIntent: 'update',
+			operation: eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
+				? 'generate_claude_import'
+				: 'generate_claude_import_completed',
+			viaForgeApi: true,
+			sourceHead: overrides.sourceHead || claudePointerTarget.sourceHead,
+			sourceCommand: CLAUDE_SETUP_SOURCE_COMMAND,
 		}),
 	};
 }
@@ -153,6 +195,42 @@ describe('protected-state Kernel authority', () => {
 			...exactRows,
 			skillEvent(PROTECTED_STATE_AUTHORIZATION_CONSUMED),
 		]).allowed).toBe(false);
+	});
+
+	test('accepts an exact Forge setup authorization for the root CLAUDE.md pointer', () => {
+		const rows = [
+			claudePointerEvent(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'claude-capability'),
+			claudePointerEvent(PROTECTED_STATE_WRITE_COMPLETED, 'claude-capability'),
+		];
+
+		expect(evaluateAuthorization(claudePointerTarget, rows)).toMatchObject({
+			allowed: true,
+			capabilityId: 'claude-capability',
+		});
+		for (const request of [
+			{ ...claudePointerTarget, actor: 'foreign-actor' },
+			{ ...claudePointerTarget, content: '@AGENTS.md\nextra\n' },
+			{ ...claudePointerTarget, sourceHead: 'b'.repeat(40) },
+		]) {
+			expect(evaluateAuthorization(request, rows).allowed).toBe(false);
+		}
+		expect(evaluateAuthorization(claudePointerTarget, [
+			...rows,
+			claudePointerEvent(PROTECTED_STATE_AUTHORIZATION_CONSUMED, 'claude-capability'),
+		]).allowed).toBe(false);
+	});
+
+	test('refuses to issue root CLAUDE.md authority for non-pointer bytes or missing HEAD', async () => {
+		for (const params of [
+			{ content: 'custom instructions\n', sourceHead: TEST_HEAD },
+			{ content: '@AGENTS.md\n', sourceHead: '' },
+		]) {
+			const result = await issueGeneratedHarnessClaudeAuthorization('C:/repo', {
+				actor: 'forge-setup',
+				...params,
+			});
+			expect(result).toMatchObject({ success: false });
+		}
 	});
 
 	test('denies a pre-write authorization until the owning writer records completion', () => {
