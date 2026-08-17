@@ -171,6 +171,7 @@ describe('--dry-run flag', () => {
 
     // Should list planned file operations
     expect(stdout).toContain('AGENTS.md');
+    expect(stdout).toContain('CODING_STANDARDS.md');
   }, 30000);
 });
 
