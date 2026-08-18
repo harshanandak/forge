@@ -258,6 +258,20 @@ describe('protected-state Kernel authority', () => {
 		});
 	});
 
+	test('accepts an exact pointer without a final newline', () => {
+		const content = '@AGENTS.md';
+		const target = { ...claudePointerTarget, content };
+		const rows = [
+			claudePointerEvent(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'no-newline-capability', { content }),
+			claudePointerEvent(PROTECTED_STATE_WRITE_COMPLETED, 'no-newline-capability', { content }),
+		];
+
+		expect(evaluateAuthorization(target, rows)).toMatchObject({
+			allowed: true,
+			contentHash: hashProtectedContent(content),
+		});
+	});
+
 	test('denies a pre-write authorization until the owning writer records completion', () => {
 		const decision = evaluateAuthorization(target, [
 			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-pre-write'),
