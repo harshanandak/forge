@@ -180,38 +180,64 @@ describe('execute — watcher lifecycle', () => {
 
 	test('terminates a newly spawned watcher when its authority checkpoint fails', async () => {
 		let writes = 0;
+		let alive = true;
 		const killed = [];
+		const persisted = [];
+		const checkpoints = [];
+		let removed = false;
 		await expect(executor.execute(
 			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
 			{
 				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
 				spawnWatcher: () => ({ pid: 1234 }),
-				persistLifecycleCheckpoint: () => { writes += 1; return writes === 1; },
+				persistLifecycleCheckpoint: current => {
+					writes += 1;
+					persisted.push(structuredClone(current));
+					return writes === 1 || current.length === 0;
+				},
 				writeClaim: () => {}, readClaim: () => '1970-01-01T00:00:01.000Z',
-				isAlive: () => true, kill: (pid, signal) => killed.push([pid, signal]),
+				isAlive: () => alive,
+				kill: (pid, signal) => { killed.push([pid, signal]); alive = false; },
+				removeClaim: () => { removed = true; },
+				onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
+				waitForKillRetry: async () => {},
 			},
 		)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
 		expect(killed).toEqual([[1234, 'SIGKILL']]);
+		expect(removed).toBe(true);
+		expect(persisted.at(-1)).toEqual([]);
+		expect(checkpoints.map(checkpoint => checkpoint.state.phase)).toEqual([
+			'EXITED', 'TERMINATION_ACKNOWLEDGED', 'TERMINAL',
+		]);
 	});
 
 	test('terminates every watcher spawned earlier in a batch when a later checkpoint fails', async () => {
 		let writes = 0;
 		let nextPid = 1000;
+		const alive = new Set([1000, 1001]);
 		const killed = [];
+		const persisted = [];
 		await expect(executor.execute([
 			{ type: 'startWatcher', pr: { repo: 'forge', number: 41 } },
 			{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } },
 		], {
 			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
 			spawnWatcher: () => ({ pid: nextPid++ }),
-			persistLifecycleCheckpoint: () => { writes += 1; return writes < 4; },
+			persistLifecycleCheckpoint: current => {
+				writes += 1;
+				persisted.push(structuredClone(current));
+				return writes < 4 || current.length === 0;
+			},
 			writeClaim: () => {}, removeClaim: () => {}, readClaim: () => '1970-01-01T00:00:01.000Z',
-			isAlive: () => true, kill: (pid, signal) => killed.push([pid, signal]),
+			isAlive: pid => alive.has(pid),
+			kill: (pid, signal) => { killed.push([pid, signal]); alive.delete(pid); },
+			waitForKillRetry: async () => {},
 		})).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
 
 		expect(killed.sort((a, b) => a[0] - b[0])).toEqual([
 			[1000, 'SIGKILL'], [1001, 'SIGKILL'],
 		]);
+		expect(persisted.at(-1)).toEqual([]);
 	});
 
 	test('retries a failed force-kill after cancellation grace expires', async () => {
