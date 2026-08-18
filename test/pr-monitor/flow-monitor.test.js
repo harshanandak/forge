@@ -4,7 +4,7 @@ const { describe, expect, test } = require('bun:test');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 
-const { runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
+const { _internals, runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
 const { computeContentHash } = require('../../packages/memory-contracts');
 
 function snapshot(overrides = {}) {
@@ -496,6 +496,17 @@ describe('Flow-backed PR monitor authority', () => {
     expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(128);
     expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
   }, 30_000);
+
+  test('accepts exactly 128 recovery-plan segments and rejects a 129th', () => {
+    const batches = [];
+    for (let index = 0; index < 128; index += 1) {
+      _internals.appendPendingBatch(batches, { index });
+    }
+    expect(batches).toHaveLength(128);
+    expect(() => _internals.appendPendingBatch(batches, { index: 128 }))
+      .toThrow('Pending monitor transition plan exceeds its segment bound');
+    expect(batches).toHaveLength(128);
+  });
 
   test('supersedes an orphaned pre-commit recovery plan with a fresh observation', async () => {
     const store = durableStore();
