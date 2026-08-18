@@ -110,7 +110,7 @@ describe('shepherd command handler', () => {
       return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
     };
 
-    expect(shepherdCmd.defaultBuildContext({ pr: '42', gh, git: () => 'origin\n' }))
+    await expect(shepherdCmd.defaultBuildContext({ pr: '42', gh, git: () => 'origin\n' }))
       .rejects.toThrow(/base commit/i);
   });
 
