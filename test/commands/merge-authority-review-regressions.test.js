@@ -600,14 +600,18 @@ describe('merge authority — exact reviewer regressions', () => {
           readTrace: async (target) => {
             traceTarget = target;
             return ({
+            gaps: [],
             pull_requests: [{
-              repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+              id: 'pr-current', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
               branch: 'feature/merge', git_common_dir: '/repo/.git', url: 'https://example/pr/42',
               iterations: [{
                 id: 'merged-event', type: 'pr.merged', at: '2026-08-01T12:00:00.000Z',
                 issue_id: ISSUE, issue_revision: 7, head_sha: HEAD,
                 work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
               }],
+            }, {
+              id: 'pr-foreign', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+              branch: 'other/merge', git_common_dir: '/other/.git', iterations: [],
             }],
             });
           },
@@ -626,7 +630,7 @@ describe('merge authority — exact reviewer regressions', () => {
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
     expect(result.terminalEvidence.decisionId).toMatch(uuid);
     expect(result.terminalEvidence.receiptId).toMatch(uuid);
-    expect(traceTarget).toEqual({ issue_id: ISSUE, pr_number: 42 });
+    expect(traceTarget).toEqual({ issue_id: ISSUE, pr_number: 42, git_common_dir: '/repo/.git' });
   });
 
   test('retired binding errors report a wrong issue without claiming the row must be open', async () => {
@@ -638,8 +642,9 @@ describe('merge authority — exact reviewer regressions', () => {
       allowRetired: true,
       buildBroker: async () => ({
         gitCommonDir: '/repo/.git',
-        broker: { readTrace: async () => ({ pull_requests: [{
-          repo: 'acme/forge', number: 42, issue_id: 'wrong-issue', state: 'closed', iterations: [],
+        broker: { readTrace: async () => ({ gaps: [], pull_requests: [{
+          repo: 'acme/forge', number: 42, issue_id: 'wrong-issue', state: 'closed',
+          git_common_dir: '/repo/.git', iterations: [],
         }] }) },
         driver: { close() {} },
       }),
@@ -661,8 +666,10 @@ describe('merge authority — exact reviewer regressions', () => {
         gitCommonDir: '/repo/.git',
         broker: {
           readTrace: async () => ({
+            gaps: [],
             pull_requests: [{
               repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+              git_common_dir: '/repo/.git',
               iterations: [{
                 type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE,
                 issue_revision: 7, head_sha: null,

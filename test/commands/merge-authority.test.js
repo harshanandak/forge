@@ -255,9 +255,41 @@ describe('merge command — mandatory release authority', () => {
         fetchPrContext: async () => { fetches += 1; return context(); },
         buildPrBindingBroker: async () => ({
           gitCommonDir: '/repo/.git',
-          broker: { readTrace: async () => ({ pull_requests: [{
-            repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed', iterations,
+          broker: { readTrace: async () => ({ gaps: [], pull_requests: [{
+            repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+            git_common_dir: '/repo/.git', iterations,
           }] }) },
+          driver: { close() {} },
+        }),
+      });
+      delete injected.verifyPrIssueBinding;
+
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+      expect(out).toMatchObject({ success: false, merged: false });
+      expect(fetches).toBe(0);
+    }
+  });
+
+  test('fails closed on incomplete retired trace gaps before provider I/O', async () => {
+    for (const suffix of ['incomplete', 'overflow']) {
+      let fetches = 0;
+      const injected = deps({
+        fetchPrContext: async () => { fetches += 1; return context(); },
+        buildPrBindingBroker: async () => ({
+          gitCommonDir: '/repo/.git',
+          broker: { readTrace: async () => ({
+            gaps: [`iterations:pr-1:${suffix}`],
+            pull_requests: [{
+              id: 'pr-1', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+              git_common_dir: '/repo/.git',
+              iterations: [{
+                type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE,
+                issue_revision: 7, head_sha: HEAD,
+                work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+              }],
+            }],
+          }) },
           driver: { close() {} },
         }),
       });
