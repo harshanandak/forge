@@ -244,6 +244,20 @@ describe('protected-state Kernel authority', () => {
 		expect(evaluateAuthorization(target, rows)).toMatchObject({ allowed: true, sourceHead });
 	});
 
+	test('accepts an exact CRLF pointer when the staged bytes preserve CRLF', () => {
+		const content = '@AGENTS.md\r\n';
+		const target = { ...claudePointerTarget, content };
+		const rows = [
+			claudePointerEvent(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'crlf-capability', { content }),
+			claudePointerEvent(PROTECTED_STATE_WRITE_COMPLETED, 'crlf-capability', { content }),
+		];
+
+		expect(evaluateAuthorization(target, rows)).toMatchObject({
+			allowed: true,
+			contentHash: hashProtectedContent(content),
+		});
+	});
+
 	test('denies a pre-write authorization until the owning writer records completion', () => {
 		const decision = evaluateAuthorization(target, [
 			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-pre-write'),
