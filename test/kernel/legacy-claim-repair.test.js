@@ -202,25 +202,48 @@ describe('legacy claim repair preflight', () => {
 		})).toThrow('owner-only permissions');
 	});
 
-	test('runs Windows ACL hardening without Bun hidden-window overhead', () => {
+	test('runs Windows ACL hardening through the bounded native Bun process API', () => {
 		let invocation;
 		secureWindowsPathsAcl(['backup.sqlite'], {
 			environment: { SystemRoot: 'C:\\Windows' },
-			execFile(command, args, options) { invocation = { command, args, options }; },
+			bunSpawnSync(command, options) {
+				invocation = { command, options };
+				return { success: true };
+			},
 		});
-		expect(invocation.command).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
-		expect(invocation.args).toEqual([
+		expect(invocation.command).toEqual([
+			'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
 			'-NoLogo', '-NoProfile', '-NonInteractive', '-Command', expect.any(String),
 		]);
 		expect(invocation.options).toMatchObject({
-			stdio: 'pipe',
+			cwd: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
+			stderr: 'pipe',
+			stdout: 'pipe',
 			timeout: 15_000,
-			windowsHide: false,
 			env: {
 				FORGE_PRIVATE_ACL_TARGETS: '["backup.sqlite"]',
 				SystemRoot: 'C:\\Windows',
 			},
 		});
+	});
+
+	test('fails closed when the native Bun ACL subprocess times out', () => {
+		expect(() => secureWindowsPathsAcl(['backup.sqlite'], {
+			environment: { SystemRoot: 'C:\\Windows' },
+			bunSpawnSync() { return { success: false, exitedDueToTimeout: true }; },
+		})).toThrow('subprocess timed out');
+	});
+
+	(process.platform === 'win32' ? test : test.skip)('terminates a timed-out native Bun PowerShell child', () => {
+		const result = globalThis.Bun.spawnSync([
+			resolveWindowsPowerShellPath(process.env),
+			'-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 30',
+		], { stderr: 'pipe', stdout: 'pipe', timeout: 200 });
+		let childAlive = true;
+		try { process.kill(result.pid, 0); } catch { childAlive = false; }
+		if (childAlive) process.kill(result.pid, 'SIGKILL');
+		expect(result.exitedDueToTimeout).toBe(true);
+		expect(childAlive).toBe(false);
 	});
 
 	test('restore-proof cleanup retries Windows file locks without replacing valid proof', () => {
