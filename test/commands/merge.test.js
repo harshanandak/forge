@@ -43,6 +43,7 @@ function authorizedContext(overrides = {}) {
 
 const AUTHORITY_DEPS = {
   env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
+  resolveLocalRepository: () => 'acme/forge',
   verifyIssueOwnership: async () => ({
     owned: true, actor: 'release-actor', claimedBy: 'release-actor', sessionId: 'release-session', expired: false,
   }),

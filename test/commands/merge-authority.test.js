@@ -73,6 +73,36 @@ function deps(overrides = {}) {
 }
 
 describe('merge command — mandatory release authority', () => {
+  test('resolves the local repository from HTTPS and SSH origin URLs', () => {
+    for (const remote of [
+      'https://github.com/Acme/Forge.git',
+      'git@github.com:Acme/Forge.git',
+      'ssh://git@github.com/Acme/Forge.git',
+    ]) {
+      const calls = [];
+      expect(mergeCmd.defaultResolveLocalRepository({
+        projectRoot: '/repo',
+        git: (...args) => { calls.push(args); return remote; },
+      })).toBe('acme/forge');
+      expect(calls).toEqual([['git', ['remote', 'get-url', 'origin'], expect.objectContaining({ cwd: '/repo' })]]);
+    }
+    for (const remote of [
+      'C:/repo/Acme/Forge.git',
+      '/repo/Acme/Forge.git',
+      'file:///repo/Acme/Forge.git',
+      'ssh:/Acme/Forge.git',
+      'git:Acme/Forge.git',
+      'git@github.com/path:Acme/Forge.git',
+      'git@@github.com:Acme/Forge.git',
+      'Acme/Forge',
+    ]) {
+      expect(mergeCmd.defaultResolveLocalRepository({
+        projectRoot: '/repo',
+        git: () => remote,
+      })).toBeNull();
+    }
+  });
+
   test('default merge-gate verification honors a disabled configured gate', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-merge-gate-'));
     try {
@@ -298,6 +328,77 @@ describe('merge command — mandatory release authority', () => {
       const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
 
       expect(out).toMatchObject({ success: false, merged: false });
+      expect(fetches).toBe(0);
+    }
+  });
+
+  test('scopes provider-free terminal replay by the locally resolved repository', async () => {
+    let fetches = 0;
+    let traceTarget;
+    const terminal = {
+      type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE, issue_revision: 7,
+      head_sha: HEAD, work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+    };
+    const injected = deps({
+      fetchPrContext: async () => { fetches += 1; return context(); },
+      resolveLocalRepository: () => 'acme/forge',
+      buildPrBindingBroker: async () => ({
+        gitCommonDir: '/repo/.git',
+        broker: { readTrace: async (target) => {
+          traceTarget = target;
+          return { gaps: [], pull_requests: [{
+            id: 'current', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+            git_common_dir: '/repo/.git', iterations: [terminal],
+          }, {
+            id: 'renamed', repo: 'acme/old-forge', number: 42, issue_id: ISSUE, state: 'closed',
+            git_common_dir: '/repo/.git', iterations: [terminal],
+          }] };
+        } },
+        driver: { close() {} },
+      }),
+    });
+    delete injected.verifyPrIssueBinding;
+
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+    expect(out).toMatchObject({ success: true, merged: true, recovered: true });
+    expect(traceTarget).toMatchObject({ repo: 'acme/forge', git_common_dir: '/repo/.git' });
+    expect(fetches).toBe(0);
+  });
+
+  test('fails closed before trace or provider I/O when the local repository is unreadable', async () => {
+    for (const resolveLocalRepository of [
+      () => null,
+      () => 'not-a-repository',
+      () => { throw new Error('origin unavailable'); },
+    ]) {
+      let fetches = 0;
+      let traceReads = 0;
+      const injected = deps({
+        fetchPrContext: async () => { fetches += 1; return context(); },
+        resolveLocalRepository,
+        buildPrBindingBroker: async () => ({
+          gitCommonDir: '/repo/.git',
+          broker: { readTrace: async () => {
+            traceReads += 1;
+            return { gaps: [], pull_requests: [{
+              repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+              git_common_dir: '/repo/.git', iterations: [{
+                type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE,
+                issue_revision: 7, head_sha: HEAD,
+                work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+              }],
+            }] };
+          } },
+          driver: { close() {} },
+        }),
+      });
+      delete injected.verifyPrIssueBinding;
+
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+      expect(out).toMatchObject({ success: false, merged: false });
+      expect(traceReads).toBe(0);
       expect(fetches).toBe(0);
     }
   });

@@ -512,6 +512,81 @@ describe('Flow-backed PR monitor authority', () => {
     expect(batches).toHaveLength(128);
   });
 
+  test('supersedes a pre-commit plan truncated by its replacement at the bounded tail', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 128 }, (_, index) => ({
+      name: `check-${index}`,
+      class: 'green',
+    }));
+    let next = snapshot({ checks });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    let enrichedRecordCount = 0;
+    ctx.enrich = async records => {
+      enrichedRecordCount = records.length;
+      for (const [index, record] of records.entries()) {
+        record.repo = index === 0 ? 'owner/compact' : `owner/${index}-${Array.from(
+          { length: 160 },
+          (_value, salt) => crypto.createHash('sha256')
+            .update(`${index}:${salt}`)
+            .digest('base64url')
+            .replace(/[-_A]/g, '.'),
+        ).join('')}`;
+      }
+    };
+
+    const appendEvent = store.appendEvent.bind(store);
+    let markerFailures = 0;
+    store.appendEvent = async (...args) => {
+      if (args[0].payload.bounded_payload.batch_plan?.committed === true && markerFailures === 0) {
+        markerFailures += 1;
+        throw new Error('first commit marker interruption');
+      }
+      return appendEvent(...args);
+    };
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(enrichedRecordCount).toBe(128);
+    const originalPlanId = store.events.at(-1).payload.bounded_payload.batch_plan.id;
+    expect(store.events.filter(event => (
+      event.payload.bounded_payload.batch_plan?.id === originalPlanId
+    ))).toHaveLength(127);
+
+    store.appendEvent = async (...args) => {
+      const reference = args[0].payload.bounded_payload.batch_plan;
+      if (reference?.id !== originalPlanId && reference?.index === 2) {
+        throw new Error('replacement pre-commit interruption');
+      }
+      return appendEvent(...args);
+    };
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    store.appendEvent = appendEvent;
+    const retainedPlans = store.events.slice(-128);
+    const truncatedOriginal = retainedPlans.filter(event => (
+      event.payload.bounded_payload.batch_plan?.id === originalPlanId
+    ));
+    expect(truncatedOriginal[0].payload.bounded_payload.batch_plan.index).toBe(1);
+    expect(_internals.validOrphanedPrecommitPlan(ctx, truncatedOriginal, ctx.subjectId)).toBe(false);
+    expect(_internals.validOrphanedPrecommitPlan(ctx, retainedPlans, ctx.subjectId)).toBe(true);
+    for (const mutate of [
+      event => { event.payload.bounded_payload.batch_plan.committed = false; },
+      event => { event.payload.bounded_payload.batch_plan.segment_index = 1; },
+      event => { event.payload.subject_revision = 'foreign-subject'; },
+      event => { event.payload.observed_at = '2026-08-12T12:00:01.000Z'; },
+    ]) {
+      const malformed = structuredClone(retainedPlans);
+      mutate(malformed[0]);
+      malformed[0].content_hash = computeContentHash(malformed[0]);
+      expect(_internals.validOrphanedPrecommitPlan(ctx, malformed, ctx.subjectId)).toBe(false);
+    }
+
+    const resumed = await runFlowMonitorPass(ctx);
+
+    expect(resumed).toMatchObject({ changed: true, authority: 'memory' });
+    expect(resumed.events).toHaveLength(1);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+  }, 60_000);
+
   test('supersedes an orphaned pre-commit recovery plan with a fresh observation', async () => {
     const store = durableStore();
     const checks = Array.from({ length: 128 }, (_, index) => ({
