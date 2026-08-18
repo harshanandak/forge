@@ -10,6 +10,7 @@ const {
 	createBuiltinSQLiteDriver,
 	hardenBackupPermissions,
 	hardenBackupPermissionsBatch,
+	isOwnerOnlyWindowsDacl,
 	resolveWindowsPowerShellPath,
 	secureWindowsPathsAcl,
 	syncClaimRepairRecoveryDirectory,
@@ -202,37 +203,172 @@ describe('legacy claim repair preflight', () => {
 		})).toThrow('owner-only permissions');
 	});
 
-	test('runs Windows ACL hardening through the bounded native Bun process API', () => {
-		let invocation;
-		secureWindowsPathsAcl(['backup.sqlite'], {
+	test('uses native DACL tools and one read-only owner check under a shared deadline', () => {
+		const invocations = [];
+		const removals = [];
+		const sid = 'S-1-5-21-1000';
+		let ownerInvocation;
+		let clock = 0;
+		secureWindowsPathsAcl(['backup.sqlite', 'restore-dir'], {
 			environment: { SystemRoot: 'C:\\Windows' },
+			execFile(command, args, options) {
+				invocations.push({ command, args, options });
+				return command.endsWith('whoami.exe') ? `"runner","${sid}"\r\n` : '';
+			},
 			bunSpawnSync(command, options) {
-				invocation = { command, options };
+				ownerInvocation = { command, options };
 				return { success: true };
 			},
+			fsApi: {
+				mkdtempSync() { return 'C:\\Temp\\acl-proof'; },
+				statSync(filePath) { return { isDirectory: () => filePath === 'restore-dir' }; },
+				readFileSync(filePath) {
+					const flags = filePath.endsWith('1.acl') ? 'OICI' : '';
+					return `target\r\nD:PAI(A;${flags};FA;;;${sid})\r\n`;
+				},
+				rmSync(filePath, options) { removals.push({ filePath, options }); },
+			},
+			now() { clock += 100; return clock; },
 		});
-		expect(invocation.command).toEqual([
-			'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
-			'-NoLogo', '-NoProfile', '-NonInteractive', '-Command', expect.any(String),
+		expect(invocations.map(({ command, args }) => [path.win32.basename(command), args])).toEqual([
+			['whoami.exe', ['/user', '/fo', 'csv', '/nh']],
+			['icacls.exe', ['backup.sqlite', '/grant:r', `*${sid}:F`, '/q']],
+			['icacls.exe', ['backup.sqlite', '/inheritance:r', '/q']],
+			['icacls.exe', ['backup.sqlite', '/verify', '/q']],
+			['icacls.exe', ['backup.sqlite', '/save', path.join('C:\\Temp\\acl-proof', '0.acl'), '/q']],
+			['icacls.exe', ['restore-dir', '/grant:r', `*${sid}:(OI)(CI)F`, '/q']],
+			['icacls.exe', ['restore-dir', '/inheritance:r', '/q']],
+			['icacls.exe', ['restore-dir', '/verify', '/q']],
+			['icacls.exe', ['restore-dir', '/save', path.join('C:\\Temp\\acl-proof', '1.acl'), '/q']],
 		]);
-		expect(invocation.command.at(-1)).not.toContain('{;');
-		expect(invocation.options).toMatchObject({
-			cwd: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
-			stderr: 'pipe',
-			stdout: 'pipe',
-			timeout: 15_000,
+		expect(invocations.flatMap(({ args }) => args)).not.toContain('/reset');
+		expect(invocations.flatMap(({ args }) => args)).not.toContain('/setowner');
+		expect(invocations.map(({ options }) => options.timeout)).toEqual([
+			14_900, 14_800, 14_700, 14_600, 14_500, 14_400, 14_300, 14_200, 14_100,
+		]);
+		expect(ownerInvocation.command.slice(0, -1)).toEqual([
+			'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+			'-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+		]);
+		expect(ownerInvocation.command.at(-1)).toContain('AccessControlSections]::Owner');
+		expect(ownerInvocation.command.at(-1)).not.toMatch(/SetOwner|SetAccessControl|SetAccessRule/);
+		expect(ownerInvocation.options).toMatchObject({
+			timeout: 14_000,
 			env: {
-				FORGE_PRIVATE_ACL_TARGETS: '["backup.sqlite"]',
+				FORGE_PRIVATE_ACL_EXPECTED_SID: sid,
+				FORGE_PRIVATE_ACL_TARGETS: '["backup.sqlite","restore-dir"]',
 				SystemRoot: 'C:\\Windows',
 			},
 		});
+		expect(removals).toEqual([{
+			filePath: 'C:\\Temp\\acl-proof',
+			options: { recursive: true, force: true },
+		}]);
 	});
 
-	test('fails closed when the native Bun ACL subprocess times out', () => {
-		expect(() => secureWindowsPathsAcl(['backup.sqlite'], {
+	test('accepts equivalent owner-only SDDL and rejects unsafe ACL semantics', () => {
+		const sid = 'S-1-5-21-1000';
+		for (const [descriptor, isDirectory] of [
+			[`D:P(A;;FA;;;${sid})`, false],
+			[`target\r\nD:PAI(A;;0x1f01ff;;;${sid})\r\n`, false],
+			[`D:P(A;;FA;;;${sid})S:AI`, false],
+			[`D:PAR(A;OICI;FA;;;${sid})`, true],
+			[`D:P(A;;FA;;;${sid})(A;OICIIO;0x1f01ff;;;${sid})`, true],
+		]) expect(isOwnerOnlyWindowsDacl(descriptor, sid, isDirectory)).toBe(true);
+
+		for (const [descriptor, isDirectory] of [
+			[`D:AI(A;;FA;;;${sid})`, false],
+			[`D:P(A;ID;FA;;;${sid})`, false],
+			[`D:P(D;;FA;;;${sid})`, false],
+			[`D:P(XA;;FA;;;${sid})`, false],
+			[`D:P(OA;;FA;11111111-1111-1111-1111-111111111111;;${sid})`, false],
+			[`D:P(A;;FA;;;S-1-5-21-2000)`, false],
+			['D:P(A;;FA;;;SY)', false],
+			[`D:P(A;ZZ;FA;;;${sid})`, false],
+			[`D:P(A;OINP;FA;;;${sid})`, true],
+			[`D:P(A;;FR;;;${sid})`, false],
+			[`D:P(A;;0x1f01fe;;;${sid})`, false],
+			[`D:P(A;;0x3f01ff;;;${sid})`, false],
+			[`D:P(A;;FA;;;${sid})(A;;FA;;;${sid})`, false],
+			[`D:P(A;;FA;;;${sid})\r\nD:P(A;;FA;;;S-1-5-21-2000)`, false],
+			[`D:P(A;;FA;;;${sid})S:AIGARBAGE`, false],
+			[`D:P(A;;FA;;;${sid})S:AI(AU;SA;FA;;;WD)`, false],
+			[`D:P(A;;FA;;;${sid})`, true],
+			[`D:P(A;OICIIO;FA;;;${sid})`, true],
+			['not-an-acl', false],
+		]) expect(isOwnerOnlyWindowsDacl(descriptor, sid, isDirectory)).toBe(false);
+	});
+
+	test('fails closed and cleans proof state at every native DACL stage', () => {
+		const sid = 'S-1-5-21-1000';
+		for (let failingCall = 1; failingCall <= 4; failingCall += 1) {
+			let call = 0;
+			const removals = [];
+			expect(() => secureWindowsPathsAcl(['backup.sqlite'], {
+				environment: { SystemRoot: 'C:\\Windows' },
+				execFile(command) {
+					if (call++ === failingCall) throw new Error(`native stage ${failingCall}`);
+					return command.endsWith('whoami.exe') ? `"runner","${sid}"\r\n` : '';
+				},
+				bunSpawnSync() { return { success: true }; },
+				fsApi: {
+					mkdtempSync() { return 'C:\\Temp\\acl-proof'; },
+					statSync() { return { isDirectory: () => false }; },
+					readFileSync() { return `D:P(A;;FA;;;${sid})`; },
+					rmSync(filePath) { removals.push(filePath); },
+				},
+			})).toThrow(`native stage ${failingCall}`);
+			expect(removals).toEqual(['C:\\Temp\\acl-proof']);
+		}
+	});
+
+	test('rejects unsafe proof, owner mismatch, owner timeout, and deadline exhaustion', () => {
+		const sid = 'S-1-5-21-1000';
+		const options = (acl, bunSpawnSync) => ({
 			environment: { SystemRoot: 'C:\\Windows' },
-			bunSpawnSync() { return { success: false, exitedDueToTimeout: true }; },
-		})).toThrow('subprocess timed out');
+			execFile(command) { return command.endsWith('whoami.exe') ? `"runner","${sid}"\r\n` : ''; },
+			bunSpawnSync,
+			fsApi: {
+				mkdtempSync() { return 'C:\\Temp\\acl-proof'; },
+				statSync() { return { isDirectory: () => false }; },
+				readFileSync() { return acl; },
+				rmSync() {},
+			},
+		});
+		let ownerCalled = false;
+		expect(() => secureWindowsPathsAcl(['backup.sqlite'], options(
+			'D:P(A;;FA;;;S-1-5-21-2000)',
+			() => { ownerCalled = true; return { success: true }; },
+		))).toThrow('owner-only ACL verification failed');
+		expect(ownerCalled).toBe(false);
+		expect(() => secureWindowsPathsAcl(['backup.sqlite'], options(
+			`D:P(A;;FA;;;${sid})`,
+			() => ({ success: false, exitedDueToTimeout: false }),
+		))).toThrow('owner verification failed');
+		expect(() => secureWindowsPathsAcl(['backup.sqlite'], options(
+			`D:P(A;;FA;;;${sid})`,
+			() => ({ success: false, exitedDueToTimeout: true }),
+		))).toThrow('owner verification timed out');
+
+		let clockRead = 0;
+		ownerCalled = false;
+		expect(() => secureWindowsPathsAcl(['backup.sqlite'], {
+			...options(`D:P(A;;FA;;;${sid})`, () => { ownerCalled = true; return { success: true }; }),
+			now() { return [0, 1, 2, 3, 4, 5, 15_001][clockRead++]; },
+		})).toThrow('deadline exceeded');
+		expect(ownerCalled).toBe(false);
+	});
+
+	test('retains the direct bounded PowerShell set-and-readback fallback for Node', () => {
+		let invocation;
+		secureWindowsPathsAcl(['backup.sqlite'], {
+			runtime: 'node',
+			environment: { SystemRoot: 'C:\\Windows' },
+			execFile(command, args, options) { invocation = { command, args, options }; },
+		});
+		expect(invocation.command).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+		expect(invocation.args.at(-1)).not.toContain('{;');
+		expect(invocation.options).toMatchObject({ timeout: 15_000, windowsHide: true });
 	});
 
 	(process.platform === 'win32' ? test : test.skip)('terminates a timed-out native Bun PowerShell child', () => {
@@ -245,6 +381,16 @@ describe('legacy claim repair preflight', () => {
 		if (childAlive) process.kill(result.pid, 'SIGKILL');
 		expect(result.exitedDueToTimeout).toBe(true);
 		expect(childAlive).toBe(false);
+	});
+
+	(process.platform === 'win32' ? test : test.skip)('secures Unicode Windows file and directory paths', () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-unicode-acl-'));
+		tempDirs.push(root);
+		const directory = path.join(root, 'prïvate-测试');
+		const file = path.join(directory, 'bäckup-Δ.sqlite');
+		fs.mkdirSync(directory);
+		fs.writeFileSync(file, 'backup');
+		secureWindowsPathsAcl([directory, file]);
 	});
 
 	test('restore-proof cleanup retries Windows file locks without replacing valid proof', () => {
