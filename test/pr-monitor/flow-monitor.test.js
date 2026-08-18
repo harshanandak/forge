@@ -335,7 +335,63 @@ describe('Flow-backed PR monitor authority', () => {
     expect(boundary).toBe(actualEvents.length);
     expect(JSON.stringify(segmentEvents)).not.toContain(checks[0].name);
 
+    const markerTampered = durableStore();
+    markerTampered.events.push(...structuredClone(acceptedEvents));
+    const unsafeMarker = markerTampered.events.find(
+      event => event.payload.bounded_payload.batch_plan?.committed === true,
+    );
+    markerTampered.setCursor('legacy-journal', unsafeMarker.payload.sequence - 1);
+    unsafeMarker.payload.actionability = 'action_required';
+    unsafeMarker.content_hash = computeContentHash(unsafeMarker);
+    const markerLeaks = [];
+    await expect(runFlowMonitorPass(context(
+      markerTampered,
+      async () => { throw new Error('tampered commit marker must not gather'); },
+      async record => markerLeaks.push(record),
+    ))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+    expect(markerLeaks).toHaveLength(0);
+
+    const segmentTampered = durableStore();
+    segmentTampered.events.push(...structuredClone(acceptedEvents));
+    const unsafeSegment = segmentTampered.events.find(
+      event => Number.isSafeInteger(event.payload.bounded_payload.batch_plan?.index),
+    );
+    segmentTampered.setCursor('legacy-journal', unsafeSegment.payload.sequence - 1);
+    unsafeSegment.payload.actionability = 'action_required';
+    unsafeSegment.content_hash = computeContentHash(unsafeSegment);
+    const segmentLeaks = [];
+    await expect(runFlowMonitorPass(context(
+      segmentTampered,
+      async () => { throw new Error('tampered plan segment must not gather'); },
+      async record => segmentLeaks.push(record),
+    ))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+    expect(segmentLeaks).toHaveLength(0);
+
+    const tamperMarker = (events, tamper) => {
+      const marker = events.find(event => event.payload.bounded_payload.batch_plan?.committed === true);
+      tamper(marker);
+      marker.content_hash = computeContentHash(marker);
+    };
+    const tamperSegment = (events, tamper) => {
+      const segment = events.find(event => Number.isSafeInteger(event.payload.bounded_payload.batch_plan?.index));
+      tamper(segment);
+      segment.content_hash = computeContentHash(segment);
+    };
     const tamperCases = [
+      events => tamperMarker(events, marker => { marker.payload.event_id = '0'.repeat(64); }),
+      events => tamperMarker(events, marker => { marker.payload.type = 'check.failed'; }),
+      events => tamperMarker(events, marker => { marker.payload.bounded_payload.record.key = 'wrong'; }),
+      events => tamperMarker(events, marker => { marker.payload.bounded_payload.record.seq += 1; }),
+      events => tamperMarker(events, marker => { marker.payload.bounded_payload.snapshot = {}; }),
+      events => tamperMarker(events, marker => { marker.payload.bounded_payload.checkpoint_complete = true; }),
+      events => tamperMarker(events, marker => { marker.payload.bounded_payload.pending_batch = 'tampered'; }),
+      events => tamperSegment(events, segment => { segment.payload.event_id = '0'.repeat(64); }),
+      events => tamperSegment(events, segment => { segment.payload.type = 'check.failed'; }),
+      events => tamperSegment(events, segment => { segment.payload.bounded_payload.record.key = 'wrong'; }),
+      events => tamperSegment(events, segment => { segment.payload.bounded_payload.record.seq += 1; }),
+      events => tamperSegment(events, segment => { segment.payload.bounded_payload.snapshot = {}; }),
+      events => tamperSegment(events, segment => { segment.payload.bounded_payload.checkpoint_complete = true; }),
+      events => tamperSegment(events, segment => { segment.payload.bounded_payload.batch_plan.committed = true; }),
       (events) => {
         const segment = events.find(event => Number.isSafeInteger(event.payload.bounded_payload.batch_plan?.index));
         segment.payload.bounded_payload.batch_plan.index += 1;
