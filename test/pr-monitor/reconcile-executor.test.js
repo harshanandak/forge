@@ -621,6 +621,37 @@ describe('runDaemon — singleton lease lifecycle', () => {
 		}));
 	});
 
+	test('a failed cleanup pass carries persisted survivors into the next daemon pass', async () => {
+		const survivor = {
+			repo: 'owner/forge', pr: 42, pid: 1234, startedAt: '2026-08-19T00:00:00.000Z',
+		};
+		const observedLocks = [];
+		const res = await executor.runDaemon('/repo', {
+			gitCommonDir: '/repo/.git',
+			acquire: () => ({ ok: true, token: 'tok' }),
+			startHeartbeat: () => null,
+			stopHeartbeat: () => {},
+			release: () => {},
+			buildBroker: async () => { throw new Error('kernel unavailable'); },
+			convergeOnce: async (_root, args) => {
+				observedLocks.push(structuredClone(args.lock?.watchers || []));
+				if (observedLocks.length === 1) {
+					const error = new Error('cleanup incomplete');
+					error.code = 'WATCHER_CLEANUP_FAILED';
+					error.watchers = [survivor];
+					throw error;
+				}
+				return { desiredCount: 1, watchers: [survivor] };
+			},
+			exit: false,
+			intervalMs: 10,
+		});
+		await new Promise(resolve => setTimeout(resolve, 30));
+		clearInterval(res.timer);
+		expect(observedLocks[0]).toEqual([]);
+		expect(observedLocks[1]).toEqual([survivor]);
+	});
+
 	test('a throwing converge cannot keep the daemon alive after its lease is lost', async () => {
 		let owned = true;
 		let passes = 0;

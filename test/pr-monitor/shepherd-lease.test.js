@@ -47,7 +47,13 @@ describe('shepherd-lease', () => {
 
     expect(lease.inspect(null, opts())).toEqual({ status: 'valid', watchers });
 
+    const holder = readHolder();
     fs.writeFileSync(lease.lockFilePath(null, { gitCommonDir }), JSON.stringify({ watchers: [] }));
+    expect(lease.inspect(null, opts())).toEqual({ status: 'invalid', watchers: [] });
+
+    fs.writeFileSync(lease.lockFilePath(null, { gitCommonDir }), JSON.stringify({
+      ...holder, heartbeatAt: 'August 19, 2026',
+    }));
     expect(lease.inspect(null, opts())).toEqual({ status: 'invalid', watchers: [] });
 
     fs.writeFileSync(lease.lockFilePath(null, { gitCommonDir }), '{not-json');
