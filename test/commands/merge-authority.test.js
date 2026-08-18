@@ -196,6 +196,7 @@ describe('merge command — mandatory release authority', () => {
       fetchPrContext: async () => context({ state: 'MERGED' }),
       verifyPrIssueBinding: async () => ({
         bound: true,
+        repository: 'acme/forge',
         terminalEvidence: {
           decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
         },
@@ -212,12 +213,70 @@ describe('merge command — mandatory release authority', () => {
     expect(records).toBe(0);
   });
 
+  test('replays existing terminal evidence before provider state is available', async () => {
+    let fetches = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => { fetches += 1; throw new Error('GitHub unavailable'); },
+      verifyPrIssueBinding: async () => ({
+        bound: true,
+        repository: 'acme/forge',
+        terminalEvidence: {
+          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+        },
+      }),
+    }));
+
+    expect(out).toMatchObject({
+      success: true, merged: true, recovered: true,
+      decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+    });
+    expect(fetches).toBe(0);
+  });
+
+  test('does not claim a merge when pre-provider terminal replay authority fails', async () => {
+    let fetches = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => { fetches += 1; return context(); },
+      verifyPrIssueBinding: async () => ({ bound: false }),
+    }));
+
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(fetches).toBe(0);
+  });
+
+  test('fails closed on malformed retired terminal history before provider I/O', async () => {
+    const validTerminal = {
+      type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE, issue_revision: 7,
+      head_sha: HEAD, work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+    };
+    for (const iterations of [null, [validTerminal, { type: 'pr.merged' }]]) {
+      let fetches = 0;
+      const injected = deps({
+        fetchPrContext: async () => { fetches += 1; return context(); },
+        buildPrBindingBroker: async () => ({
+          gitCommonDir: '/repo/.git',
+          broker: { readTrace: async () => ({ pull_requests: [{
+            repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed', iterations,
+          }] }) },
+          driver: { close() {} },
+        }),
+      });
+      delete injected.verifyPrIssueBinding;
+
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+      expect(out).toMatchObject({ success: false, merged: false });
+      expect(fetches).toBe(0);
+    }
+  });
+
   test('replays existing terminal evidence after merge without rechecking expired gate authority', async () => {
     let gateChecks = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
       fetchPrContext: async () => context({ state: 'MERGED' }),
       verifyPrIssueBinding: async () => ({
         bound: true,
+        repository: 'acme/forge',
         terminalEvidence: {
           decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
         },
@@ -240,6 +299,7 @@ describe('merge command — mandatory release authority', () => {
       verifyIssueOwnership: async () => { ownershipChecks += 1; return { owned: false }; },
       verifyPrIssueBinding: async () => ({
         bound: true,
+        repository: 'acme/forge',
         terminalEvidence: {
           decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
         },
@@ -266,6 +326,7 @@ describe('merge command — mandatory release authority', () => {
       fetchPrContext: async () => context({ state: 'MERGED' }),
       verifyPrIssueBinding: async () => ({
         bound: true,
+        repository: 'acme/forge',
         terminalEvidence: {
           decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
         },

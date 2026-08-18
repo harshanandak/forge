@@ -587,16 +587,19 @@ describe('merge authority — exact reviewer regressions', () => {
   });
 
   test('merge recovery reads one exact retired PR linkage from the durable trace', async () => {
+    let traceTarget;
     const result = await mergeCmd.defaultVerifyPrIssueBinding({
       issueId: ISSUE,
       pr: '42',
       projectRoot: process.cwd(),
-      prContext: context({ state: 'MERGED' }),
+      prContext: context({ state: 'MERGED', repository: undefined }),
       allowRetired: true,
       buildBroker: async () => ({
         gitCommonDir: '/repo/.git',
         broker: {
-          readTrace: async () => ({
+          readTrace: async (target) => {
+            traceTarget = target;
+            return ({
             pull_requests: [{
               repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
               branch: 'feature/merge', git_common_dir: '/repo/.git', url: 'https://example/pr/42',
@@ -606,14 +609,16 @@ describe('merge authority — exact reviewer regressions', () => {
                 work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
               }],
             }],
-          }),
+            });
+          },
         },
         driver: { close() {} },
       }),
     });
 
     expect(result).toMatchObject({
-      bound: true, issueId: ISSUE, branch: 'feature/merge', gitCommonDir: '/repo/.git',
+      bound: true, issueId: ISSUE, repository: 'acme/forge',
+      branch: 'feature/merge', gitCommonDir: '/repo/.git',
       terminalEvidence: {
         occurredAt: '2026-08-01T12:00:00.000Z', receiptHash: 'b'.repeat(64),
       },
@@ -621,6 +626,7 @@ describe('merge authority — exact reviewer regressions', () => {
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
     expect(result.terminalEvidence.decisionId).toMatch(uuid);
     expect(result.terminalEvidence.receiptId).toMatch(uuid);
+    expect(traceTarget).toEqual({ issue_id: ISSUE, pr_number: 42 });
   });
 
   test('retired binding errors report a wrong issue without claiming the row must be open', async () => {
