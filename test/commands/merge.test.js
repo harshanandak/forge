@@ -124,6 +124,7 @@ describe('merge command — opt-in conditional auto-merge', () => {
 
     expect(context.repository).toBe('upstream/forge');
     expect(context).toMatchObject({ behindBase: false, conflicting: false, state: 'OPEN' });
+    expect(context.providerObservations).toEqual([]);
     expect(calls.some(args => args[0] === 'repo')).toBe(false);
     expect(calls.find(args => args[0] === 'pr')).toContain('--repo');
     expect(calls.find(args => args[0] === 'pr')).toContain('upstream/forge');
