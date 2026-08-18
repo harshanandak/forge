@@ -28,6 +28,7 @@ describe('forge shepherd watch <pr>', () => {
     expect(seen.emit).toBe(deps.emit);
     expect(seen.signal).toBe(deps.signal);
     expect(typeof seen.gather).toBe('function');
+    expect(await seen.terminalCleanupEvidence()).toEqual({ complete: false });
   });
 
   test('the top-level handler dispatches `watch` to handleWatch', async () => {

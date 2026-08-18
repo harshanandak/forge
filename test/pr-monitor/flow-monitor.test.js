@@ -109,6 +109,11 @@ function context(store, gather, deliverLegacy) {
     gather,
     deliverLegacy,
     now: () => '2026-08-12T12:00:00.000Z',
+    terminalCleanupEvidence: async () => ({
+      complete: true,
+      processCleanup: { status: 'reaped', owner: 'repo-singleton-shepherd' },
+      leaseCleanup: { status: 'checkpointed', continuing_authority: false },
+    }),
   };
 }
 
@@ -1289,6 +1294,28 @@ describe('Flow-backed PR monitor authority', () => {
       lease_cleanup: { continuing_authority: false },
     });
     expect(replay.terminalReceiptId).toBe(first.terminalReceiptId);
+  });
+
+  test('defers terminal receipt authority until watcher cleanup is durably checkpointed', async () => {
+    const store = durableStore();
+    const merged = snapshot({ state: 'MERGED' });
+    const ctx = context(store, async () => merged, async () => {});
+    ctx.terminalCleanupEvidence = async () => ({ complete: false });
+
+    const pending = await runFlowMonitorPass(ctx);
+
+    expect(pending.terminalReceiptId).toBeUndefined();
+    expect(store.terminalReceipt).toBeNull();
+
+    ctx.terminalCleanupEvidence = async () => ({
+      complete: true,
+      processCleanup: { status: 'reaped', owner: 'repo-singleton-shepherd' },
+      leaseCleanup: { status: 'checkpointed', continuing_authority: false },
+    });
+    const completed = await runFlowMonitorPass(ctx);
+
+    expect(completed.terminalReceiptId).toBeString();
+    expect(store.terminalReceipt.payload.process_cleanup.status).toBe('reaped');
   });
 
   test('starts a new lifecycle when a terminal closed PR is reopened', async () => {

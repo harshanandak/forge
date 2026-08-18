@@ -39,6 +39,18 @@ describe('shepherd-lease', () => {
     expect(held.watchers).toEqual([]);
   });
 
+  test('inspection exposes only durable watcher cleanup evidence and fails closed on corruption', () => {
+    expect(lease.inspect(null, opts())).toEqual({ status: 'absent', watchers: [] });
+    const acquired = lease.acquire(null, opts({ pid: 100, isAlive: alive, now: () => 1000 }));
+    const watchers = [{ repo: 'owner/forge', pr: 42, pid: 1234, startedAt: 't1' }];
+    expect(lease.updateWatchers(null, watchers, opts({ pid: 100, token: acquired.token }))).toBe(true);
+
+    expect(lease.inspect(null, opts())).toEqual({ status: 'valid', watchers });
+
+    fs.writeFileSync(lease.lockFilePath(null, { gitCommonDir }), '{not-json');
+    expect(lease.inspect(null, opts())).toEqual({ status: 'invalid', watchers: [] });
+  });
+
   test('(1) live + fresh holder blocks a second acquire', () => {
     lease.acquire(null, opts({ pid: 100, isAlive: alive, now: () => 1000 }));
     const res = lease.acquire(null, opts({ pid: 200, isAlive: alive, now: () => 1000 }));

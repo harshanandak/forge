@@ -21,6 +21,36 @@ describe('shepherd command handler', () => {
     expect(typeof shepherdCmd.handler).toBe('function');
   });
 
+  test('terminal cleanup evidence requires a reaped watcher and a reduced valid lease checkpoint', () => {
+    const base = {
+      owner: 'owner', repo: 'forge', pr: 42, dir: '/journal',
+      projectRoot: '/repo', gitCommonDir: '/repo/.git',
+    };
+    const deps = {
+      watcherRunning: () => false,
+      inspectLease: () => ({ status: 'valid', watchers: [] }),
+      readClaim: () => null,
+    };
+
+    expect(shepherdCmd.terminalCleanupEvidence(base, deps)).toMatchObject({
+      complete: true,
+      processCleanup: { status: 'reaped' },
+      leaseCleanup: { status: 'checkpointed', continuing_authority: false },
+    });
+    expect(shepherdCmd.terminalCleanupEvidence(base, {
+      ...deps, watcherRunning: () => true,
+    })).toEqual({ complete: false });
+    expect(shepherdCmd.terminalCleanupEvidence(base, {
+      ...deps, inspectLease: () => ({ status: 'valid', watchers: [{ repo: 'owner/forge', pr: 42 }] }),
+    })).toEqual({ complete: false });
+    expect(shepherdCmd.terminalCleanupEvidence(base, {
+      ...deps, inspectLease: () => ({ status: 'invalid', watchers: [] }),
+    })).toEqual({ complete: false });
+    expect(shepherdCmd.terminalCleanupEvidence(base, {
+      ...deps, readClaim: () => 'still-owned',
+    })).toEqual({ complete: false });
+  });
+
   test('one invocation runs exactly ONE bounded pass (no in-process loop)', async () => {
     let passCount = 0;
     const fakeRun = async () => {
