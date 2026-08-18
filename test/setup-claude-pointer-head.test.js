@@ -32,4 +32,19 @@ describe('CLAUDE.md pointer authorization source head', () => {
 
 		expect(sourceHead).toBe('');
 	});
+
+	test('reads the exact staged pointer bytes for authorization', () => {
+		let call;
+		const content = setupCommand.readStagedClaudePointerContent('C:\\repo', (file, args, options) => {
+			call = { file, args, options };
+			return Buffer.from('@AGENTS.md\n');
+		});
+
+		expect(content).toEqual(Buffer.from('@AGENTS.md\n'));
+		expect(call).toEqual({
+			file: 'git',
+			args: ['show', ':CLAUDE.md'],
+			options: { cwd: 'C:\\repo', encoding: null, stdio: 'pipe' },
+		});
+	});
 });
