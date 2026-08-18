@@ -1,6 +1,9 @@
 'use strict';
 
 const { describe, test, expect } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const setupCommand = require('../lib/commands/setup');
 
 describe('CLAUDE.md pointer authorization source head', () => {
@@ -46,5 +49,27 @@ describe('CLAUDE.md pointer authorization source head', () => {
 			args: ['show', ':CLAUDE.md'],
 			options: { cwd: 'C:\\repo', encoding: null, stdio: 'pipe' },
 		});
+	});
+
+	test('cleans untracked pointer bytes using Git filters before authorization', () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claude-pointer-'));
+		try {
+			fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), Buffer.from('@AGENTS.md\r\n'));
+			const calls = [];
+			const content = setupCommand.readStagedClaudePointerContent(cwd, (file, args, options) => {
+				calls.push({ file, args, options });
+				if (args[0] === 'show') throw new Error('untracked');
+				return Buffer.from('clean-pointer-hash\n');
+			});
+
+			expect(content).toEqual(Buffer.from('@AGENTS.md\n'));
+			expect(calls.map(call => call.args)).toEqual([
+				['show', ':CLAUDE.md'],
+				['hash-object', '--path=CLAUDE.md', '--stdin'],
+				['hash-object', '--stdin'],
+			]);
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
 	});
 });
