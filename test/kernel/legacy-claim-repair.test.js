@@ -10,7 +10,8 @@ const {
 	createBuiltinSQLiteDriver,
 	hardenBackupPermissions,
 	hardenBackupPermissionsBatch,
-	resolveWindowsPowerShellPath,
+	resolveWindowsSystemToolPath,
+	secureWindowsPathsAcl,
 	syncClaimRepairRecoveryDirectory,
 } = require('../../lib/kernel/sqlite-driver');
 const {
@@ -146,9 +147,9 @@ describe('legacy claim repair preflight', () => {
 	});
 
 	test('hardens backup files to owner-only mode and fails closed when permissions remain broad', () => {
-		expect(resolveWindowsPowerShellPath({ SystemRoot: 'C:\\Windows' }))
-			.toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
-		expect(() => resolveWindowsPowerShellPath({ SystemRoot: 'relative' })).toThrow('absolute SystemRoot');
+		expect(resolveWindowsSystemToolPath('icacls.exe', { SystemRoot: 'C:\\Windows' }))
+			.toBe('C:\\Windows\\System32\\icacls.exe');
+		expect(() => resolveWindowsSystemToolPath('icacls.exe', { SystemRoot: 'relative' })).toThrow('absolute SystemRoot');
 		const calls = [];
 		hardenBackupPermissions('backup.sqlite', {
 			platform: 'linux',
@@ -199,6 +200,39 @@ describe('legacy claim repair preflight', () => {
 			platform: 'win32',
 			aclSecurer() { throw new Error('ACL remained inherited'); },
 		})).toThrow('owner-only permissions');
+	});
+
+	test('uses native Windows ACL tools and verifies the saved owner-only DACL', () => {
+		const invocations = [];
+		const fsCalls = [];
+		const sid = 'S-1-5-21-1000';
+		secureWindowsPathsAcl(['backup.sqlite'], {
+			environment: { SystemRoot: 'C:\\Windows' },
+			execFile(command, args, options) {
+				invocations.push({ command, args, options });
+				return command.endsWith('whoami.exe') ? `"runner","${sid}"\r\n` : '';
+			},
+			fsApi: {
+				mkdtempSync() { return 'C:\\Temp\\acl-proof'; },
+				statSync() { return { isDirectory: () => false }; },
+				readFileSync() { return `backup.sqlite\r\nD:PAI(A;;FA;;;${sid})\r\n`; },
+				rmSync(filePath, options) { fsCalls.push({ filePath, options }); },
+			},
+		});
+		expect(invocations.map(({ command, args }) => [path.win32.basename(command), args])).toEqual([
+			['whoami.exe', ['/user', '/fo', 'csv', '/nh']],
+			['icacls.exe', ['backup.sqlite', '/reset', '/q']],
+			['icacls.exe', ['backup.sqlite', '/inheritance:r', '/q']],
+			['icacls.exe', ['backup.sqlite', '/grant:r', `*${sid}:F`, '/q']],
+			['icacls.exe', ['backup.sqlite', '/setowner', `*${sid}`, '/q']],
+			['icacls.exe', ['backup.sqlite', '/save', path.join('C:\\Temp\\acl-proof', '0.acl'), '/q']],
+		]);
+		expect(invocations[0].options.stdio).toEqual(['ignore', 'pipe', 'ignore']);
+		expect(invocations.slice(1).every(({ options }) => options.stdio === 'ignore')).toBe(true);
+		expect(fsCalls).toEqual([{
+			filePath: 'C:\\Temp\\acl-proof',
+			options: { recursive: true, force: true },
+		}]);
 	});
 
 	test('restore-proof cleanup retries Windows file locks without replacing valid proof', () => {
