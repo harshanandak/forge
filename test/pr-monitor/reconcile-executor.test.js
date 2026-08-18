@@ -211,6 +211,32 @@ describe('execute — watcher lifecycle', () => {
 		]);
 	});
 
+	test('retains an observed natural exit without fabricating a SIGKILL', async () => {
+		let writes = 0;
+		let persisted = [];
+		const checkpoints = [];
+		await expect(executor.execute(
+			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
+				spawnWatcher: () => ({ pid: 1234 }),
+				persistLifecycleCheckpoint: current => {
+					writes += 1;
+					persisted = structuredClone(current);
+					return writes !== 2;
+				},
+				writeClaim: () => {}, removeClaim: () => {},
+				readClaim: () => '1970-01-01T00:00:01.000Z',
+				isAlive: () => false,
+				kill: () => { throw new Error('a dead watcher must not be killed'); },
+				onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
+			},
+		)).rejects.toMatchObject({ code: 'WATCHER_CLEANUP_FAILED' });
+		expect(checkpoints).toEqual([]);
+		expect(persisted).toHaveLength(1);
+		expect(persisted[0]).toMatchObject({ pid: 1234, pr: 42, repo: 'forge' });
+	});
+
 	test('terminates every watcher spawned earlier in a batch when a later checkpoint fails', async () => {
 		let writes = 0;
 		let nextPid = 1000;

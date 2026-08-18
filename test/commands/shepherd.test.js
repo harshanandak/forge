@@ -48,6 +48,9 @@ describe('shepherd command handler', () => {
       ...deps, inspectLease: () => ({ status: 'invalid', watchers: [] }),
     })).toEqual({ complete: false });
     expect(shepherdCmd.terminalCleanupEvidence(base, {
+      ...deps, inspectLease: () => ({ status: 'absent', watchers: [] }),
+    })).toEqual({ complete: false });
+    expect(shepherdCmd.terminalCleanupEvidence(base, {
       ...deps, readClaim: () => 'still-owned',
     })).toEqual({ complete: false });
   });
