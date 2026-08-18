@@ -5,7 +5,10 @@ const {
 	assertProtectedWriteAllowed,
 	recordProtectedStateAuditEvent,
 } = require('../lib/protected-state-surfaces');
-const { authorizeAndConsumeProtectedStateWrites } = require('../lib/protected-state-authority');
+const {
+	authorizeAndConsumeProtectedStateWrites,
+	isValidGitObjectId,
+} = require('../lib/protected-state-authority');
 const { verifyBunLockfileRegeneration } = require('../lib/bun-lockfile-proof');
 const realStagedFiles = new Set();
 const deletedFiles = new Set();
@@ -96,7 +99,7 @@ function getCurrentHead() {
 			encoding: 'utf8',
 			stdio: ['ignore', 'pipe', 'pipe'],
 		}).trim();
-		return /^[0-9a-f]{40}$/.test(head) ? head : null;
+		return isValidGitObjectId(head) ? head : null;
 	} catch {
 		return null;
 	}
