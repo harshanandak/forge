@@ -283,6 +283,7 @@ describe('merge command — mandatory release authority', () => {
       let fetches = 0;
       const injected = deps({
         fetchPrContext: async () => { fetches += 1; return context(); },
+        resolveLocalRepository: () => 'acme/forge',
         buildPrBindingBroker: async () => ({
           gitCommonDir: '/repo/.git',
           broker: { readTrace: async () => ({ gaps: [], pull_requests: [{
@@ -301,11 +302,51 @@ describe('merge command — mandatory release authority', () => {
     }
   });
 
+  test('fails closed on malformed retired trace gap entries before provider I/O', async () => {
+    const terminal = {
+      type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE, issue_revision: 7,
+      head_sha: HEAD, work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+    };
+    for (const gaps of [
+      [{}],
+      ['bad'],
+      [42],
+      ['iterations::incomplete'],
+      ['pull_requests::unlinked_issue'],
+      ['iterations:pr:extra:incomplete'],
+      ['pull_requests:pr:extra:unlinked_issue'],
+    ]) {
+      let fetches = 0;
+      const injected = deps({
+        fetchPrContext: async () => { fetches += 1; return context(); },
+        resolveLocalRepository: () => 'acme/forge',
+        buildPrBindingBroker: async () => ({
+          gitCommonDir: '/repo/.git',
+          broker: { readTrace: async () => ({
+            gaps,
+            pull_requests: [{
+              id: 'pr-1', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+              git_common_dir: '/repo/.git', iterations: [terminal],
+            }],
+          }) },
+          driver: { close() {} },
+        }),
+      });
+      delete injected.verifyPrIssueBinding;
+
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+      expect(out).toMatchObject({ success: false, merged: false });
+      expect(fetches).toBe(0);
+    }
+  });
+
   test('fails closed on incomplete retired trace gaps before provider I/O', async () => {
     for (const suffix of ['incomplete', 'overflow']) {
       let fetches = 0;
       const injected = deps({
         fetchPrContext: async () => { fetches += 1; return context(); },
+        resolveLocalRepository: () => 'acme/forge',
         buildPrBindingBroker: async () => ({
           gitCommonDir: '/repo/.git',
           broker: { readTrace: async () => ({
@@ -320,6 +361,38 @@ describe('merge command — mandatory release authority', () => {
               }],
             }],
           }) },
+          driver: { close() {} },
+        }),
+      });
+      delete injected.verifyPrIssueBinding;
+
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+      expect(out).toMatchObject({ success: false, merged: false });
+      expect(fetches).toBe(0);
+    }
+  });
+
+  test('does not treat missing retired rows as clean absence when trace gaps are unreadable', async () => {
+    for (const gaps of [
+      null,
+      'bad',
+      {},
+      ['bad'],
+      [{}],
+      [42],
+      ['pull_requests:overflow'],
+      ['pull_requests:pr-1:unlinked_issue'],
+      ['iterations:pr-1:incomplete'],
+      ['iterations:pr-1:overflow'],
+    ]) {
+      let fetches = 0;
+      const injected = deps({
+        fetchPrContext: async () => { fetches += 1; return context(); },
+        resolveLocalRepository: () => 'acme/forge',
+        buildPrBindingBroker: async () => ({
+          gitCommonDir: '/repo/.git',
+          broker: { readTrace: async () => ({ gaps, pull_requests: [] }) },
           driver: { close() {} },
         }),
       });
@@ -364,6 +437,43 @@ describe('merge command — mandatory release authority', () => {
     expect(out).toMatchObject({ success: true, merged: true, recovered: true });
     expect(traceTarget).toMatchObject({ repo: 'acme/forge', git_common_dir: '/repo/.git' });
     expect(fetches).toBe(0);
+  });
+
+  test('uses provider base repository authority when origin points to a fork', async () => {
+    let fetches = 0;
+    let merges = 0;
+    const injected = deps({
+      resolveLocalRepository: () => 'contributor/forge',
+      fetchPrContext: async () => {
+        fetches += 1;
+        return context({ repository: 'acme/forge' });
+      },
+      mergePr: async () => { merges += 1; return { merged: true }; },
+      buildPrBindingBroker: async () => ({
+        gitCommonDir: '/repo/.git',
+        broker: {
+          readTrace: async () => ({
+            gaps: ['issue', 'worktree', 'plan', 'pull_requests'],
+            pull_requests: [{
+              id: 'upstream', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open',
+              git_common_dir: '/repo/.git', iterations: [],
+            }],
+          }),
+          listOpenPrs: async () => [{
+            id: 'upstream', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open',
+            git_common_dir: '/repo/.git', iterations: [],
+          }],
+        },
+        driver: { close() {} },
+      }),
+    });
+    delete injected.verifyPrIssueBinding;
+
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+    expect(out).toMatchObject({ success: true, merged: true });
+    expect(fetches).toBe(2);
+    expect(merges).toBe(1);
   });
 
   test('fails closed before trace or provider I/O when the local repository is unreadable', async () => {
