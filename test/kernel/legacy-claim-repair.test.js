@@ -9,6 +9,7 @@ const { createLocalBroker } = require('../../lib/kernel/broker');
 const {
 	createBuiltinSQLiteDriver,
 	hardenBackupPermissions,
+	hardenBackupPermissionsBatch,
 	resolveWindowsPowerShellPath,
 	syncClaimRepairRecoveryDirectory,
 } = require('../../lib/kernel/sqlite-driver');
@@ -23,6 +24,7 @@ const { parseArgs, run } = require('../../scripts/legacy-claim-repair');
 const OBSERVED_AT = '2026-08-12T08:00:00.000Z';
 const tempDirs = [];
 const hardenPath = filePath => hardenBackupPermissions(filePath);
+hardenPath.batch = filePaths => hardenBackupPermissionsBatch(filePaths);
 
 async function removeDirWithRetry(dir, attempts = 10) {
 	for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -181,6 +183,19 @@ describe('legacy claim repair preflight', () => {
 		});
 		expect(secured).toEqual(['backup.sqlite']);
 		expect(() => hardenBackupPermissions('backup.sqlite', {
+			platform: 'win32',
+			aclSecurer() { throw new Error('ACL remained inherited'); },
+		})).toThrow('owner-only permissions');
+	});
+
+	test('batches Windows ACL hardening while preserving per-path failure handling', () => {
+		const secured = [];
+		hardenBackupPermissionsBatch(['backup.sqlite', 'restore.sqlite', 'backup.sqlite'], {
+			platform: 'win32',
+			aclSecurer(filePath) { secured.push(filePath); },
+		});
+		expect(secured).toEqual(['backup.sqlite', 'restore.sqlite']);
+		expect(() => hardenBackupPermissionsBatch(['backup.sqlite'], {
 			platform: 'win32',
 			aclSecurer() { throw new Error('ACL remained inherited'); },
 		})).toThrow('owner-only permissions');
@@ -349,6 +364,10 @@ describe('legacy claim repair backup and apply', () => {
 		const trackingHardener = filePath => {
 			hardenedPaths.push(filePath);
 			hardenPath(filePath);
+		};
+		trackingHardener.batch = filePaths => {
+			hardenedPaths.push(...filePaths);
+			hardenBackupPermissionsBatch(filePaths);
 		};
 
 		const proof = await createVerifiedClaimRepairBackup({

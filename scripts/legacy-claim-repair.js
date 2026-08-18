@@ -3,7 +3,11 @@
 
 const path = require('node:path');
 
-const { createBuiltinSQLiteDriver, hardenBackupPermissions } = require('../lib/kernel/sqlite-driver');
+const {
+	createBuiltinSQLiteDriver,
+	hardenBackupPermissions,
+	hardenBackupPermissionsBatch,
+} = require('../lib/kernel/sqlite-driver');
 const {
 	ClaimRepairError,
 	createVerifiedClaimRepairBackup,
@@ -71,6 +75,7 @@ async function run(options, dependencies = {}) {
 	const createBackup = dependencies.createVerifiedClaimRepairBackup
 		|| createVerifiedClaimRepairBackup;
 	const hardenPath = dependencies.hardenPath || hardenBackupPermissions;
+	const hardenPaths = dependencies.hardenPaths || hardenBackupPermissionsBatch;
 	const sourceDriver = openDriver(options.databasePath);
 	try {
 		if (options.mode === 'dry-run') {
@@ -80,6 +85,7 @@ async function run(options, dependencies = {}) {
 				observedAt: options.observedAt,
 				openDriver,
 				hardenPath,
+				hardenPaths,
 			});
 			const preflight = await sourceDriver.preflightLegacyClaimRepair({ observedAt: options.observedAt });
 			if (preflight.digest !== backup.plan_digest) {
