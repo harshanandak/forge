@@ -58,16 +58,43 @@ describe('CLAUDE.md pointer authorization source head', () => {
 			const calls = [];
 			const content = setupCommand.readStagedClaudePointerContent(cwd, (file, args, options) => {
 				calls.push({ file, args, options });
-				if (args[0] === 'show') throw new Error('untracked');
+				if (args[0] === 'show') {
+					const error = new Error('untracked');
+					error.status = 128;
+					throw error;
+				}
+				if (args[0] === 'ls-files') {
+					const error = new Error('not tracked');
+					error.status = 1;
+					throw error;
+				}
 				return Buffer.from('clean-pointer-hash\n');
 			});
 
 			expect(content).toEqual(Buffer.from('@AGENTS.md\n'));
 			expect(calls.map(call => call.args)).toEqual([
 				['show', ':CLAUDE.md'],
+				['ls-files', '--error-unmatch', '--', 'CLAUDE.md'],
 				['hash-object', '--path=CLAUDE.md', '--stdin'],
 				['hash-object', '--stdin'],
 			]);
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test('does not authorize worktree bytes when the index lookup fails for a tracked file', () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claude-pointer-'));
+		try {
+			fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), Buffer.from('@AGENTS.md\r\n'));
+			expect(() => setupCommand.readStagedClaudePointerContent(cwd, (file, args) => {
+				if (args[0] === 'show') {
+					const error = new Error('index read failed');
+					error.status = 128;
+					throw error;
+				}
+				return Buffer.from('CLAUDE.md');
+			})).toThrow('index read failed');
 		} finally {
 			fs.rmSync(cwd, { recursive: true, force: true });
 		}
