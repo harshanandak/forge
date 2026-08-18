@@ -194,10 +194,12 @@ describe('Flow-backed PR monitor authority', () => {
     await runFlowMonitorPass(context(store, async () => current, async () => {}));
     const before = store.events.length;
     const event = store.events.at(-1);
-    const evidence = zlib.gunzipSync(Buffer.from(
-      event.payload.bounded_payload.snapshot._snapshotEvidence, 'base64url',
+    const evidence = zlib.gunzipSync(_internals.decodePrivateSafeBase64(
+      event.payload.bounded_payload.snapshot._snapshotEvidence,
     ));
-    event.payload.bounded_payload.snapshot._snapshotEvidence = zlib.gzipSync(evidence, { level: 1 }).toString('base64url');
+    event.payload.bounded_payload.snapshot._snapshotEvidence = _internals.encodePrivateSafeBase64(
+      zlib.gzipSync(evidence, { level: 1 }),
+    );
     event.content_hash = computeContentHash(event);
 
     const restarted = await runFlowMonitorPass(context(store, async () => current, async () => {}));
@@ -314,14 +316,16 @@ describe('Flow-backed PR monitor authority', () => {
     ));
     const marker = store.events.find(event => event.payload.bounded_payload.batch_plan?.committed === true);
     const actualEvents = store.events.filter(event => event.payload.type === 'check.failed');
-    const decodedSegments = segmentEvents.map(event => JSON.parse(zlib.gunzipSync(Buffer.from(
-      event.payload.bounded_payload.pending_batch,
-      'base64url',
-    ))));
+    const decodedSegments = segmentEvents.map(event => JSON.parse(zlib.gunzipSync(
+      _internals.decodePrivateSafeBase64(event.payload.bounded_payload.pending_batch),
+    )));
     expect(segmentEvents.length).toBeGreaterThan(1);
     expect(segmentEvents.map(event => event.payload.bounded_payload.batch_plan.index))
       .toEqual(segmentEvents.map((_event, index) => index));
     expect(marker.payload.sequence).toBe(segmentEvents.at(-1).payload.sequence + 1);
+    expect(segmentEvents.every(event => !/[\-_Aa]/.test(
+      event.payload.bounded_payload.pending_batch,
+    ))).toBe(true);
     expect(actualEvents[0].payload.sequence).toBe(marker.payload.sequence + 1);
     expect(actualEvents.map(event => event.payload.sequence))
       .toEqual(actualEvents.map((_event, index) => actualEvents[0].payload.sequence + index));
@@ -599,10 +603,9 @@ describe('Flow-backed PR monitor authority', () => {
       event.payload.bounded_payload.batch_plan?.index,
     ));
     const probeMarker = probe.events.find(event => event.payload.bounded_payload.batch_plan?.committed === true);
-    const segmentLengths = probeSegments.map(event => JSON.parse(zlib.gunzipSync(Buffer.from(
-      event.payload.bounded_payload.pending_batch,
-      'base64url',
-    ))).records.length);
+    const segmentLengths = probeSegments.map(event => JSON.parse(zlib.gunzipSync(
+      _internals.decodePrivateSafeBase64(event.payload.bounded_payload.pending_batch),
+    )).records.length);
     const actualStart = probeMarker.payload.sequence + 1;
     let boundary = 0;
     const transitionSequences = segmentLengths.map(length => {
@@ -775,6 +778,61 @@ describe('Flow-backed PR monitor authority', () => {
     const legacy = delivered.find(record => record.type === 'monitor.degraded')?.data.error;
     expect(durable).toBe('[provider diagnostic redacted]');
     expect(legacy).toBe('[provider diagnostic redacted]');
+  });
+
+  test('sanitizes provider-controlled identities and paths before durable and legacy persistence', async () => {
+    const store = durableStore();
+    let next = snapshot();
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({
+      repo: 'owner/token=repositorysecret123',
+      checks: [{ name: 'token=supersecret123', class: 'failed' }],
+      threads: [{
+        threadId: 'secret=threadsecret123',
+        isResolved: false,
+        commentCount: 1,
+        actionable: true,
+        path: 'docs/home/runner/private.md',
+      }],
+    });
+    ctx.enrich = async records => {
+      for (const record of records) {
+        record.data.details = { 'docs/home/runner/private': 'password=providersecret123' };
+      }
+    };
+
+    await runFlowMonitorPass(ctx);
+
+    const durable = store.events.filter(event => ['check.failed', 'thread.opened'].includes(event.payload.type))
+      .map(event => event.payload.bounded_payload.record);
+    const compatibility = delivered.filter(record => ['check.failed', 'thread.opened'].includes(record.type));
+    for (const records of [durable, compatibility]) {
+      expect(JSON.stringify(records)).not.toContain('supersecret123');
+      expect(JSON.stringify(records)).not.toContain('repositorysecret123');
+      expect(JSON.stringify(records)).not.toContain('providersecret123');
+      expect(JSON.stringify(records)).not.toContain('/home/runner/');
+    }
+    expect(durable.find(record => record.type === 'check.failed').data.name).toStartWith('sha256:');
+    expect(durable.find(record => record.type === 'thread.opened').data.path)
+      .toBe('[provider diagnostic redacted]');
+  });
+
+  test('uses a privacy-safe alphabet for generated snapshot evidence', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 100 }, (_, index) => ({ name: `2:${index}`, class: 'failed' }));
+    const ctx = context(store, async () => snapshot({ checks }), async () => {});
+
+    await runFlowMonitorPass(ctx);
+
+    const encoded = store.events.at(-1).payload.bounded_payload.snapshot._snapshotEvidence;
+    expect(encoded).not.toMatch(/sk-[a-z0-9]{16,}/i);
+    expect(encoded).not.toMatch(/[\-_Aa]/);
+    expect(await runFlowMonitorPass(ctx)).toMatchObject({ changed: false });
+    const legacy = zlib.gzipSync('legacy-evidence').toString('base64url');
+    expect(zlib.gunzipSync(_internals.decodePrivateSafeBase64(legacy)).toString())
+      .toBe('legacy-evidence');
   });
 
   test('preserves valid enriched job URLs longer than the generic snapshot text bound', async () => {

@@ -357,6 +357,25 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
     };
   }
 
+  function publicMonitorDriver(appended) {
+    return {
+      appendMonitorEvent: async (event) => { appended.push(event); return { idempotent: false }; },
+      getMonitorEvent: async eventId => {
+        const event = appended.find(item => item.payload.event_id === eventId);
+        return event ? { envelope_json: JSON.stringify(event), content_hash: event.content_hash } : null;
+      },
+      readMonitorEventTail: async () => ({
+        events: [], overflow: false, truncated_before_sequence: null,
+      }),
+      readMonitorDeliveryState: async () => ({
+        cursors: [], outbox: [], terminal_receipt: null,
+        overflow: { cursors: false, outbox: false },
+      }),
+      recordMonitorDeliveryReceipt: async () => ({ idempotent: false }),
+      recordMonitorTerminalReceipt: async () => ({ idempotent: false }),
+    };
+  }
+
   let root; let dir;
   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'prmon-verb-')); dir = journal.journalDir({ root, repo: 'r', pr: '1' }); });
   afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
@@ -407,6 +426,49 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
     });
     await built.close();
     expect(closed).toBe(true);
+  });
+
+  test('hashes a private-shaped repository token across every Memory authority identity', async () => {
+    const repo = `ghp_${'a'.repeat(20)}`;
+    const appended = [];
+    const driver = publicMonitorDriver(appended);
+    const built = await shepherdCmd.buildMonitorContext('7', root, {
+      forceAuthority: true,
+      gather: async () => snap(),
+      buildContext: async () => ({
+        pr: '7', owner: 'acme', repo, base: 'master', baseRef: 'origin/master',
+      }),
+      adapter: new (require('../../lib/adapters/pr-state-adapter').PrStateAdapter)({ gh: () => '', git: () => '' }),
+      resolveGitCommonDir: () => path.join(root, '.git'),
+      buildKernelDeps: async () => ({ kernelDriver: driver, kernelBroker: { close: async () => {} } }),
+    });
+
+    for (const identity of [built.monitorId, built.ownerRunId, built.packetId, built.subjectId]) {
+      expect(identity).not.toContain(repo);
+      expect(identity).toMatch(/sha256:[0-9a-f]{64}/);
+    }
+    const { runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
+    await runFlowMonitorPass({ ...built, deliverLegacy: async () => {}, now });
+    expect(appended).toHaveLength(1);
+  });
+
+  test('sanitizes complete Memory authority identities after composing repository and PR', async () => {
+    const appended = [];
+    const driver = publicMonitorDriver(appended);
+    const built = await shepherdCmd.buildMonitorContext('12345678', root, {
+      forceAuthority: true,
+      gather: async () => snap(),
+      buildContext: async () => ({
+        pr: '12345678', owner: 'acme', repo: 'token', base: 'master', baseRef: 'origin/master',
+      }),
+      adapter: new (require('../../lib/adapters/pr-state-adapter').PrStateAdapter)({ gh: () => '', git: () => '' }),
+      resolveGitCommonDir: () => path.join(root, '.git'),
+      buildKernelDeps: async () => ({ kernelDriver: driver, kernelBroker: { close: async () => {} } }),
+    });
+
+    const { runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
+    await runFlowMonitorPass({ ...built, deliverLegacy: async () => {}, now });
+    expect(appended).toHaveLength(1);
   });
 
   test('falls back to the per-root journal when Memory authority initialization fails', async () => {
