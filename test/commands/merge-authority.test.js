@@ -1,8 +1,12 @@
 'use strict';
 
 const { describe, test, expect } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const mergeCmd = require('../../lib/commands/merge');
+const { MEMORY_AUTHORITY_METHODS } = require('../../packages/memory');
 
 const HEAD = 'a'.repeat(40);
 const OTHER_HEAD = 'b'.repeat(40);
@@ -54,9 +58,15 @@ function reviewEvidence(state, commitOid = HEAD, overrides = {}) {
 function deps(overrides = {}) {
   return {
     loadConfig: () => ENABLED,
-    verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
+    verifyIssueOwnership: async () => ({
+      owned: true, actor: 'release-actor', claimedBy: 'release-actor', sessionId: 'release-session', expired: false,
+    }),
+    resolveLocalRepository: async () => 'acme/forge',
     verifyPrIssueBinding: async () => ({ bound: true }),
-    env: { FORGE_ACTOR: 'release-actor' },
+    verifyMergeGate: async () => true,
+    prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
+    recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
+    env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
     fetchPrContext: async () => context(),
     mergePr: async () => ({ merged: true }),
     ...overrides,
@@ -64,6 +74,655 @@ function deps(overrides = {}) {
 }
 
 describe('merge command — mandatory release authority', () => {
+  test('resolves the local repository from HTTPS and SSH origin URLs', () => {
+    for (const remote of [
+      'https://github.com/Acme/Forge.git',
+      'git@github.com:Acme/Forge.git',
+      'ssh://git@github.com/Acme/Forge.git',
+    ]) {
+      const calls = [];
+      expect(mergeCmd.defaultResolveLocalRepository({
+        projectRoot: '/repo',
+        git: (...args) => { calls.push(args); return remote; },
+      })).toBe('acme/forge');
+      expect(calls).toEqual([['git', ['remote', 'get-url', 'origin'], expect.objectContaining({ cwd: '/repo' })]]);
+    }
+    for (const remote of [
+      'C:/repo/Acme/Forge.git',
+      '/repo/Acme/Forge.git',
+      'file:///repo/Acme/Forge.git',
+      'ssh:/Acme/Forge.git',
+      'git:Acme/Forge.git',
+      'git@github.com/path:Acme/Forge.git',
+      'git@@github.com:Acme/Forge.git',
+      'Acme/Forge',
+    ]) {
+      expect(mergeCmd.defaultResolveLocalRepository({
+        projectRoot: '/repo',
+        git: () => remote,
+      })).toBeNull();
+    }
+  });
+
+  test('default merge-gate verification honors a disabled configured gate', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-merge-gate-'));
+    try {
+      fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
+      fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), [
+        'workflow:',
+        '  gates:',
+        '    gate.merge:',
+        '      enabled: false',
+        '',
+      ].join('\n'));
+      expect(await mergeCmd.defaultVerifyMergeGate({
+        issueId: ISSUE,
+        projectRoot: root,
+        now: Date.parse('2026-08-01T12:00:00Z'),
+      })).toMatchObject({ success: true, disabled: true });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('records one terminal decision only after exact-head merge succeeds', async () => {
+    const order = [];
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      verifyMergeGate: async () => { order.push('gate'); return true; },
+      prepareMergeDecision: async () => { order.push('decision'); return { decisionId: 'decision-42' }; },
+      mergePr: async () => { order.push('merge'); return { merged: true }; },
+      recordMergeDecision: async ({ decision }) => {
+        order.push('receipt');
+        expect(decision.decisionId).toBe('decision-42');
+        return { receiptId: 'receipt-42' };
+      },
+    }));
+
+    expect(order).toEqual(['gate', 'decision', 'merge', 'receipt']);
+    expect(out).toMatchObject({ success: true, merged: true, decisionId: 'decision-42', receiptId: 'receipt-42' });
+  });
+
+  test('provider merge metadata cannot overwrite authoritative terminal evidence', async () => {
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      mergePr: async () => ({
+        merged: true, success: false, enabled: false, allowed: false,
+        reason: 'provider override', decisionId: 'provider-decision', receiptId: 'provider-receipt',
+        method: 'squash', error: 'provider detail', state: 'FAILED', unmet: [{ rule: 'checks_green' }],
+      }),
+      prepareMergeDecision: async () => ({ decisionId: 'authority-decision' }),
+      recordMergeDecision: async () => ({ receiptId: 'authority-receipt', receiptHash: 'f'.repeat(64) }),
+    }));
+
+    expect(out).toMatchObject({
+      success: true, merged: true, enabled: true, allowed: true,
+      reason: 'all merge rules passed', decisionId: 'authority-decision', receiptId: 'authority-receipt', method: 'squash',
+    });
+    expect(out).not.toHaveProperty('error');
+    expect(out).not.toHaveProperty('state');
+    expect(out).not.toHaveProperty('unmet');
+  });
+
+  test('never writes terminal linkage when the external merge fails', async () => {
+    let receipts = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      mergePr: async () => { throw new Error('provider rejected'); },
+      recordMergeDecision: async () => { receipts += 1; },
+    }));
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(receipts).toBe(0);
+  });
+
+  test('never writes terminal linkage when the provider does not confirm the merge', async () => {
+    let receipts = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      mergePr: async () => ({ merged: false, reason: 'blocked by branch protection' }),
+      recordMergeDecision: async () => { receipts += 1; return { receiptId: 'receipt-x' }; },
+    }));
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(receipts).toBe(0);
+  });
+
+  test('requires the human merge gate before preparing evidence or mutating GitHub', async () => {
+    let decisions = 0;
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      verifyMergeGate: async () => false,
+      prepareMergeDecision: async () => { decisions += 1; },
+      mergePr: async () => { merges += 1; },
+    }));
+
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(out.error).toContain('gate.merge');
+    expect(decisions).toBe(0);
+    expect(merges).toBe(0);
+  });
+
+  test('reports an already-completed merge when terminal linkage cannot be recorded', async () => {
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      recordMergeDecision: async () => { throw new Error('receipt store unavailable'); },
+    }));
+
+    expect(out).toMatchObject({ success: false, merged: true, decisionId: 'decision-1' });
+    expect(out.error).toContain('terminal linkage failed');
+  });
+
+  test('reconciles missing terminal linkage when GitHub already reports the exact PR merged', async () => {
+    let merges = 0;
+    let records = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+      mergePr: async () => { merges += 1; },
+      recordMergeDecision: async () => { records += 1; return { receiptId: 'receipt-recovered' }; },
+    }));
+
+    expect(out).toMatchObject({ success: true, merged: true, recovered: true, receiptId: 'receipt-recovered' });
+    expect(merges).toBe(0);
+    expect(records).toBe(1);
+  });
+
+  test('replays existing terminal evidence without regenerating retry-time receipts', async () => {
+    let decisions = 0;
+    let records = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+      verifyPrIssueBinding: async () => ({
+        bound: true,
+        repository: 'acme/forge',
+        terminalEvidence: {
+          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+        },
+      }),
+      prepareMergeDecision: async () => { decisions += 1; },
+      recordMergeDecision: async () => { records += 1; },
+    }));
+
+    expect(out).toMatchObject({
+      success: true, merged: true, recovered: true,
+      decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+    });
+    expect(decisions).toBe(0);
+    expect(records).toBe(0);
+  });
+
+  test('replays existing terminal evidence before provider state is available', async () => {
+    let fetches = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => { fetches += 1; throw new Error('GitHub unavailable'); },
+      verifyPrIssueBinding: async () => ({
+        bound: true,
+        repository: 'acme/forge',
+        terminalEvidence: {
+          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+        },
+      }),
+    }));
+
+    expect(out).toMatchObject({
+      success: true, merged: true, recovered: true,
+      decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+    });
+    expect(fetches).toBe(0);
+  });
+
+  test('does not claim a merge when pre-provider terminal replay authority fails', async () => {
+    let fetches = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => { fetches += 1; return context(); },
+      verifyPrIssueBinding: async () => ({ bound: false }),
+    }));
+
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(fetches).toBe(0);
+  });
+
+  test('fails closed on malformed retired terminal history before provider I/O', async () => {
+    const validTerminal = {
+      type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE, issue_revision: 7,
+      head_sha: HEAD, work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+    };
+    for (const iterations of [null, [validTerminal, { type: 'pr.merged' }]]) {
+      let fetches = 0;
+      const injected = deps({
+        fetchPrContext: async () => { fetches += 1; return context(); },
+        resolveLocalRepository: () => 'acme/forge',
+        buildPrBindingBroker: async () => ({
+          gitCommonDir: '/repo/.git',
+          broker: { readTrace: async () => ({ gaps: [], pull_requests: [{
+            repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+            git_common_dir: '/repo/.git', iterations,
+          }] }) },
+          driver: { close() {} },
+        }),
+      });
+      delete injected.verifyPrIssueBinding;
+
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+      expect(out).toMatchObject({ success: false, merged: false });
+      expect(fetches).toBe(0);
+    }
+  });
+
+  test('fails closed on malformed retired trace gap entries before provider I/O', async () => {
+    const terminal = {
+      type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE, issue_revision: 7,
+      head_sha: HEAD, work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+    };
+    for (const gaps of [
+      [{}],
+      ['bad'],
+      [42],
+      ['iterations::incomplete'],
+      ['pull_requests::unlinked_issue'],
+      ['iterations:pr:extra:incomplete'],
+      ['pull_requests:pr:extra:unlinked_issue'],
+    ]) {
+      let fetches = 0;
+      const injected = deps({
+        fetchPrContext: async () => { fetches += 1; return context(); },
+        resolveLocalRepository: () => 'acme/forge',
+        buildPrBindingBroker: async () => ({
+          gitCommonDir: '/repo/.git',
+          broker: { readTrace: async () => ({
+            gaps,
+            pull_requests: [{
+              id: 'pr-1', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+              git_common_dir: '/repo/.git', iterations: [terminal],
+            }],
+          }) },
+          driver: { close() {} },
+        }),
+      });
+      delete injected.verifyPrIssueBinding;
+
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+      expect(out).toMatchObject({ success: false, merged: false });
+      expect(fetches).toBe(0);
+    }
+  });
+
+  test('fails closed on incomplete retired trace gaps before provider I/O', async () => {
+    for (const gaps of [
+      ['iterations:pr-1:incomplete'],
+      ['iterations:pr-1:overflow'],
+      ['pull_requests:overflow'],
+    ]) {
+      let fetches = 0;
+      const injected = deps({
+        fetchPrContext: async () => { fetches += 1; return context(); },
+        resolveLocalRepository: () => 'acme/forge',
+        buildPrBindingBroker: async () => ({
+          gitCommonDir: '/repo/.git',
+          broker: { readTrace: async () => ({
+            gaps,
+            pull_requests: [{
+              id: 'pr-1', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+              git_common_dir: '/repo/.git',
+              iterations: [{
+                type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE,
+                issue_revision: 7, head_sha: HEAD,
+                work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+              }],
+            }],
+          }) },
+          driver: { close() {} },
+        }),
+      });
+      delete injected.verifyPrIssueBinding;
+
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+      expect(out).toMatchObject({ success: false, merged: false });
+      expect(fetches).toBe(0);
+    }
+  });
+
+  test('does not treat missing retired rows as clean absence when trace gaps are unreadable', async () => {
+    for (const gaps of [
+      null,
+      'bad',
+      {},
+      ['bad'],
+      [{}],
+      [42],
+      ['pull_requests:overflow'],
+      ['pull_requests:pr-1:unlinked_issue'],
+      ['iterations:pr-1:incomplete'],
+      ['iterations:pr-1:overflow'],
+    ]) {
+      let fetches = 0;
+      const injected = deps({
+        fetchPrContext: async () => { fetches += 1; return context(); },
+        resolveLocalRepository: () => 'acme/forge',
+        buildPrBindingBroker: async () => ({
+          gitCommonDir: '/repo/.git',
+          broker: { readTrace: async () => ({ gaps, pull_requests: [] }) },
+          driver: { close() {} },
+        }),
+      });
+      delete injected.verifyPrIssueBinding;
+
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+      expect(out).toMatchObject({ success: false, merged: false });
+      expect(fetches).toBe(0);
+    }
+  });
+
+  test('scopes provider-free terminal replay by the locally resolved repository', async () => {
+    let fetches = 0;
+    let traceTarget;
+    const terminal = {
+      type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE, issue_revision: 7,
+      head_sha: HEAD, work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+    };
+    const injected = deps({
+      fetchPrContext: async () => { fetches += 1; return context(); },
+      resolveLocalRepository: () => 'acme/forge',
+      buildPrBindingBroker: async () => ({
+        gitCommonDir: '/repo/.git',
+        broker: { readTrace: async (target) => {
+          traceTarget = target;
+          return { gaps: [], pull_requests: [{
+            id: 'current', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+            git_common_dir: '/repo/.git', iterations: [terminal],
+          }, {
+            id: 'renamed', repo: 'acme/old-forge', number: 42, issue_id: ISSUE, state: 'closed',
+            git_common_dir: '/repo/.git', iterations: [terminal],
+          }] };
+        } },
+        driver: { close() {} },
+      }),
+    });
+    delete injected.verifyPrIssueBinding;
+
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+    expect(out).toMatchObject({ success: true, merged: true, recovered: true });
+    expect(traceTarget).toMatchObject({ repo: 'acme/forge', git_common_dir: '/repo/.git' });
+    expect(fetches).toBe(0);
+  });
+
+  test('uses provider base repository authority when origin points to a fork', async () => {
+    let fetches = 0;
+    let merges = 0;
+    const injected = deps({
+      resolveLocalRepository: () => 'contributor/forge',
+      fetchPrContext: async () => {
+        fetches += 1;
+        return context({ repository: 'acme/forge' });
+      },
+      mergePr: async () => { merges += 1; return { merged: true }; },
+      buildPrBindingBroker: async () => ({
+        gitCommonDir: '/repo/.git',
+        broker: {
+          readTrace: async () => ({
+            gaps: ['issue', 'worktree', 'plan', 'pull_requests'],
+            pull_requests: [{
+              id: 'upstream', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open',
+              git_common_dir: '/repo/.git', iterations: [],
+            }],
+          }),
+          listOpenPrs: async () => [{
+            id: 'upstream', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open',
+            git_common_dir: '/repo/.git', iterations: [],
+          }],
+        },
+        driver: { close() {} },
+      }),
+    });
+    delete injected.verifyPrIssueBinding;
+
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+    expect(out).toMatchObject({ success: true, merged: true });
+    expect(fetches).toBe(2);
+    expect(merges).toBe(1);
+  });
+
+  test('fails closed before trace or provider I/O when the local repository is unreadable', async () => {
+    for (const resolveLocalRepository of [
+      () => null,
+      () => 'not-a-repository',
+      () => { throw new Error('origin unavailable'); },
+    ]) {
+      let fetches = 0;
+      let traceReads = 0;
+      const injected = deps({
+        fetchPrContext: async () => { fetches += 1; return context(); },
+        resolveLocalRepository,
+        buildPrBindingBroker: async () => ({
+          gitCommonDir: '/repo/.git',
+          broker: { readTrace: async () => {
+            traceReads += 1;
+            return { gaps: [], pull_requests: [{
+              repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+              git_common_dir: '/repo/.git', iterations: [{
+                type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE,
+                issue_revision: 7, head_sha: HEAD,
+                work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+              }],
+            }] };
+          } },
+          driver: { close() {} },
+        }),
+      });
+      delete injected.verifyPrIssueBinding;
+
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+      expect(out).toMatchObject({ success: false, merged: false });
+      expect(traceReads).toBe(0);
+      expect(fetches).toBe(0);
+    }
+  });
+
+  test('replays existing terminal evidence after merge without rechecking expired gate authority', async () => {
+    let gateChecks = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+      verifyPrIssueBinding: async () => ({
+        bound: true,
+        repository: 'acme/forge',
+        terminalEvidence: {
+          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+        },
+      }),
+      verifyMergeGate: async () => { gateChecks += 1; return false; },
+    }));
+
+    expect(out).toMatchObject({
+      success: true, merged: true, recovered: true,
+      decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+    });
+    expect(gateChecks).toBe(0);
+  });
+
+  test('keeps terminal evidence private when auto-merge is disabled', async () => {
+    let ownershipChecks = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      loadConfig: () => ({ merge: { auto: { enabled: false } } }),
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+      verifyIssueOwnership: async () => { ownershipChecks += 1; return { owned: false }; },
+      verifyPrIssueBinding: async () => ({
+        bound: true,
+        repository: 'acme/forge',
+        terminalEvidence: {
+          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+        },
+      }),
+    }));
+
+    expect(out).toMatchObject({ success: true, merged: false, enabled: false });
+    expect(out.decisionId).toBeUndefined();
+    expect(out.receiptId).toBeUndefined();
+    expect(ownershipChecks).toBe(0);
+  });
+
+  test('requires live ownership before exposing terminal evidence', async () => {
+    let ownershipChecks = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      verifyIssueOwnership: async () => {
+        ownershipChecks += 1;
+        return {
+          owned: false, actor: 'release-actor', claimedBy: 'release-actor',
+          sessionId: 'release-session', expired: true,
+        };
+      },
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+      verifyPrIssueBinding: async () => ({
+        bound: true,
+        repository: 'acme/forge',
+        terminalEvidence: {
+          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+        },
+      }),
+    }));
+
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(out.error).toMatch(/ownership|claim/i);
+    expect(out.decisionId).toBeUndefined();
+    expect(ownershipChecks).toBe(1);
+  });
+
+  test('requires live ownership before repairing missing terminal evidence', async () => {
+    let decisions = 0;
+    let records = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      verifyIssueOwnership: async () => ({
+        owned: false, actor: 'release-actor', claimedBy: 'release-actor',
+        sessionId: 'release-session', expired: true,
+      }),
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+      prepareMergeDecision: async () => { decisions += 1; },
+      recordMergeDecision: async () => { records += 1; },
+    }));
+
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(out.error).toMatch(/ownership|claim/i);
+    expect(decisions).toBe(0);
+    expect(records).toBe(0);
+  });
+
+  test('fails closed before recovery evidence when a disabled gate cannot satisfy the broker contract', async () => {
+    let decisions = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+      verifyMergeGate: async () => ({ success: true, disabled: true }),
+      prepareMergeDecision: async () => { decisions += 1; },
+    }));
+
+    expect(out).toMatchObject({ success: false, merged: true });
+    expect(out.error).toMatch(/disabled.*terminal authority/i);
+    expect(decisions).toBe(0);
+  });
+
+  test('default evidence binds the live issue revision and terminal merged linkage', async () => {
+    let issueEnv;
+    const decision = await mergeCmd.defaultPrepareMergeDecision({
+      issueId: ISSUE,
+      pr: 42,
+      expectedHead: HEAD,
+      repository: 'acme/forge',
+      binding: { branch: 'feature/merge', gitCommonDir: 'C:/repo/.git' },
+      actor: 'release-actor',
+      sessionId: 'release-session',
+      config: ENABLED,
+      projectRoot: process.cwd(),
+      now: '2026-08-01T12:00:00.000Z',
+      env: { PATH: '/trusted/bin', HOME: '/trusted/home', FORGE_ACTOR: 'ambient-actor' },
+      runIssue: async (_operation, _args, _root, options) => {
+        issueEnv = options.env;
+        return { ok: true, data: { revision: 7 } };
+      },
+    });
+    expect(issueEnv).toMatchObject({
+      PATH: '/trusted/bin', HOME: '/trusted/home', FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session',
+    });
+    expect(decision.packet.payload).toMatchObject({
+      issue_id: ISSUE,
+      expected_issue_revision: 7,
+      target_head: HEAD,
+      allowed_mutations: ['pr.merged'],
+      receipt_requirements: { gate_ids: ['gate.merge'] },
+    });
+
+    const calls = [];
+    const broker = Object.fromEntries(MEMORY_AUTHORITY_METHODS.map(method => [method, async () => ({})]));
+    broker.recordPrLinkage = async (...callArgs) => { calls.push(callArgs); return { success: true }; };
+    broker.recordOpenedPrLinkage = async () => ({ success: true });
+    broker.readTrace = async () => [];
+    const terminal = await mergeCmd.defaultRecordMergeDecision({
+      decision,
+      pr: 42,
+      expectedHead: HEAD,
+      repository: 'acme/forge',
+      projectRoot: process.cwd(),
+      buildBroker: async () => ({ broker }),
+    });
+
+    expect(terminal.receiptId).toBeString();
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toMatchObject({
+      phase: 'merged',
+      repo: 'acme/forge',
+      number: 42,
+      branch: 'feature/merge',
+      work_packet: decision.packet,
+      run_receipt: { payload: { exact_head: HEAD, mutations_authorized: ['pr.merged'] } },
+    });
+    expect(calls[0][1]).toEqual({
+      actor: 'release-actor',
+      sessionId: 'release-session',
+      requireExactLifecycleOwnership: true,
+    });
+
+    calls.length = 0;
+    await mergeCmd.defaultRecordMergeDecision({
+      decision,
+      mergeResult: { merged: true, recovered: true },
+      pr: 42,
+      expectedHead: HEAD,
+      repository: 'acme/forge',
+      projectRoot: process.cwd(),
+      buildBroker: async () => ({ broker }),
+    });
+    expect(calls[0][0].run_receipt.payload).toMatchObject({
+      executor: { mode: 'guarded-exact-head-recovery' },
+      mutations_attempted: ['pr.merged'],
+    });
+  });
+
+  test('refuses to construct broker-invalid terminal evidence for a disabled merge gate', async () => {
+    await expect(mergeCmd.defaultPrepareMergeDecision({
+      issueId: ISSUE,
+      pr: 42,
+      expectedHead: HEAD,
+      repository: 'acme/forge',
+      binding: { branch: 'feature/merge', gitCommonDir: 'C:/repo/.git' },
+      actor: 'release-actor',
+      sessionId: 'release-session',
+      requireMergeGate: false,
+      config: ENABLED,
+      projectRoot: process.cwd(),
+      now: '2026-08-01T12:00:00.000Z',
+      runIssue: async () => ({ ok: true, data: { revision: 7 } }),
+    })).rejects.toThrow(/disabled.*terminal authority/i);
+  });
+
+  test('fails closed before GitHub mutation when a disabled gate cannot satisfy terminal authority', async () => {
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      verifyMergeGate: async () => ({ success: true, disabled: true }),
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
+
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(out.error).toMatch(/disabled.*terminal authority/i);
+    expect(merges).toBe(0);
+  });
+
   test('requires one full expected head and issue before ownership or provider I/O', async () => {
     for (const argv of [
       ['42', '--auto', '--issue', ISSUE],
@@ -85,7 +744,7 @@ describe('merge command — mandatory release authority', () => {
     }
   });
 
-  test('requires an active Kernel claim owned by the resolved lane actor', async () => {
+  test('requires an active Kernel claim before provider state', async () => {
     let fetchCalls = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
       verifyIssueOwnership: async () => ({
@@ -99,6 +758,24 @@ describe('merge command — mandatory release authority', () => {
     expect(out.merged).toBe(false);
     expect(out.error).toMatch(/ownership|claim/i);
     expect(fetchCalls).toBe(0);
+  });
+
+  test('requires the live claim to carry the exact merge session before mutation', async () => {
+    let mergeCalls = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      verifyIssueOwnership: async () => ({
+        owned: true,
+        actor: 'release-actor',
+        claimedBy: 'release-actor',
+        sessionId: null,
+        expired: false,
+      }),
+      mergePr: async () => { mergeCalls += 1; return { merged: true }; },
+    }));
+
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(out.error).toMatch(/session/i);
+    expect(mergeCalls).toBe(0);
   });
 
   test('aborts when the first observed head does not match the caller lease', async () => {
@@ -171,7 +848,7 @@ describe('merge command — mandatory release authority', () => {
       verifyIssueOwnership: async () => {
         ownershipCalls += 1;
         return ownershipCalls === 1
-          ? { owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }
+          ? { owned: true, actor: 'release-actor', claimedBy: 'release-actor', sessionId: 'release-session', expired: false }
           : { owned: false, actor: 'other', claimedBy: 'other', expired: false };
       },
       mergePr: async () => { mergeCalls += 1; return { merged: true }; },
@@ -286,17 +963,40 @@ describe('merge command — mandatory release authority', () => {
   });
 
   test('default merge action uses GitHub server-side expected-head lease', () => {
-    let observed;
+    const observed = [];
     const out = mergeCmd.defaultMergePr({
       pr: '42',
       expectedHead: HEAD,
       repository: 'acme/forge',
-      gh: (argv) => { observed = argv; return ''; },
+      gh: (argv) => {
+        observed.push(argv);
+        if (argv[1] === 'view') return JSON.stringify({ state: 'MERGED', headRefOid: HEAD });
+        return '';
+      },
     });
     expect(out.merged).toBe(true);
     expect(observed).toEqual([
-      'pr', 'merge', '42', '--repo', 'acme/forge', '--squash', '--match-head-commit', HEAD,
+      ['pr', 'merge', '42', '--repo', 'acme/forge', '--squash', '--match-head-commit', HEAD],
+      ['pr', 'view', '42', '--repo', 'acme/forge', '--json', 'state,headRefOid'],
     ]);
+  });
+
+  test('default merge action does not confirm a merge-queue enrollment as merged', () => {
+    const calls = [];
+    const out = mergeCmd.defaultMergePr({
+      pr: '42',
+      expectedHead: HEAD,
+      repository: 'acme/forge',
+      gh: (argv) => {
+        calls.push(argv);
+        if (argv[1] === 'view') return JSON.stringify({ state: 'OPEN', headRefOid: HEAD });
+        return '';
+      },
+    });
+
+    expect(out).toMatchObject({ merged: false });
+    expect(out.reason).toMatch(/not confirmed/i);
+    expect(calls).toHaveLength(2);
   });
 
   test('default ownership verifier requires explicit identity and matching unexpired Kernel data', async () => {
@@ -341,6 +1041,103 @@ describe('merge command — mandatory release authority', () => {
     expect(foreign.owned).toBe(false);
   });
 
+  test('default ownership verifier requires one exact live claim session', async () => {
+    const runIssue = async (operation, _args, _root, { env }) => {
+      if (operation === 'owns') {
+        return {
+          ok: true,
+          data: {
+            owned: true, actor: env.FORGE_ACTOR, claimed_by: env.FORGE_ACTOR, expired: false,
+          },
+        };
+      }
+      return {
+        ok: true,
+        data: {
+          claims: [{ issue_id: ISSUE, actor: env.FORGE_ACTOR, session_id: null }],
+        },
+      };
+    };
+
+    const sessionless = await mergeCmd.defaultVerifyIssueOwnership({
+      issueId: ISSUE,
+      projectRoot: process.cwd(),
+      env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
+      runIssue,
+    });
+    expect(sessionless).toMatchObject({ owned: false, sessionId: null });
+
+    const exact = await mergeCmd.defaultVerifyIssueOwnership({
+      issueId: ISSUE,
+      projectRoot: process.cwd(),
+      env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
+      runIssue: async (operation, _args, _root, { env }) => operation === 'owns'
+        ? {
+          ok: true,
+          data: { owned: true, actor: env.FORGE_ACTOR, claimed_by: env.FORGE_ACTOR, expired: false },
+        }
+        : {
+          ok: true,
+          data: { claims: [{ issue_id: ISSUE, actor: env.FORGE_ACTOR, session_id: 'release-session' }] },
+        },
+    });
+    expect(exact).toMatchObject({ owned: true, sessionId: 'release-session' });
+  });
+
+  test('default fetch resolves a fork parent before reading PR context', async () => {
+    const seen = [];
+    const gh = (argv, options) => {
+      seen.push({ argv, options });
+      if (argv[0] === 'repo' && argv[1] === 'view') {
+        return JSON.stringify({
+          owner: { login: 'contributor' },
+          name: 'forge',
+          isFork: true,
+          parent: { nameWithOwner: 'acme/forge' },
+        });
+      }
+      if (argv[0] === 'pr' && argv[1] === 'view') {
+        return JSON.stringify({
+          number: 42,
+          headRefOid: HEAD,
+          baseRefName: null,
+          state: 'OPEN',
+          isDraft: false,
+          mergeable: 'MERGEABLE',
+          mergeStateStatus: 'CLEAN',
+          statusCheckRollup: [],
+          comments: [],
+          updatedAt: '2026-08-01T00:00:00Z',
+        });
+      }
+      if (argv[0] === 'api' && argv[1] === 'graphql') {
+        const queryArg = argv.find((arg) => String(arg).startsWith('query=')) || '';
+        if (queryArg.includes('reviews(first')) {
+          return JSON.stringify({
+            data: { repository: { pullRequest: { reviews: {
+              nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+            } } } },
+          });
+        }
+        return JSON.stringify({
+          data: { repository: { pullRequest: { reviewThreads: {
+            nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+          } } } },
+        });
+      }
+      throw new Error(`unexpected gh call: ${argv.join(' ')}`);
+    };
+
+    const out = await mergeCmd.defaultFetchPrContext({ pr: '42', projectRoot: '/workspace/forge', gh });
+
+    expect(out.repository).toBe('acme/forge');
+    expect(seen[0]).toEqual({
+      argv: ['repo', 'view', '--json', 'owner,name,isFork,parent'],
+      options: { cwd: '/workspace/forge' },
+    });
+    expect(seen[1].argv).toEqual(expect.arrayContaining(['pr', 'view', '42', '--repo', 'acme/forge']));
+  });
+
   test('default fetch exposes exact head and only authoritative protection requirements', async () => {
     const seen = [];
     const gh = (argv) => {
@@ -363,7 +1160,7 @@ describe('merge command — mandatory release authority', () => {
         });
       }
       if (argv[0] === 'repo' && argv[1] === 'view') {
-        return JSON.stringify({ owner: { login: 'acme' }, name: 'forge' });
+        return JSON.stringify({ owner: { login: 'acme' }, name: 'forge', isFork: false, parent: null });
       }
       if (argv[0] === 'api' && argv[1] === 'repos/acme/forge/branches/master/protection/required_status_checks') {
         return JSON.stringify({
@@ -414,6 +1211,6 @@ describe('merge command — mandatory release authority', () => {
       { id: 2, name: 'optional', appId: 999, status: 'COMPLETED', conclusion: 'SUCCESS' },
     ]);
     expect(out.requiredCheckSource).toBe('protection');
-    expect(seen[0].join(' ')).toContain('headRefOid');
+    expect(seen.find(argv => argv[0] === 'pr' && argv[1] === 'view').join(' ')).toContain('headRefOid');
   });
 });

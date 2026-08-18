@@ -42,9 +42,15 @@ function authorizedContext(overrides = {}) {
 }
 
 const AUTHORITY_DEPS = {
-  env: { FORGE_ACTOR: 'release-actor' },
-  verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
+  env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
+  resolveLocalRepository: () => 'acme/forge',
+  verifyIssueOwnership: async () => ({
+    owned: true, actor: 'release-actor', claimedBy: 'release-actor', sessionId: 'release-session', expired: false,
+  }),
   verifyPrIssueBinding: async () => ({ bound: true }),
+  verifyMergeGate: async () => true,
+  prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
+  recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
 };
 
 /** Create an isolated temp project; when `configObj` is given, write it to `.forge/config.yaml`. */
@@ -266,17 +272,16 @@ describe('merge command — opt-in conditional auto-merge', () => {
     expect((await mergeCmd.handler(['--auto'], {}, root, {})).success).toBe(false);
   });
 
-  test('pre-flight NO-OP (idempotent) when the PR is already MERGED', async () => {
+  test('pre-flight reconciles terminal evidence without a second merge when the PR is already MERGED', async () => {
     const root = makeProject({ merge: { auto: { enabled: true, rules: ['checks_green'] } } });
     let mergeCalled = false;
     const out = await mergeCmd.handler(mergeArgs('42'), {}, root, {
       ...AUTHORITY_DEPS,
-      fetchPrContext: async () => ({ state: 'MERGED' }),
+      fetchPrContext: async () => authorizedContext({ state: 'MERGED' }),
       mergePr: async () => { mergeCalled = true; },
     });
     expect(out.success).toBe(true);
-    expect(out.merged).toBe(false);
-    expect(out.state).toBe('MERGED');
+    expect(out).toMatchObject({ merged: true, recovered: true, receiptId: 'receipt-1' });
     expect(mergeCalled).toBe(false);
   });
 

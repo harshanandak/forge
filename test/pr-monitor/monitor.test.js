@@ -18,12 +18,156 @@ function snap(over = {}) {
   };
 }
 
+function memoryStore() {
+  const events = [];
+  const cursors = new Map();
+  return {
+    async appendEvent(event) {
+      const existing = events.find(item => item.payload.event_id === event.payload.event_id);
+      if (!existing) events.push(structuredClone(event));
+    },
+    async getEvent(id) {
+      const event = events.find(item => item.payload.event_id === id);
+      return event ? { envelope_json: JSON.stringify(event) } : null;
+    },
+    async readEventTail(monitorId, { limit = 128 } = {}) {
+      const matching = events.filter(event => event.payload.monitor_id === monitorId);
+      const selected = matching.slice(-limit);
+      return {
+        events: selected.map(event => ({
+          object_id: event.object_id,
+          content_hash: event.content_hash,
+          envelope_json: JSON.stringify(event),
+        })),
+        overflow: matching.length > limit,
+        truncated_before_sequence: matching.length > limit ? selected[0].payload.sequence : null,
+      };
+    },
+    async readDeliveryState(monitorId) {
+      return {
+        cursors: [...(cursors.get(monitorId) || new Map())]
+          .map(([target, sequence]) => ({ monitor_id: monitorId, target, sequence })),
+        outbox: [],
+        terminal_receipt: null,
+        overflow: { cursors: false, outbox: false },
+      };
+    },
+    async recordDeliveryReceipt(receipt) {
+      const event = events.find(item => item.payload.event_id === receipt.payload.event_id);
+      const monitorId = event.payload.monitor_id;
+      if (!cursors.has(monitorId)) cursors.set(monitorId, new Map());
+      cursors.get(monitorId).set(receipt.payload.target, event.payload.sequence);
+    },
+  };
+}
+
+function memoryContext(store, gather) {
+  return {
+    dir,
+    store,
+    gather,
+    now,
+    monitorId: 'pr:acme-forge:1',
+    ownerRunId: 'run-1',
+    packetId: 'packet-1',
+    subjectId: 'acme-forge#1',
+  };
+}
+
 let root; let dir;
 const now = () => '2026-07-13T00:00:00.000Z';
 beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'prmon-m-')); dir = journal.journalDir({ root, repo: 'acme-forge', pr: '1' }); });
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('runMonitorPass', () => {
+	test('test Memory store reports bounded monitor-specific tails', async () => {
+		const store = memoryStore();
+		for (let sequence = 1; sequence <= 3; sequence += 1) {
+			await store.appendEvent({
+				object_id: `event-${sequence}`, content_hash: `hash-${sequence}`,
+				payload: { monitor_id: 'monitor-a', event_id: `id-${sequence}`, sequence },
+			});
+		}
+		await store.appendEvent({
+			object_id: 'other', content_hash: 'other-hash',
+			payload: { monitor_id: 'monitor-b', event_id: 'other-id', sequence: 1 },
+		});
+
+		const tail = await store.readEventTail('monitor-a', { limit: 2 });
+		expect(tail).toMatchObject({ overflow: true, truncated_before_sequence: 2 });
+		expect(tail.events.map(row => JSON.parse(row.envelope_json).payload.sequence)).toEqual([2, 3]);
+	});
+
+  test('uses durable Memory as authority when a monitor store is supplied', async () => {
+    const store = memoryStore();
+    const ctx = memoryContext(store, async () => snap());
+
+    const first = await runMonitorPass(ctx);
+    fs.rmSync(journal.snapshotPath(dir));
+    const restarted = await runMonitorPass(ctx);
+
+    expect(first.authority).toBe('memory');
+    expect(restarted.events).toEqual([]);
+    expect((await store.readEventTail(ctx.monitorId)).events).toHaveLength(1);
+    expect(journal.readAllEvents(dir)).toHaveLength(1);
+  });
+
+  test('Memory compatibility delivery continues after an existing journal cursor', async () => {
+    journal.appendEvents(dir, [{
+      seq: 40, ts: now(), type: T.VERDICT_CHANGED, key: 'legacy',
+      repo: 'acme-forge', pr: '1', headSha: 'old', data: {},
+    }]);
+
+    await runMonitorPass(memoryContext(memoryStore(), async () => snap()));
+
+    const delivered = journal.readEventsSince(dir, 40);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].seq).toBe(41);
+  });
+
+  test('returns the lock-protected compatibility cursor for watch consumers', async () => {
+    journal.appendEvents(dir, [{
+      seq: 40, ts: now(), type: T.VERDICT_CHANGED, key: 'legacy',
+      repo: 'acme-forge', pr: '1', headSha: 'old', data: {},
+    }]);
+
+    const result = await runMonitorPass(memoryContext(memoryStore(), async () => snap()));
+
+    expect(result.journalCursor).toBe(40);
+    expect(journal.readEventsSince(dir, result.journalCursor)).toHaveLength(1);
+  });
+
+  test('Memory compatibility delivery preserves recurring event identities', async () => {
+    const store = memoryStore();
+    const current = { value: snap({ headSha: 'shaX', checks: [{ name: 'ci', class: 'green' }] }) };
+    const ctx = memoryContext(store, async () => current.value);
+    await runMonitorPass(ctx);
+    current.value = snap({ headSha: 'shaX', checks: [{ name: 'ci', class: 'failed' }] });
+    await runMonitorPass(ctx);
+    current.value = snap({ headSha: 'shaX', checks: [{ name: 'ci', class: 'green' }] });
+    await runMonitorPass(ctx);
+    current.value = snap({ headSha: 'shaX', checks: [{ name: 'ci', class: 'failed' }] });
+    await runMonitorPass(ctx);
+
+    const checkEvents = journal.readAllEvents(dir)
+      .filter(event => event.type === T.CHECK_FAILED || event.type === T.CHECK_RECOVERED)
+      .map(event => event.type);
+    expect(checkEvents).toEqual([T.CHECK_FAILED, T.CHECK_RECOVERED, T.CHECK_FAILED]);
+  });
+
+  test('Memory compatibility redelivery is idempotent after a receipt-write crash', async () => {
+    const store = memoryStore();
+    const recordReceipt = store.recordDeliveryReceipt;
+    store.recordDeliveryReceipt = async () => { throw new Error('receipt crash'); };
+    const ctx = memoryContext(store, async () => snap());
+    await expect(runMonitorPass(ctx)).rejects.toThrow('Monitor durability provider unavailable');
+    expect(journal.readAllEvents(dir)).toHaveLength(1);
+
+    store.recordDeliveryReceipt = recordReceipt;
+    await runMonitorPass(ctx);
+    expect(journal.readAllEvents(dir)).toHaveLength(1);
+  });
+
   test('first pass appends the baseline event and persists the snapshot', async () => {
     const res = await runMonitorPass({ dir, gather: async () => snap(), now });
     expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
@@ -126,5 +270,43 @@ describe('pollEvents (events --since)', () => {
     const res = await pollEvents({ dir, gather: async () => snap(), since: 0, now, watcherRunning: () => false });
     expect(res.ranPass).toBe(true);
     expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
+  });
+
+  test('caps returned deltas and reports overflow instead of returning whole history', async () => {
+    const records = Array.from({ length: 140 }, (_, index) => ({
+      seq: index + 1,
+      ts: '2026-07-13T00:00:00.000Z',
+      type: T.VERDICT_CHANGED,
+      key: `state:${index}`,
+      repo: 'acme-forge',
+      pr: '1',
+      data: {},
+    }));
+    journal.appendEvents(dir, records);
+    const res = await pollEvents({
+      dir,
+      gather: async () => { throw new Error('must not run'); },
+      since: 0,
+      watcherRunning: () => true,
+    });
+
+    expect(res.overflow).toBe(true);
+    expect(res.events).toHaveLength(128);
+    expect(res.events[0].seq).toBe(13);
+  });
+
+  test('propagates durable continuation separately from journal overflow', async () => {
+    const store = memoryStore();
+    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let current = snap({ checks });
+    const ctx = memoryContext(store, async () => current);
+    await runMonitorPass(ctx);
+    current = snap({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+
+    const res = await pollEvents({ ...ctx, since: 0, watcherRunning: () => false });
+
+    expect(res.continuationPending).toBe(true);
+    expect(res.receiptIds).toHaveLength(128);
+    expect(res.receiptIds.length).toBeLessThanOrEqual(128);
   });
 });

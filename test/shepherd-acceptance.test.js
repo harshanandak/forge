@@ -56,6 +56,7 @@ function scriptedAdapter(steps) {
           const err = new Error('lease'); err.leaseRejected = true; throw err;
         }
         actions.push({ type: 'rebase', ...a });
+        return { previousHead: a.expectedHead, headSha: cur().rebasedHead || 'b'.repeat(40) };
       },
       async readComments() { return cur().comments || []; },
     },
@@ -98,6 +99,7 @@ describe('shepherd acceptance §5', () => {
     ]);
     const okRes = await runShepherdPass({ ...BASE_CTX, adapter: ok.adapter, autoRebase: true, cleanTree: true });
     expect(okRes.state).toBe('PENDING');
+    expect(okRes.expectedHead).toBe('b'.repeat(40));
     expect(ok.actions.filter((a) => a.type === 'rebase')).toHaveLength(1);
 
     const lease = scriptedAdapter([
@@ -236,7 +238,12 @@ describe('shepherd acceptance §5', () => {
     const s = scriptedAdapter([{ required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }], behind: 0 }]);
     const out = await shepherdCmd.handler(['123'], {}, ROOT, {
       adapter: s.adapter,
-      buildContext: async () => BASE_CTX,
+      buildContext: async () => ({ ...BASE_CTX, headSha: 'a'.repeat(40), localHead: 'a'.repeat(40) }),
+      git: (_command, args) => (args[0] === 'rev-parse' ? `${'a'.repeat(40)}\n` : ''),
+      runLocalPreflight: async () => ({ status: 'PASS', blocking: false, providers: {}, findings: [] }),
+      collectConvergenceEvidence: async () => ({
+        deltas: [], deltaOverflow: false, receiptIds: [], exactHead: 'a'.repeat(40),
+      }),
     });
     expect(out.state).toBe('MERGE_READY');
     expect((out.actions || []).some((a) => a.type === 'merge')).toBe(false);

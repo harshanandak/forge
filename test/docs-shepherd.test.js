@@ -37,4 +37,11 @@ describe('shepherd documentation', () => {
     expect(/never resolves/i.test(doc)).toBe(true);
     expect(/gh pr merge/.test(doc)).toBe(false);
   });
+
+  test('documents INCOMPLETE consistently in the reference and canonical skill verdict tables', () => {
+    for (const file of ['docs/reference/shepherd.md', 'skills/shepherd/SKILL.md']) {
+      const text = read(file);
+      expect(/\| `INCOMPLETE`\s+\|/.test(text)).toBe(true);
+    }
+  });
 });

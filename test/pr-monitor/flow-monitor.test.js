@@ -1,0 +1,1384 @@
+'use strict';
+
+const { describe, expect, test } = require('bun:test');
+const crypto = require('node:crypto');
+const zlib = require('node:zlib');
+
+const { _internals, runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
+const { computeContentHash } = require('../../packages/memory-contracts');
+
+function snapshot(overrides = {}) {
+  return {
+    repo: 'owner/forge',
+    pr: '42',
+    headSha: 'a'.repeat(40),
+    state: 'OPEN',
+    checks: [],
+    threads: [],
+    reviews: [],
+    comments: [],
+    verdict: { state: 'BLOCKED-CHECKS', reason: 'pending' },
+    ...overrides,
+  };
+}
+
+function durableStore() {
+  const events = [];
+  const cursors = new Map();
+  const terminalReceipts = new Map();
+  let outboxOverflow = false;
+  return {
+    events,
+    setCursor(target, sequence, monitorId = 'pr:owner/forge:42') {
+      if (!cursors.has(monitorId)) cursors.set(monitorId, new Map());
+      cursors.get(monitorId).set(target, sequence);
+    },
+    setOutboxOverflow(value) { outboxOverflow = value; },
+    get terminalReceipt() { return terminalReceipts.values().next().value || null; },
+    async appendEvent(event, targets) {
+      const existing = events.find((item) => item.payload.monitor_id === event.payload.monitor_id
+        && (item.payload.event_id === event.payload.event_id
+          || item.payload.sequence === event.payload.sequence));
+      if (existing) {
+        if (existing.content_hash !== event.content_hash) {
+          const error = new Error('identity conflict');
+          error.code = 'MONITOR_EVENT_CONFLICT';
+          throw error;
+        }
+        return { idempotent: true };
+      }
+      events.push(structuredClone(event));
+      return { idempotent: false, targets };
+    },
+    async getEvent(eventId) {
+      const event = events.find(item => item.payload.event_id === eventId);
+      return event ? { envelope_json: JSON.stringify(event) } : null;
+    },
+    async readEventTail(monitorId, { limit }) {
+      const matching = events.filter(event => event.payload.monitor_id === monitorId);
+      const selected = matching.slice(-limit);
+      return {
+        events: selected.map(event => ({
+          event_id: event.payload.event_id,
+          monitor_id: event.payload.monitor_id,
+          sequence: event.payload.sequence,
+          content_hash: event.content_hash,
+          envelope_json: JSON.stringify(event),
+        })),
+        overflow: matching.length > limit,
+        truncated_before_sequence: matching.length > limit ? selected[0].payload.sequence : null,
+      };
+    },
+    async readDeliveryState(monitorId) {
+      return {
+        cursors: [...(cursors.get(monitorId) || new Map()).entries()]
+          .map(([target, sequence]) => ({ monitor_id: monitorId, target, sequence })),
+        outbox: [],
+        terminal_receipt: terminalReceipts.get(monitorId) ? {
+          monitor_id: monitorId,
+          content_hash: terminalReceipts.get(monitorId).content_hash,
+          envelope_json: JSON.stringify(terminalReceipts.get(monitorId)),
+        } : null,
+        overflow: { cursors: false, outbox: outboxOverflow },
+      };
+    },
+    async recordDeliveryReceipt(receipt) {
+      const event = events.find(item => item.payload.event_id === receipt.payload.event_id);
+      if (!cursors.has(event.payload.monitor_id)) cursors.set(event.payload.monitor_id, new Map());
+      cursors.get(event.payload.monitor_id).set(receipt.payload.target, event.payload.sequence);
+      return { idempotent: false };
+    },
+    async recordTerminalReceipt(receipt) {
+      const prior = terminalReceipts.get(receipt.payload.monitor_id);
+      if (prior && prior.content_hash !== receipt.content_hash) {
+        throw new Error('monitor receipt conflict');
+      }
+      terminalReceipts.set(receipt.payload.monitor_id, structuredClone(receipt));
+      return { idempotent: Boolean(prior) };
+    },
+  };
+}
+
+function context(store, gather, deliverLegacy) {
+  return {
+    monitorId: 'pr:owner/forge:42',
+    ownerRunId: 'run-42',
+    packetId: 'packet-42',
+    subjectId: 'owner/forge#42',
+    store,
+    gather,
+    deliverLegacy,
+    now: () => '2026-08-12T12:00:00.000Z',
+  };
+}
+
+async function seedHistory(store, count) {
+  await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
+  const template = store.events[0];
+  for (let sequence = 2; sequence <= count; sequence += 1) {
+    const event = structuredClone(template);
+    event.object_id = `00000000-0000-4000-8000-${sequence.toString(16).padStart(12, '0')}`;
+    event.payload.event_id = sequence.toString(16).padStart(64, '0');
+    event.payload.sequence = sequence;
+    event.payload.bounded_payload.record.seq = sequence;
+    event.payload.bounded_payload.snapshot.headSha = sequence.toString(16).padStart(40, '0');
+    event.content_hash = computeContentHash(event);
+    store.events.push(event);
+  }
+  store.setCursor('legacy-journal', count);
+}
+
+describe('Flow-backed PR monitor authority', () => {
+  test('persists through public Memory before legacy journal delivery and ignores legacy snapshot authority', async () => {
+    const store = durableStore();
+    const order = [];
+    const next = snapshot();
+    const result = await runFlowMonitorPass(context(
+      store,
+      async () => next,
+      async record => {
+        expect(store.events.some(event => event.payload.sequence === record.seq)).toBe(true);
+        order.push(`legacy:${record.seq}`);
+      },
+    ));
+
+    expect(result.events).toHaveLength(1);
+    expect(store.events).toHaveLength(1);
+    expect(order).toEqual(['legacy:1']);
+    expect(result.authority).toBe('memory');
+  });
+
+  test('reconstructs the prior snapshot from durable events after restart and emits no duplicate', async () => {
+    const store = durableStore();
+    const next = snapshot();
+    const delivered = [];
+    await runFlowMonitorPass(context(store, async () => next, async record => delivered.push(record)));
+
+    const restarted = await runFlowMonitorPass(context(
+      store,
+      async () => structuredClone(next),
+      async record => delivered.push(record),
+    ));
+
+    expect(restarted.events).toEqual([]);
+    expect(store.events).toHaveLength(1);
+    expect(delivered).toHaveLength(1);
+  });
+
+  test('normalizes a legacy raw snapshot before comparing compact transition identities', async () => {
+    const store = durableStore();
+    const current = snapshot({
+      checks: [{ name: 'Windows / test', class: 'failed' }],
+      reviews: [{ author: 'coderabbitai', state: 'COMMENTED', commitOid: 'a'.repeat(40), submittedAt: 't1' }],
+    });
+    const delivered = [];
+    await runFlowMonitorPass(context(store, async () => current, async record => delivered.push(record)));
+
+    const event = store.events.at(-1);
+    event.payload.bounded_payload.snapshot = structuredClone(current);
+    event.content_hash = computeContentHash(event);
+    const before = delivered.length;
+
+    const restarted = await runFlowMonitorPass(context(
+      store, async () => structuredClone(current), async record => delivered.push(record),
+    ));
+
+    expect(restarted.events.map(record => record.type)).not.toContain('check.failed');
+    expect(restarted.events.map(record => record.type)).not.toContain('review.submitted');
+    expect(delivered).toHaveLength(before);
+  });
+
+  test('does not checkpoint when only the gzip representation of snapshot evidence changes', async () => {
+    const store = durableStore();
+    const current = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
+    await runFlowMonitorPass(context(store, async () => current, async () => {}));
+    const before = store.events.length;
+    const event = store.events.at(-1);
+    const evidence = zlib.gunzipSync(_internals.decodePrivateSafeBase64(
+      event.payload.bounded_payload.snapshot._snapshotEvidence,
+    ));
+    event.payload.bounded_payload.snapshot._snapshotEvidence = _internals.encodePrivateSafeBase64(
+      zlib.gzipSync(evidence, { level: 1 }),
+    );
+    event.content_hash = computeContentHash(event);
+
+    const restarted = await runFlowMonitorPass(context(store, async () => current, async () => {}));
+
+    expect(restarted.events).toEqual([]);
+    expect(store.events).toHaveLength(before);
+  });
+
+  test('fails closed without writing legacy compatibility state when Memory is unavailable', async () => {
+    const store = durableStore();
+    store.appendEvent = async () => {
+      const error = new Error('provider unavailable');
+      error.code = 'MONITOR_UNAVAILABLE';
+      throw error;
+    };
+    let deliveries = 0;
+
+    await expect(runFlowMonitorPass(context(store, async () => snapshot(), async () => { deliveries += 1; })))
+      .rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(deliveries).toBe(0);
+  });
+
+  test('recovers the remaining transition records after a mid-batch append failure', async () => {
+    const store = durableStore();
+    const appendEvent = store.appendEvent.bind(store);
+    let appends = 0;
+    store.appendEvent = async (...args) => {
+      appends += 1;
+      if (appends === 2) throw new Error('mid-batch storage failure');
+      return appendEvent(...args);
+    };
+    const delivered = [];
+    const merged = snapshot({ prState: 'MERGED' });
+    const ctx = context(store, async () => merged, async record => delivered.push(record));
+
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(store.events.map(event => event.payload.type)).toEqual(['verdict.changed']);
+    expect(store.events[0].payload.bounded_payload.snapshot).toBeNull();
+
+    store.appendEvent = appendEvent;
+    ctx.gather = async () => { throw new Error('pending recovery must precede changed provider state'); };
+    const resumed = await runFlowMonitorPass(ctx);
+
+    expect(resumed.events.map(event => event.type)).toEqual(['pr.merged']);
+    expect(delivered.map(event => event.type)).toEqual(['verdict.changed', 'pr.merged']);
+    expect(resumed.terminalReceiptId).toBeString();
+  });
+
+  test('recovers an accepted transition batch larger than the retained history tail', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let next = snapshot({ checks });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    const appendEvent = store.appendEvent;
+    let appends = 0;
+    store.appendEvent = async (...args) => {
+      appends += 1;
+      if (appends === 2) throw new Error('mid-batch storage failure');
+      return appendEvent(...args);
+    };
+
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    store.appendEvent = appendEvent;
+    ctx.gather = async () => { throw new Error('accepted batch recovery must precede provider state'); };
+
+    const resumed = await runFlowMonitorPass(ctx);
+    const completed = await runFlowMonitorPass(ctx);
+
+    expect(resumed.events).toHaveLength(128);
+    expect(completed.events).toHaveLength(1);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+  });
+
+  test('bounds a captured transition across restart-safe passes before gathering again', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let next = snapshot({ checks });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    const first = await runFlowMonitorPass(ctx);
+    expect(first.events).toHaveLength(128);
+    expect(first.receiptIds.length).toBeLessThanOrEqual(128);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(false);
+
+    ctx.gather = async () => { throw new Error('captured continuation must precede provider state'); };
+    const second = await runFlowMonitorPass(ctx);
+    expect(second.events).toHaveLength(2);
+    expect(second.receiptIds.length).toBeLessThanOrEqual(128);
+    expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(130);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+  });
+
+  test('recovers a high-entropy transition whose recovery evidence requires multiple bounded manifests', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 128 }, (_, index) => ({
+      name: Array.from({ length: 4 }, (_value, salt) => computeContentHash({ index, salt })).join(''),
+      class: 'green',
+    }));
+    let next = snapshot({ checks });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    const appendEvent = store.appendEvent.bind(store);
+    let checkAppends = 0;
+    store.appendEvent = async (...args) => {
+      if (args[0].payload.type === 'check.failed') {
+        checkAppends += 1;
+        if (checkAppends === 2) throw new Error('mid-transition storage failure');
+      }
+      return appendEvent(...args);
+    };
+
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    const acceptedEvents = structuredClone(store.events);
+    store.appendEvent = appendEvent;
+    ctx.gather = async () => { throw new Error('accepted transition recovery must precede provider state'); };
+
+    const resumed = await runFlowMonitorPass(ctx);
+    const manifests = store.events
+      .map(event => event.payload.bounded_payload.pending_batch)
+      .filter(Boolean);
+
+    expect(resumed.events).toHaveLength(127);
+    expect(delivered.filter(event => event.type === 'check.failed')).toHaveLength(128);
+    expect(Math.max(...manifests.map(value => value.length))).toBeLessThanOrEqual(12_000);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+
+    const segmentEvents = store.events.filter(event => Number.isSafeInteger(
+      event.payload.bounded_payload.batch_plan?.index,
+    ));
+    const marker = store.events.find(event => event.payload.bounded_payload.batch_plan?.committed === true);
+    const actualEvents = store.events.filter(event => event.payload.type === 'check.failed');
+    const decodedSegments = segmentEvents.map(event => JSON.parse(zlib.gunzipSync(
+      _internals.decodePrivateSafeBase64(event.payload.bounded_payload.pending_batch),
+    )));
+    expect(segmentEvents.length).toBeGreaterThan(1);
+    expect(segmentEvents.map(event => event.payload.bounded_payload.batch_plan.index))
+      .toEqual(segmentEvents.map((_event, index) => index));
+    expect(marker.payload.sequence).toBe(segmentEvents.at(-1).payload.sequence + 1);
+    expect(segmentEvents.every(event => !/[\-_Aa]/.test(
+      event.payload.bounded_payload.pending_batch,
+    ))).toBe(true);
+    expect(actualEvents[0].payload.sequence).toBe(marker.payload.sequence + 1);
+    expect(actualEvents.map(event => event.payload.sequence))
+      .toEqual(actualEvents.map((_event, index) => actualEvents[0].payload.sequence + index));
+    let boundary = 0;
+    for (const [segmentIndex, decoded] of decodedSegments.entries()) {
+      for (const event of actualEvents.slice(boundary, boundary + decoded.records.length)) {
+        expect(event.payload.bounded_payload.batch_plan.segment_index).toBe(segmentIndex);
+      }
+      boundary += decoded.records.length;
+    }
+    expect(boundary).toBe(actualEvents.length);
+    expect(JSON.stringify(segmentEvents)).not.toContain(checks[0].name);
+
+    const markerTampered = durableStore();
+    markerTampered.events.push(...structuredClone(acceptedEvents));
+    const unsafeMarker = markerTampered.events.find(
+      event => event.payload.bounded_payload.batch_plan?.committed === true,
+    );
+    markerTampered.setCursor('legacy-journal', unsafeMarker.payload.sequence - 1);
+    unsafeMarker.payload.actionability = 'action_required';
+    unsafeMarker.content_hash = computeContentHash(unsafeMarker);
+    const markerLeaks = [];
+    await expect(runFlowMonitorPass(context(
+      markerTampered,
+      async () => { throw new Error('tampered commit marker must not gather'); },
+      async record => markerLeaks.push(record),
+    ))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+    expect(markerLeaks).toHaveLength(0);
+
+    const segmentTampered = durableStore();
+    segmentTampered.events.push(...structuredClone(acceptedEvents));
+    const unsafeSegment = segmentTampered.events.find(
+      event => Number.isSafeInteger(event.payload.bounded_payload.batch_plan?.index),
+    );
+    segmentTampered.setCursor('legacy-journal', unsafeSegment.payload.sequence - 1);
+    unsafeSegment.payload.actionability = 'action_required';
+    unsafeSegment.content_hash = computeContentHash(unsafeSegment);
+    const segmentLeaks = [];
+    await expect(runFlowMonitorPass(context(
+      segmentTampered,
+      async () => { throw new Error('tampered plan segment must not gather'); },
+      async record => segmentLeaks.push(record),
+    ))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+    expect(segmentLeaks).toHaveLength(0);
+
+    const tamperMarker = (events, tamper) => {
+      const marker = events.find(event => event.payload.bounded_payload.batch_plan?.committed === true);
+      tamper(marker);
+      marker.content_hash = computeContentHash(marker);
+    };
+    const tamperSegment = (events, tamper) => {
+      const segment = events.find(event => Number.isSafeInteger(event.payload.bounded_payload.batch_plan?.index));
+      tamper(segment);
+      segment.content_hash = computeContentHash(segment);
+    };
+    const tamperCases = [
+      events => tamperMarker(events, marker => { marker.payload.event_id = '0'.repeat(64); }),
+      events => tamperMarker(events, marker => { marker.payload.type = 'check.failed'; }),
+      events => tamperMarker(events, marker => { marker.payload.bounded_payload.record.key = 'wrong'; }),
+      events => tamperMarker(events, marker => { marker.payload.bounded_payload.record.seq += 1; }),
+      events => tamperMarker(events, marker => { marker.payload.bounded_payload.snapshot = {}; }),
+      events => tamperMarker(events, marker => { marker.payload.bounded_payload.checkpoint_complete = true; }),
+      events => tamperMarker(events, marker => { marker.payload.bounded_payload.pending_batch = 'tampered'; }),
+      events => tamperSegment(events, segment => { segment.payload.event_id = '0'.repeat(64); }),
+      events => tamperSegment(events, segment => { segment.payload.type = 'check.failed'; }),
+      events => tamperSegment(events, segment => { segment.payload.bounded_payload.record.key = 'wrong'; }),
+      events => tamperSegment(events, segment => { segment.payload.bounded_payload.record.seq += 1; }),
+      events => tamperSegment(events, segment => { segment.payload.bounded_payload.snapshot = {}; }),
+      events => tamperSegment(events, segment => { segment.payload.bounded_payload.checkpoint_complete = true; }),
+      events => tamperSegment(events, segment => { segment.payload.bounded_payload.batch_plan.committed = true; }),
+      (events) => {
+        const segment = events.find(event => Number.isSafeInteger(event.payload.bounded_payload.batch_plan?.index));
+        segment.payload.bounded_payload.batch_plan.index += 1;
+        segment.content_hash = computeContentHash(segment);
+      },
+      (events) => {
+        const segment = events.find(event => event.payload.bounded_payload.pending_batch);
+        const value = segment.payload.bounded_payload.pending_batch;
+        segment.payload.bounded_payload.pending_batch = `${value[0] === 'A' ? 'B' : 'A'}${value.slice(1)}`;
+        segment.content_hash = computeContentHash(segment);
+      },
+      (events) => {
+        const actual = events.find(event => event.payload.type === 'check.failed');
+        actual.payload.bounded_payload.batch_plan.id = '0'.repeat(64);
+        actual.content_hash = computeContentHash(actual);
+      },
+      (events) => {
+        for (const event of events.filter(item => item.payload.bounded_payload.batch_plan)) {
+          event.payload.bounded_payload.batch_plan.id = 'invalid';
+          event.content_hash = computeContentHash(event);
+        }
+      },
+      (events) => {
+        const actual = events.find(event => event.payload.type === 'check.failed');
+        actual.payload.sequence += 1;
+        actual.content_hash = computeContentHash(actual);
+      },
+      (events) => {
+        const actual = events.find(event => event.payload.type === 'check.failed');
+        actual.payload.actionability = 'advisory';
+        actual.content_hash = computeContentHash(actual);
+      },
+      (events) => {
+        const markerIndex = events.findIndex(event => event.payload.bounded_payload.batch_plan?.committed === true);
+        events.splice(markerIndex, 1);
+      },
+    ];
+    for (const tamper of tamperCases) {
+      const tampered = durableStore();
+      tampered.events.push(...structuredClone(acceptedEvents));
+      tampered.setCursor('legacy-journal', tampered.events.at(-1).payload.sequence);
+      tamper(tampered.events);
+      await expect(runFlowMonitorPass(context(
+        tampered,
+        async () => { throw new Error('tampered accepted plan must not gather'); },
+        async () => {},
+      ))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+    }
+
+    const missingPlan = durableStore();
+    const retainedActual = structuredClone(actualEvents);
+    retainedActual.at(-1).payload.bounded_payload.checkpoint_complete = false;
+    retainedActual.at(-1).payload.bounded_payload.snapshot = null;
+    retainedActual.at(-1).content_hash = computeContentHash(retainedActual.at(-1));
+    missingPlan.events.push(...retainedActual);
+    missingPlan.setCursor('legacy-journal', retainedActual[0].payload.sequence - 1);
+    missingPlan.getEvent = undefined;
+    const leaked = [];
+    await expect(runFlowMonitorPass(context(
+      missingPlan,
+      async () => { throw new Error('committed plan loss must not gather'); },
+      async record => leaked.push(record),
+    ))).rejects.toMatchObject({
+      code: 'MONITOR_HISTORY_INCOMPLETE',
+      message: 'Durable monitor transition plan marker is missing',
+    });
+    expect(leaked).toHaveLength(0);
+
+    const finalTampered = durableStore();
+    finalTampered.events.push(...structuredClone(store.events));
+    const finalEvent = finalTampered.events.at(-1);
+    finalTampered.setCursor('legacy-journal', finalEvent.payload.sequence - 1);
+    finalEvent.payload.actionability = 'advisory';
+    finalEvent.content_hash = computeContentHash(finalEvent);
+    const finalLeaks = [];
+    await expect(runFlowMonitorPass(context(
+      finalTampered,
+      async () => { throw new Error('unacknowledged final plan event must be proven before gather'); },
+      async record => finalLeaks.push(record),
+    ))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+    expect(finalLeaks).toHaveLength(0);
+  }, 30_000);
+
+  test('segments a transition that exceeds the decoded recovery bound before compression', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 128 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let next = snapshot({ checks });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    ctx.enrich = async records => {
+      for (const [index, record] of records.entries()) {
+        record.repo = `owner/${index}-${'x'.repeat(3_000)}`;
+      }
+    };
+
+    const first = await runFlowMonitorPass(ctx);
+    expect(first.receiptIds.length).toBeLessThanOrEqual(128);
+    if (store.events.at(-1).payload.bounded_payload.checkpoint_complete === false) {
+      ctx.gather = async () => { throw new Error('segmented continuation must precede provider state'); };
+      const resumed = await runFlowMonitorPass(ctx);
+      expect(resumed.receiptIds.length).toBeLessThanOrEqual(128);
+    }
+
+    const segments = store.events.filter(event => event.payload.bounded_payload.pending_batch);
+    expect(segments.length).toBeGreaterThan(1);
+    expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(128);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+  }, 30_000);
+
+  test('accepts exactly 128 recovery-plan segments and rejects a 129th', () => {
+    const batches = [];
+    for (let index = 0; index < 128; index += 1) {
+      _internals.appendPendingBatch(batches, { index });
+    }
+    expect(batches).toHaveLength(128);
+    expect(() => _internals.appendPendingBatch(batches, { index: 128 }))
+      .toThrow('Pending monitor transition plan exceeds its segment bound');
+    expect(batches).toHaveLength(128);
+  });
+
+  test('continues a complete 128-segment pre-commit plan before provider observation', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 128 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let next = snapshot({ checks });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    ctx.enrich = async records => {
+      for (const [index, record] of records.entries()) {
+        record.repo = `owner/${index}-${Array.from(
+          { length: 160 },
+          (_value, salt) => crypto.createHash('sha256')
+            .update(`${index}:${salt}`)
+            .digest('base64url')
+            .replace(/[-_A]/g, '.'),
+        ).join('')}`;
+      }
+    };
+
+    const prepared = await runFlowMonitorPass(ctx);
+    expect(prepared).toMatchObject({ continuationPending: true });
+    expect(prepared.receiptIds).toHaveLength(128);
+    expect(store.events.filter(event => Number.isSafeInteger(
+      event.payload.bounded_payload.batch_plan?.index,
+    ))).toHaveLength(128);
+    expect(store.events.some(event => event.payload.bounded_payload.batch_plan?.committed === true)).toBe(false);
+
+    ctx.gather = async () => { throw new Error('complete pre-commit continuation must precede provider state'); };
+    const committed = await runFlowMonitorPass(ctx);
+    const completed = await runFlowMonitorPass(ctx);
+
+    expect(committed.receiptIds).toHaveLength(128);
+    expect(committed.events).toHaveLength(127);
+    expect(committed).toMatchObject({ continuationPending: true });
+    expect(completed.events).toHaveLength(1);
+    expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(128);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+  }, 30_000);
+
+  test('fails closed when segmented recovery has no remaining records', () => {
+    expect(() => _internals.remainingSegmentedRecords({
+      records: [{ seq: 1 }],
+      remainingOffset: 1,
+    })).toThrow('Pending monitor transition has no remaining records');
+  });
+
+  test('supersedes consecutive incomplete pre-commit plans at the bounded tail', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 128 }, (_, index) => ({
+      name: `check-${index}`,
+      class: 'green',
+    }));
+    let next = snapshot({ checks });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    let enrichedRecordCount = 0;
+    ctx.enrich = async records => {
+      enrichedRecordCount = records.length;
+      for (const [index, record] of records.entries()) {
+        record.repo = index === 0 ? 'owner/compact' : `owner/${index}-${Array.from(
+          { length: 160 },
+          (_value, salt) => crypto.createHash('sha256')
+            .update(`${index}:${salt}`)
+            .digest('base64url')
+            .replace(/[-_A]/g, '.'),
+        ).join('')}`;
+      }
+    };
+
+    const appendEvent = store.appendEvent.bind(store);
+    let markerFailures = 0;
+    store.appendEvent = async (...args) => {
+      const reference = args[0].payload.bounded_payload.batch_plan;
+      if (reference?.index === reference?.segment_count - 1 && markerFailures === 0) {
+        markerFailures += 1;
+        throw new Error('first pre-commit interruption');
+      }
+      return appendEvent(...args);
+    };
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(enrichedRecordCount).toBe(128);
+    const originalPlanId = store.events.at(-1).payload.bounded_payload.batch_plan.id;
+    const originalSegmentCount = store.events.at(-1).payload.bounded_payload.batch_plan.segment_count;
+    expect(store.events.filter(event => (
+      event.payload.bounded_payload.batch_plan?.id === originalPlanId
+    ))).toHaveLength(originalSegmentCount - 1);
+
+    store.appendEvent = async (...args) => {
+      const reference = args[0].payload.bounded_payload.batch_plan;
+      if (reference?.id !== originalPlanId && reference?.index === 1) {
+        throw new Error('replacement pre-commit interruption');
+      }
+      return appendEvent(...args);
+    };
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    store.appendEvent = appendEvent;
+    const retainedPlans = store.events.slice(-128).filter(event => (
+      event.payload.bounded_payload.batch_plan
+    ));
+    const truncatedOriginal = retainedPlans.filter(event => (
+      event.payload.bounded_payload.batch_plan?.id === originalPlanId
+    ));
+    expect(truncatedOriginal[0].payload.bounded_payload.batch_plan.index).toBe(0);
+    expect(_internals.validOrphanedPrecommitPlan(ctx, truncatedOriginal, ctx.subjectId)).toBe(true);
+    expect(_internals.validOrphanedPrecommitPlan(ctx, retainedPlans, ctx.subjectId)).toBe(true);
+    for (const mutate of [
+      event => { event.payload.bounded_payload.batch_plan.committed = false; },
+      event => { event.payload.bounded_payload.batch_plan.segment_index = 1; },
+      event => { event.payload.subject_revision = 'foreign-subject'; },
+      event => { event.payload.observed_at = '2026-08-12T12:00:01.000Z'; },
+    ]) {
+      const malformed = structuredClone(retainedPlans);
+      mutate(malformed[0]);
+      malformed[0].content_hash = computeContentHash(malformed[0]);
+      expect(_internals.validOrphanedPrecommitPlan(ctx, malformed, ctx.subjectId)).toBe(false);
+    }
+
+    const resumedRecords = [];
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const resumed = await runFlowMonitorPass(ctx);
+      resumedRecords.push(...resumed.events);
+      if (!resumed.continuationPending) break;
+    }
+
+    expect(resumedRecords.filter(event => event.type === 'check.failed')).toHaveLength(128);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+  }, 60_000);
+
+  test('supersedes an orphaned pre-commit recovery plan with a fresh observation', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 128 }, (_, index) => ({
+      name: Array.from({ length: 4 }, (_value, salt) => computeContentHash({ index, salt })).join(''),
+      class: 'green',
+    }));
+    let next = snapshot({ checks });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+
+    const appendEvent = store.appendEvent.bind(store);
+    let interruptions = 0;
+    store.appendEvent = async (...args) => {
+      if (args[0].payload.bounded_payload.batch_plan?.index === 1 && interruptions < 2) {
+        interruptions += 1;
+        throw new Error('pre-commit plan interruption');
+      }
+      return appendEvent(...args);
+    };
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    store.appendEvent = appendEvent;
+
+    const resumedEvents = [];
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const resumed = await runFlowMonitorPass(ctx);
+      resumedEvents.push(...resumed.events);
+      if (!resumed.continuationPending) break;
+    }
+
+    expect(resumedEvents.filter(event => event.type === 'check.failed')).toHaveLength(128);
+    expect(delivered.filter(event => event.type === 'check.failed')).toHaveLength(128);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+  }, 30_000);
+
+  test('rejects a complete pre-commit plan whose identity was rewritten', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 128 }, (_, index) => ({
+      name: Array.from({ length: 4 }, (_value, salt) => computeContentHash({ index, salt })).join(''),
+      class: 'green',
+    }));
+    let next = snapshot({ checks });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    const appendEvent = store.appendEvent.bind(store);
+    store.appendEvent = async (...args) => {
+      if (args[0].payload.bounded_payload.batch_plan?.committed === true) {
+        throw new Error('commit marker interruption');
+      }
+      return appendEvent(...args);
+    };
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    store.appendEvent = appendEvent;
+
+    const replacementId = '0'.repeat(64);
+    for (const event of store.events.filter(item => Number.isSafeInteger(
+      item.payload.bounded_payload.batch_plan?.index,
+    ))) {
+      const index = event.payload.bounded_payload.batch_plan.index;
+      const key = `batch-plan:${replacementId}:${index}`;
+      event.payload.bounded_payload.batch_plan.id = replacementId;
+      event.payload.bounded_payload.record.key = `sha256:${crypto.createHash('sha256').update(key).digest('hex')}`;
+      event.payload.event_id = crypto.createHash('sha256')
+        .update(`${ctx.monitorId}:${event.payload.sequence}:${event.payload.type}:${key}`)
+        .digest('hex');
+      event.content_hash = computeContentHash(event);
+    }
+    let gathers = 0;
+    await expect(runFlowMonitorPass(context(
+      store,
+      async () => { gathers += 1; return next; },
+      async () => {},
+    ))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+    expect(gathers).toBe(0);
+  }, 30_000);
+
+  test('recovers exactly once across every segmented persistence boundary', async () => {
+    const checks = Array.from({ length: 128 }, (_, index) => ({
+      name: Array.from({ length: 4 }, (_value, salt) => computeContentHash({ index, salt })).join(''),
+      class: 'green',
+    }));
+    const failed = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+
+    const probe = durableStore();
+    let probeNext = snapshot({ checks });
+    const probeCtx = context(probe, async () => probeNext, async () => {});
+    await runFlowMonitorPass(probeCtx);
+    probeNext = failed;
+    await runFlowMonitorPass(probeCtx);
+    const probeSegments = probe.events.filter(event => Number.isSafeInteger(
+      event.payload.bounded_payload.batch_plan?.index,
+    ));
+    const probeMarker = probe.events.find(event => event.payload.bounded_payload.batch_plan?.committed === true);
+    const segmentLengths = probeSegments.map(event => JSON.parse(zlib.gunzipSync(
+      _internals.decodePrivateSafeBase64(event.payload.bounded_payload.pending_batch),
+    )).records.length);
+    const actualStart = probeMarker.payload.sequence + 1;
+    let boundary = 0;
+    const transitionSequences = segmentLengths.map(length => {
+      const sequence = actualStart + boundary;
+      boundary += length;
+      return sequence;
+    });
+    const failureSequences = [...new Set([
+      ...probeSegments.map(event => event.payload.sequence),
+      probeMarker.payload.sequence,
+      ...transitionSequences,
+      actualStart + boundary - 1,
+    ])];
+
+    for (const failureSequence of failureSequences) {
+      const store = durableStore();
+      let next = snapshot({ checks });
+      const delivered = [];
+      const ctx = context(store, async () => next, async record => delivered.push(record));
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const resumed = await runFlowMonitorPass(ctx);
+        if (!resumed.continuationPending) break;
+      }
+      next = failed;
+      const appendEvent = store.appendEvent.bind(store);
+      let interrupted = false;
+      store.appendEvent = async (...args) => {
+        if (!interrupted && args[0].payload.sequence === failureSequence) {
+          interrupted = true;
+          throw new Error(`storage failure at sequence ${failureSequence}`);
+        }
+        return appendEvent(...args);
+      };
+      let observedFailure = null;
+      for (let attempt = 0; attempt < 3 && !observedFailure; attempt += 1) {
+        try {
+          const partial = await runFlowMonitorPass(ctx);
+          expect(partial).toMatchObject({ continuationPending: true });
+        } catch (error) {
+          observedFailure = error;
+        }
+      }
+      expect(observedFailure).toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+      const committed = store.events.some(event => event.payload.bounded_payload.batch_plan?.committed === true);
+      if (!committed) expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(0);
+      store.appendEvent = appendEvent;
+      if (committed) {
+        ctx.gather = async () => { throw new Error('committed transition recovery must precede provider state'); };
+      }
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        let resumed;
+        try {
+          resumed = await runFlowMonitorPass(ctx);
+        } catch (error) {
+          throw new Error(`recovery failed at sequence ${failureSequence}: ${error.message}`, { cause: error });
+        }
+        if (!resumed.continuationPending) break;
+      }
+      const actualEvents = store.events.filter(event => event.payload.type === 'check.failed');
+      expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(128);
+      expect(actualEvents).toHaveLength(128);
+      expect(new Set(actualEvents.map(event => event.payload.sequence)).size).toBe(128);
+      expect(actualEvents.slice(0, -1).every(event => (
+        event.payload.bounded_payload.checkpoint_complete === false
+      ))).toBe(true);
+      expect(actualEvents.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+    }
+  }, 120_000);
+
+  test('recovers a retained suffix of an accepted transition batch', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let next = snapshot({ checks });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    const appendEvent = store.appendEvent;
+    let appends = 0;
+    store.appendEvent = async (...args) => {
+      appends += 1;
+      if (appends === 130) throw new Error('late storage failure');
+      return appendEvent(...args);
+    };
+
+    const captured = await runFlowMonitorPass(ctx);
+    expect(captured).toMatchObject({ continuationPending: true });
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    store.appendEvent = appendEvent;
+    ctx.gather = async () => { throw new Error('retained suffix recovery must precede provider state'); };
+
+    const resumed = await runFlowMonitorPass(ctx);
+
+    expect(resumed.events).toHaveLength(1);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+  });
+
+  test('validates every transition record before the first durable mutation', async () => {
+    const store = durableStore();
+    let next = snapshot({ prState: 'OPEN', checks: [{ name: 'ci', class: 'green' }] });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+    const before = store.events.length;
+
+    next = snapshot({ prState: 'MERGED', checks: [{ name: 'ci', class: 'failed' }] });
+    ctx.enrich = async records => {
+      expect(records.length).toBeGreaterThan(1);
+      Object.assign(records[1].data, Object.fromEntries(Array.from({ length: 24 }, (_, outer) => [
+        `group-${outer}`,
+        Object.fromEntries(Array.from({ length: 24 }, (_, inner) => [`item-${inner}`, 'x'.repeat(64)])),
+      ])));
+    };
+
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({
+      code: 'INVALID_OBSERVATION', message: 'MonitorEvent validation failed',
+    });
+    expect(store.events).toHaveLength(before);
+  });
+
+  test('validates records beyond the pass budget before the first durable mutation', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let next = snapshot({ checks });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    const before = store.events.length;
+    const deliveredBefore = delivered.length;
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    ctx.enrich = async records => {
+      Object.assign(records[128].data, Object.fromEntries(Array.from({ length: 24 }, (_, outer) => [
+        `group-${outer}`,
+        Object.fromEntries(Array.from({ length: 24 }, (_, inner) => [`item-${inner}`, 'x'.repeat(64)])),
+      ])));
+    };
+
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({
+      code: 'INVALID_OBSERVATION', message: 'MonitorEvent validation failed',
+    });
+    expect(store.events).toHaveLength(before);
+    expect(delivered).toHaveLength(deliveredBefore);
+  });
+
+  test('preserves the provider root cause when durable history is unavailable', async () => {
+    const store = durableStore();
+    const cause = new Error('socket closed');
+    store.readEventTail = async () => { throw cause; };
+
+    try {
+      await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
+      throw new Error('expected durable history failure');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'PROVIDER_UNAVAILABLE', cause });
+    }
+  });
+
+  test('maps malformed getEvent persistence JSON to incomplete durable history', async () => {
+    const store = durableStore();
+    store.getEvent = async () => ({ envelope_json: '{broken-json' });
+    store.events.push({
+      payload: { monitor_id: 'pr:owner/forge:42', event_id: 'a'.repeat(64), sequence: 1 },
+    });
+
+    await expect(runFlowMonitorPass(context(store, async () => snapshot(), async () => {})))
+      .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+  });
+
+  test('bounds high-cardinality snapshots before Flow validation and durable persistence', async () => {
+    const store = durableStore();
+    const large = snapshot({
+      checks: Array.from({ length: 100 }, (_, index) => ({ name: `check-${index}-${'x'.repeat(256)}`, class: 'green' })),
+      threads: Array.from({ length: 100 }, (_, index) => ({
+        threadId: `thread-${index}-${'x'.repeat(256)}`, isResolved: false, isOutdated: false,
+        commentCount: 1, actionable: true, path: `path-${index}-${'x'.repeat(256)}`,
+      })),
+      reviews: Array.from({ length: 100 }, (_, index) => ({ author: `reviewer-${index}-${'x'.repeat(256)}`, state: 'APPROVED' })),
+      comments: Array.from({ length: 100 }, (_, index) => ({ id: `comment-${index}-${'x'.repeat(256)}`, author: 'author' })),
+    });
+
+    const result = await runFlowMonitorPass(context(store, async () => large, async () => {}));
+
+    expect(result.changed).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(store.events.at(-1).payload.bounded_payload))).toBeLessThanOrEqual(16_384);
+  });
+
+  test('bounds enriched failure records before Flow validation and durable persistence', async () => {
+    const store = durableStore();
+    let next = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
+    ctx.enrich = async records => {
+      const failed = records.find(record => record.type === 'check.failed');
+      failed.data.excerpt = `failure:${'x'.repeat(32_768)}`;
+    };
+
+    await runFlowMonitorPass(ctx);
+
+    expect(Buffer.byteLength(JSON.stringify(store.events.at(-1).payload.bounded_payload))).toBeLessThanOrEqual(16_384);
+  });
+
+  test('redacts unsafe degraded provider diagnostics before durable and legacy persistence', async () => {
+    const store = durableStore();
+    const delivered = [];
+    const unsafe = 'token=supersecret123 from /home/runner/work/private/repo';
+
+    await runFlowMonitorPass(context(
+      store,
+      async () => snapshot({ degraded: [{ surface: 'checks', error: unsafe }] }),
+      async record => delivered.push(record),
+    ));
+
+    const durable = store.events.find(event => event.payload.type === 'monitor.degraded')
+      ?.payload.bounded_payload.record.data.error;
+    const legacy = delivered.find(record => record.type === 'monitor.degraded')?.data.error;
+    expect(durable).toBe('[provider diagnostic redacted]');
+    expect(legacy).toBe('[provider diagnostic redacted]');
+  });
+
+  test('sanitizes provider-controlled identities and paths before durable and legacy persistence', async () => {
+    const store = durableStore();
+    let next = snapshot();
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({
+      repo: 'owner/token=repositorysecret123',
+      checks: [{ name: 'token=supersecret123', class: 'failed' }],
+      threads: [{
+        threadId: 'secret=threadsecret123',
+        isResolved: false,
+        commentCount: 1,
+        actionable: true,
+        path: 'docs/home/runner/private.md',
+      }],
+    });
+    ctx.enrich = async records => {
+      for (const record of records) {
+        record.data.details = { 'docs/home/runner/private': 'password=providersecret123' };
+      }
+    };
+
+    await runFlowMonitorPass(ctx);
+
+    const durable = store.events.filter(event => ['check.failed', 'thread.opened'].includes(event.payload.type))
+      .map(event => event.payload.bounded_payload.record);
+    const compatibility = delivered.filter(record => ['check.failed', 'thread.opened'].includes(record.type));
+    for (const records of [durable, compatibility]) {
+      expect(JSON.stringify(records)).not.toContain('supersecret123');
+      expect(JSON.stringify(records)).not.toContain('repositorysecret123');
+      expect(JSON.stringify(records)).not.toContain('providersecret123');
+      expect(JSON.stringify(records)).not.toContain('/home/runner/');
+    }
+    expect(durable.find(record => record.type === 'check.failed').data.name).toStartWith('sha256:');
+    expect(durable.find(record => record.type === 'thread.opened').data.path)
+      .toBe('[provider diagnostic redacted]');
+  });
+
+  test('uses a privacy-safe alphabet for generated snapshot evidence', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 100 }, (_, index) => ({ name: `2:${index}`, class: 'failed' }));
+    const ctx = context(store, async () => snapshot({ checks }), async () => {});
+
+    await runFlowMonitorPass(ctx);
+
+    const encoded = store.events.at(-1).payload.bounded_payload.snapshot._snapshotEvidence;
+    expect(encoded).not.toMatch(/sk-[a-z0-9]{16,}/i);
+    expect(encoded).not.toMatch(/[\-_Aa]/);
+    expect(await runFlowMonitorPass(ctx)).toMatchObject({ changed: false });
+    const legacy = zlib.gzipSync('legacy-evidence').toString('base64url');
+    expect(zlib.gunzipSync(_internals.decodePrivateSafeBase64(legacy)).toString())
+      .toBe('legacy-evidence');
+  });
+
+  test('preserves valid enriched job URLs longer than the generic snapshot text bound', async () => {
+    const store = durableStore();
+    let next = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
+    const jobUrl = `https://github.com/owner/forge/actions/runs/${'1234567890'.repeat(10)}/job/987654321`;
+    ctx.enrich = async records => {
+      records.find(record => record.type === 'check.failed').data.jobUrl = jobUrl;
+    };
+
+    await runFlowMonitorPass(ctx);
+
+    const failure = delivered.find(record => record.type === 'check.failed');
+    expect(failure.data.jobUrl).toBe(jobUrl);
+    expect(store.events.at(-1).payload.bounded_payload.record.data.jobUrl).toBe(jobUrl);
+  });
+
+  test('omits credential-bearing enriched job URLs before durable and legacy persistence', async () => {
+    const store = durableStore();
+    let next = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
+    ctx.enrich = async records => {
+      records.find(record => record.type === 'check.failed').data.jobUrl = 'https://ci.example/job/1?token=supersecret123';
+    };
+
+    await runFlowMonitorPass(ctx);
+
+    const failure = delivered.find(record => record.type === 'check.failed');
+    expect(failure.data.jobUrl).toBeUndefined();
+    expect(store.events.at(-1).payload.bounded_payload.record.data.jobUrl).toBeUndefined();
+  });
+
+  test.each([
+    'https://user:password@ci.example/job/1',
+    'https://ci.example/job/1?sig=opaque',
+    'https://ci.example/job/1#credential',
+  ])('omits non-public enriched job URL %s', async (jobUrl) => {
+    const store = durableStore();
+    let next = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
+    ctx.enrich = async records => { records.find(record => record.type === 'check.failed').data.jobUrl = jobUrl; };
+
+    await runFlowMonitorPass(ctx);
+
+    expect(delivered.find(record => record.type === 'check.failed')?.data.jobUrl).toBeUndefined();
+  });
+
+  test('preserves long repository identity in bounded durable and compatibility records', async () => {
+    const store = durableStore();
+    const repo = `owner/${'repository'.repeat(10)}`;
+    const delivered = [];
+    await runFlowMonitorPass(context(
+      store,
+      async () => snapshot({ repo }),
+      async record => delivered.push(record),
+    ));
+
+    expect(store.events.at(-1).payload.bounded_payload.snapshot.repo).toBe(repo);
+    expect(store.events.at(-1).payload.bounded_payload.record.repo).toBe(repo);
+    expect(delivered.at(-1).repo).toBe(repo);
+  });
+
+  test('keeps long compatibility event identities collision-resistant', async () => {
+    const store = durableStore();
+    const sharedPrefix = 'check-'.padEnd(80, 'x');
+    let next = snapshot({
+      checks: [
+        { name: `${sharedPrefix}-one`, class: 'green' },
+        { name: `${sharedPrefix}-two`, class: 'green' },
+      ],
+    });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({
+      checks: [
+        { name: `${sharedPrefix}-one`, class: 'failed' },
+        { name: `${sharedPrefix}-two`, class: 'failed' },
+      ],
+    });
+
+    await runFlowMonitorPass(ctx);
+
+    const failures = delivered.filter(record => record.type === 'check.failed');
+    expect(failures).toHaveLength(2);
+    expect(new Set(failures.map(record => record.key)).size).toBe(2);
+    expect(new Set(failures.map(record => record.data.name)).size).toBe(2);
+  });
+
+  test('checkpoints non-event snapshot changes so recurring failures are observed', async () => {
+    const store = durableStore();
+    let next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: [{ name: 'ci', class: 'pending' }] });
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
+    await runFlowMonitorPass(ctx);
+
+    expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(1);
+    expect(store.events.some(event => event.payload.type === 'monitor.checkpoint')).toBe(true);
+  });
+
+  test('advances delivery authority across more than one bounded tail of advisory checkpoints', async () => {
+    const store = durableStore();
+    let revision = 0;
+    const delivered = [];
+    const ctx = context(store, async () => snapshot({ diagnosticRevision: revision }), async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+
+    for (revision = 1; revision <= 130; revision += 1) await runFlowMonitorPass(ctx);
+
+    const delivery = await store.readDeliveryState(ctx.monitorId);
+    expect(delivery.cursors).toContainEqual(expect.objectContaining({
+      target: 'legacy-journal', sequence: store.events.at(-1).payload.sequence,
+    }));
+    expect(delivered.every(record => record.type !== 'monitor.checkpoint')).toBe(true);
+  }, 15_000);
+
+  test('retains transition identity beyond the first three snapshot entries', async () => {
+    const store = durableStore();
+    let next = snapshot({
+      checks: Array.from({ length: 4 }, (_, index) => ({ name: `check-${index}`, class: 'green' })),
+    });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({
+      checks: Array.from({ length: 4 }, (_, index) => ({
+        name: `check-${index}`,
+        class: index === 3 ? 'failed' : 'green',
+      })),
+    });
+
+    await runFlowMonitorPass(ctx);
+
+    expect(delivered.some(record => record.type === 'check.failed')).toBe(true);
+  });
+
+  test('rejects truncated durable history instead of treating it as a complete restart checkpoint', async () => {
+    const store = durableStore();
+    store.readEventTail = async () => ({ events: [], overflow: true, truncated_before_sequence: 1 });
+
+    await expect(runFlowMonitorPass(context(store, async () => snapshot(), async () => {})))
+      .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+  });
+
+  test('uses a contiguous bounded tail as a restart checkpoint after history exceeds the limit', async () => {
+    const store = durableStore();
+    await seedHistory(store, 129);
+    let next = snapshot({ headSha: 'f'.repeat(40) });
+    const ctx = context(store, async () => next, async () => {});
+
+    const before = store.events.at(-1).payload.sequence;
+    const resumed = await runFlowMonitorPass(ctx);
+
+    expect(store.events.length).toBeGreaterThan(128);
+    expect(resumed.changed).toBe(true);
+    expect(resumed.events[0].seq).toBe(before + 1);
+  });
+
+  test('continues after acknowledged historical outbox rows exceed the read bound', async () => {
+    const store = durableStore();
+    await seedHistory(store, 129);
+    store.setOutboxOverflow(true);
+    const current = structuredClone(store.events.at(-1).payload.bounded_payload.snapshot);
+
+    const result = await runFlowMonitorPass(context(store, async () => current, async () => {}));
+
+    expect(result.events).toEqual([]);
+  });
+
+  test('rejects a truncated restart checkpoint when delivery predates its first retained event', async () => {
+    const store = durableStore();
+    await seedHistory(store, 129);
+    const ctx = context(store, async () => snapshot(), async () => {});
+    store.setCursor('legacy-journal', 0);
+
+    await expect(runFlowMonitorPass(ctx))
+      .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+  });
+
+  test('reconstructs pending delivery from the event tail when historical outbox rows overflow', async () => {
+    const store = durableStore();
+    await seedHistory(store, 129);
+    store.setOutboxOverflow(true);
+    store.setCursor('legacy-journal', 128);
+    const delivered = [];
+    const current = structuredClone(store.events.at(-1).payload.bounded_payload.snapshot);
+
+    const result = await runFlowMonitorPass(context(
+      store, async () => current, async record => delivered.push(record),
+    ));
+
+    expect(delivered.map(record => record.seq)).toEqual([129]);
+    expect(result.receiptIds).toHaveLength(1);
+  });
+
+  test('rejects content-corrupted durable history before provider observation', async () => {
+    const store = durableStore();
+    await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
+    store.events[0].payload.bounded_payload.snapshot.headSha = 'b'.repeat(40);
+
+    await expect(runFlowMonitorPass(context(store, async () => {
+      throw new Error('corrupt replay must not poll the provider');
+    }, async () => {}))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+  });
+
+  test('rejects malformed compact snapshot evidence as incomplete history', async () => {
+    const store = durableStore();
+    await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
+    store.events[0].payload.bounded_payload.snapshot._snapshotEvidence = 'not-gzip-evidence';
+    store.events[0].content_hash = computeContentHash(store.events[0]);
+
+    await expect(runFlowMonitorPass(context(store, async () => snapshot(), async () => {})))
+      .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+  });
+
+  test('records one terminal receipt after merged evidence and replays its id', async () => {
+    const store = durableStore();
+    const merged = snapshot({ state: 'MERGED' });
+    const first = await runFlowMonitorPass(context(store, async () => merged, async () => {}));
+    const replay = await runFlowMonitorPass(context(store, async () => {
+      throw new Error('terminal replay must not poll the provider');
+    }, async () => {}));
+
+    expect(first.terminalReceiptId).toBeString();
+    expect(first.receiptIds).toContain(first.terminalReceiptId);
+    expect(store.terminalReceipt.payload).toMatchObject({
+      terminal_state: 'PASS',
+      cancellation_acknowledged: false,
+      lease_cleanup: { continuing_authority: false },
+    });
+    expect(replay.terminalReceiptId).toBe(first.terminalReceiptId);
+  });
+
+  test('starts a new lifecycle when a terminal closed PR is reopened', async () => {
+    const store = durableStore();
+    let next = snapshot({ state: 'CLOSED' });
+    const ctx = context(store, async () => next, async () => {});
+    const closed = await runFlowMonitorPass(ctx);
+    next = snapshot({ state: 'OPEN' });
+
+    const reopened = await runFlowMonitorPass(ctx);
+
+    expect(closed.terminalReceiptId).toBeString();
+    expect(reopened.terminalReceiptId).toBeUndefined();
+    expect(reopened.changed).toBe(true);
+    expect(store.events.some(event => event.payload.monitor_id !== ctx.monitorId)).toBe(true);
+  });
+
+  test('fails closed when reopened lifecycle depth exceeds the bounded chain', async () => {
+    const store = durableStore();
+    let next = snapshot({ state: 'CLOSED' });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ state: 'OPEN' });
+
+    await expect(runFlowMonitorPass(ctx, 8))
+      .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+  });
+
+  test('preserves raw display fields while routing observations through a reopened lifecycle', async () => {
+    const store = durableStore();
+    let next = snapshot({ state: 'CLOSED', checks: [] });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ state: 'OPEN', checks: [{ name: 'ci-display', class: 'green' }] });
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ state: 'OPEN', checks: [{ name: 'ci-display', class: 'failed' }] });
+
+    await runFlowMonitorPass(ctx);
+
+    expect(delivered.find(record => record.type === 'check.failed')?.data.name).toBe('ci-display');
+  });
+
+  test('continues a reopened lifecycle through a later merged terminal receipt with a bounded id', async () => {
+    const store = durableStore();
+    let next = snapshot({ state: 'CLOSED' });
+    const ctx = context(store, async () => next, async () => {});
+    ctx.monitorId = `pr:${'x'.repeat(90)}:42`;
+    const closed = await runFlowMonitorPass(ctx);
+    next = snapshot({ state: 'OPEN' });
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ state: 'MERGED' });
+    const merged = await runFlowMonitorPass(ctx);
+
+    expect(merged.terminalReceiptId).toBeString();
+    expect(merged.terminalReceiptId).not.toBe(closed.terminalReceiptId);
+    expect(Math.max(...store.events.map(event => event.payload.monitor_id.length))).toBeLessThanOrEqual(128);
+  });
+
+  test('rejects a content-corrupted terminal receipt instead of replaying authority', async () => {
+    const store = durableStore();
+    await runFlowMonitorPass(context(store, async () => snapshot({ state: 'MERGED' }), async () => {}));
+    store.terminalReceipt.payload.terminal_reason = 'tampered';
+
+    await expect(runFlowMonitorPass(context(store, async () => {
+      throw new Error('corrupt terminal replay must not poll the provider');
+    }, async () => {}))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    });
+
+  test('defers a terminal receipt when event receipts consume the full pass budget', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 128 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let next = snapshot({ checks });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+    next = snapshot({
+      state: 'MERGED',
+      checks: checks.map(check => ({ ...check, class: 'failed' })),
+    });
+
+    const bounded = await runFlowMonitorPass(ctx);
+    expect(bounded.events).toHaveLength(128);
+    expect(bounded.receiptIds).toHaveLength(128);
+    expect(bounded).toMatchObject({ continuationPending: true });
+    expect(bounded.terminalReceiptId).toBeUndefined();
+
+    ctx.gather = async () => { throw new Error('terminal continuation must precede provider state'); };
+    const completed = await runFlowMonitorPass(ctx);
+    expect(completed.events).toEqual([]);
+    expect(completed.receiptIds).toHaveLength(1);
+    expect(completed.terminalReceiptId).toBeString();
+  });
+});

@@ -39,9 +39,15 @@ function context(overrides = {}) {
 function deps(overrides = {}) {
   return {
     loadConfig: () => ENABLED,
-    verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
+    verifyIssueOwnership: async () => ({
+      owned: true, actor: 'release-actor', claimedBy: 'release-actor', sessionId: 'release-session', expired: false,
+    }),
+    resolveLocalRepository: async () => 'acme/forge',
     verifyPrIssueBinding: async () => ({ bound: true }),
-    env: { FORGE_ACTOR: 'release-actor' },
+    verifyMergeGate: async () => true,
+    prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
+    recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
+    env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
     fetchPrContext: async () => context(),
     mergePr: async () => ({ merged: true }),
     ...overrides,
@@ -75,7 +81,7 @@ function makeGh(threadPayload, viewOverrides = {}, checkRuns = null) {
       return JSON.stringify(payload);
     }
     if (argv[0] === 'repo' && argv[1] === 'view') {
-      return JSON.stringify({ owner: { login: 'acme' }, name: 'forge' });
+      return JSON.stringify({ owner: { login: 'acme' }, name: 'forge', isFork: false, parent: null });
     }
     if (argv[0] === 'api' && argv[1] === 'repos/acme/forge/branches/master/protection/required_status_checks') {
       return JSON.stringify({ contexts: ['ci'], checks: [{ context: 'ci', app_id: 123 }] });
@@ -405,7 +411,7 @@ describe('merge authority — exact reviewer regressions', () => {
     expect(mergeCmd.parseMergeArgs(args('42')).pr).toBe('42');
   });
 
-  test('only OPEN proceeds and only MERGED/CLOSED are terminal no-ops on either read', async () => {
+  test('only OPEN proceeds, MERGED reconciles evidence, and CLOSED is a terminal no-op', async () => {
     for (const state of [undefined, null, '', 'UNKNOWN', 'DRAFT', 'BOGUS']) {
       let merges = 0;
       const first = await mergeCmd.handler(args(), {}, process.cwd(), deps({
@@ -429,14 +435,15 @@ describe('merge authority — exact reviewer regressions', () => {
       expect(merges).toBe(0);
     }
 
-    for (const state of ['MERGED', 'CLOSED']) {
-      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
-        fetchPrContext: async () => context({ state }),
-      }));
-      expect(out.success).toBe(true);
-      expect(out.merged).toBe(false);
-      expect(out.state).toBe(state);
-    }
+    const merged = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({ state: 'MERGED' }),
+    }));
+    expect(merged).toMatchObject({ success: true, merged: true, recovered: true });
+
+    const closed = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({ state: 'CLOSED' }),
+    }));
+    expect(closed).toMatchObject({ success: true, merged: false, state: 'CLOSED' });
   });
 
   test('ownership requires explicit expired=false', async () => {
@@ -496,7 +503,7 @@ describe('merge authority — exact reviewer regressions', () => {
   });
 
   test('freezes actor identity across both ownership probes', async () => {
-    const env = { FORGE_ACTOR: 'alice' };
+    const env = { FORGE_ACTOR: 'alice', FORGE_SESSION_ID: 'alice-session' };
     let ownershipCalls = 0;
     let merges = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
@@ -506,7 +513,9 @@ describe('merge authority — exact reviewer regressions', () => {
         expect(input.actor).toBe('alice');
         if (ownershipCalls === 1) {
           env.FORGE_ACTOR = 'bob';
-          return { owned: true, expired: false, actor: 'alice', claimedBy: 'alice' };
+          return {
+            owned: true, expired: false, actor: 'alice', claimedBy: 'alice', sessionId: 'alice-session',
+          };
         }
         return { owned: true, expired: false, actor: 'bob', claimedBy: 'bob' };
       },
@@ -515,6 +524,18 @@ describe('merge authority — exact reviewer regressions', () => {
     expect(ownershipCalls).toBe(2);
     expect(out.success).toBe(false);
     expect(out.merged).toBe(false);
+    expect(merges).toBe(0);
+  });
+
+  test('requires a session identity before the external merge mutation', async () => {
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      env: { FORGE_ACTOR: 'release-actor' },
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
+    expect(out.success).toBe(false);
+    expect(out.merged).toBe(false);
+    expect(out.error).toMatch(/exact session/i);
     expect(merges).toBe(0);
   });
 
@@ -566,6 +587,106 @@ describe('merge authority — exact reviewer regressions', () => {
     ])).bound).toBe(false);
   });
 
+  test('merge recovery reads one exact retired PR linkage from the durable trace', async () => {
+    let traceTarget;
+    const result = await mergeCmd.defaultVerifyPrIssueBinding({
+      issueId: ISSUE,
+      pr: '42',
+      projectRoot: process.cwd(),
+      prContext: context({ state: 'MERGED', repository: undefined }),
+      allowRetired: true,
+      buildBroker: async () => ({
+        gitCommonDir: '/repo/.git',
+        broker: {
+          readTrace: async (target) => {
+            traceTarget = target;
+            return ({
+            gaps: [],
+            pull_requests: [{
+              id: 'pr-current', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+              branch: 'feature/merge', git_common_dir: '/repo/.git', url: 'https://example/pr/42',
+              iterations: [{
+                id: 'merged-event', type: 'pr.merged', at: '2026-08-01T12:00:00.000Z',
+                issue_id: ISSUE, issue_revision: 7, head_sha: HEAD,
+                work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+              }],
+            }, {
+              id: 'pr-foreign', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+              branch: 'other/merge', git_common_dir: '/other/.git', iterations: [],
+            }],
+            });
+          },
+        },
+        driver: { close() {} },
+      }),
+    });
+
+    expect(result).toMatchObject({
+      bound: true, issueId: ISSUE, repository: 'acme/forge',
+      branch: 'feature/merge', gitCommonDir: '/repo/.git',
+      terminalEvidence: {
+        occurredAt: '2026-08-01T12:00:00.000Z', receiptHash: 'b'.repeat(64),
+      },
+    });
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    expect(result.terminalEvidence.decisionId).toMatch(uuid);
+    expect(result.terminalEvidence.receiptId).toMatch(uuid);
+    expect(traceTarget).toEqual({ issue_id: ISSUE, pr_number: 42, git_common_dir: '/repo/.git' });
+  });
+
+  test('retired binding errors report a wrong issue without claiming the row must be open', async () => {
+    const result = await mergeCmd.defaultVerifyPrIssueBinding({
+      issueId: ISSUE,
+      pr: '42',
+      projectRoot: process.cwd(),
+      prContext: context({ state: 'MERGED' }),
+      allowRetired: true,
+      buildBroker: async () => ({
+        gitCommonDir: '/repo/.git',
+        broker: { readTrace: async () => ({ gaps: [], pull_requests: [{
+          repo: 'acme/forge', number: 42, issue_id: 'wrong-issue', state: 'closed',
+          git_common_dir: '/repo/.git', iterations: [],
+        }] }) },
+        driver: { close() {} },
+      }),
+    });
+
+    expect(result.bound).toBe(false);
+    expect(result.error).toMatch(/different issue/i);
+    expect(result.error).not.toMatch(/not open/i);
+  });
+
+  test('merge recovery rejects a malformed expected head before matching terminal trace evidence', async () => {
+    const result = await mergeCmd.defaultVerifyPrIssueBinding({
+      issueId: ISSUE,
+      pr: '42',
+      projectRoot: process.cwd(),
+      prContext: context({ state: 'MERGED', headSha: null }),
+      allowRetired: true,
+      buildBroker: async () => ({
+        gitCommonDir: '/repo/.git',
+        broker: {
+          readTrace: async () => ({
+            gaps: [],
+            pull_requests: [{
+              repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+              git_common_dir: '/repo/.git',
+              iterations: [{
+                type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE,
+                issue_revision: 7, head_sha: null,
+                work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+              }],
+            }],
+          }),
+        },
+        driver: { close() {} },
+      }),
+    });
+
+    expect(result.bound).toBe(false);
+    expect(result.error).toMatch(/incomplete|head/i);
+  });
+
   test('leases normalized repository identity across both reads and final mutation', async () => {
     let reads = 0;
     let merges = 0;
@@ -611,8 +732,8 @@ describe('merge authority — exact reviewer regressions', () => {
       if (argv[0] === 'repo' && argv[1] === 'view') {
         repoReads += 1;
         return JSON.stringify(repoReads === 1
-          ? { owner: { login: 'acme' }, name: 'forge' }
-          : { owner: { login: 'evil' }, name: 'other' });
+          ? { owner: { login: 'acme' }, name: 'forge', isFork: false, parent: null }
+          : { owner: { login: 'evil' }, name: 'other', isFork: false, parent: null });
       }
       if (argv[0] === 'api' && argv[1] === 'graphql') graphqlArgs = argv;
       return baseGh(argv);

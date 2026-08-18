@@ -113,6 +113,10 @@ function eventRow(event) {
   };
 }
 
+function sqliteRow(row) {
+  return Object.assign(Object.create(null), row);
+}
+
 function createDurableDriver() {
   const state = {
     available: true,
@@ -315,6 +319,116 @@ describe('monitor durability bridge', () => {
     driver.state.configCalls.forEach(([, config], index) => {
       expect(config).not.toBe(expectedCalls[index][1]);
       expect(Object.isFrozen(config)).toBe(true);
+    });
+  });
+
+  test('normalizes null-prototype SQLite rows only after they cross the monitor store boundary', async () => {
+    const driver = createDurableDriver();
+    const getMonitorEvent = driver.getMonitorEvent.bind(driver);
+    const readMonitorEventTail = driver.readMonitorEventTail.bind(driver);
+    const readMonitorDeliveryState = driver.readMonitorDeliveryState.bind(driver);
+    driver.getMonitorEvent = (...args) => sqliteRow(getMonitorEvent(...args));
+    driver.readMonitorEventTail = (...args) => {
+      const result = readMonitorEventTail(...args);
+      return { ...result, events: result.events.map(sqliteRow) };
+    };
+    driver.readMonitorDeliveryState = (...args) => {
+      const result = readMonitorDeliveryState(...args);
+      return {
+        ...result,
+        cursors: result.cursors.map(sqliteRow),
+        outbox: result.outbox.map(sqliteRow),
+        terminal_receipt: result.terminal_receipt && sqliteRow(result.terminal_receipt),
+      };
+    };
+    const durability = bridge(driver);
+    const event = monitorEvent();
+
+    await durability.persistEvent(event);
+    await expect(
+      durability.acknowledgeDelivery('monitor-1', deliveryReceipt(event)),
+    ).resolves.toMatchObject({ sequence: 0 });
+    await expect(
+      durability.recordTerminalReceipt(terminalReceipt([event])),
+    ).resolves.toMatchObject({ persistence: { idempotent: false } });
+
+    driver.listMonitorEvents = () => [sqliteRow(eventRow(event))];
+    const [retained] = await createMonitorStore(driver).listEvents('monitor-1');
+    expect(Object.getPrototypeOf(retained)).toBe(Object.prototype);
+
+    const frozenRows = Object.freeze([Object.freeze(sqliteRow(eventRow(event)))]);
+    driver.listMonitorEvents = () => frozenRows;
+    expect(await createMonitorStore(driver).listEvents('monitor-1')).toBe(frozenRows);
+
+    const malformedRows = [sqliteRow(eventRow(event))];
+    Object.defineProperty(malformedRows, '-1', {
+      value: sqliteRow(eventRow(event)),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(malformedRows, 'length', { writable: false });
+    driver.listMonitorEvents = () => malformedRows;
+    expect(await createMonitorStore(driver).listEvents('monitor-1')).toBe(malformedRows);
+
+    const sparseRows = new Array(2);
+    sparseRows[1] = sqliteRow(eventRow(event));
+    driver.listMonitorEvents = () => sparseRows;
+    expect(await createMonitorStore(driver).listEvents('monitor-1')).toBe(sparseRows);
+
+    class ProviderRows extends Array {}
+    const customRows = ProviderRows.of(sqliteRow(eventRow(event)));
+    driver.listMonitorEvents = () => customRows;
+    expect(await createMonitorStore(driver).listEvents('monitor-1')).toBe(customRows);
+
+    const symbol = Symbol('provider-cycle');
+    const cyclicRow = sqliteRow(eventRow(event));
+    Object.defineProperty(cyclicRow, symbol, {
+      value: cyclicRow,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
+    driver.listMonitorEvents = () => [cyclicRow];
+    const [normalizedCycle] = await createMonitorStore(driver).listEvents('monitor-1');
+    expect(normalizedCycle).toBe(cyclicRow);
+
+    const stringCycle = sqliteRow(eventRow(event));
+    stringCycle.self = stringCycle;
+    driver.listMonitorEvents = () => [stringCycle];
+    const [unchangedStringCycle] = await createMonitorStore(driver).listEvents('monitor-1');
+    expect(unchangedStringCycle).toBe(stringCycle);
+
+    const extraRow = sqliteRow({ ...eventRow(event), unexpected: 'scalar' });
+    driver.listMonitorEvents = () => [extraRow];
+    expect((await createMonitorStore(driver).listEvents('monitor-1'))[0]).toBe(extraRow);
+    const missingRow = sqliteRow(eventRow(event));
+    delete missingRow.created_at;
+    driver.listMonitorEvents = () => [missingRow];
+    expect((await createMonitorStore(driver).listEvents('monitor-1'))[0]).toBe(missingRow);
+
+    const extraTail = {
+      events: [sqliteRow(eventRow(event))],
+      overflow: false,
+      truncated_before_sequence: null,
+      unexpected: 'scalar',
+    };
+    driver.readMonitorEventTail = () => extraTail;
+    expect(await createMonitorStore(driver).readEventTail('monitor-1')).toBe(extraTail);
+    const missingDeliveryState = {
+      cursors: [],
+      outbox: [],
+      overflow: { cursors: false, outbox: false },
+    };
+    driver.readMonitorDeliveryState = () => missingDeliveryState;
+    expect(await createMonitorStore(driver).readDeliveryState('monitor-1')).toBe(
+      missingDeliveryState,
+    );
+
+    const callerNullPrototype = Object.assign(Object.create(null), event);
+    await expect(durability.persistEvent(callerNullPrototype)).rejects.toMatchObject({
+      name: 'MonitorDurabilityError',
+      code: 'INPUT_INVALID',
     });
   });
 

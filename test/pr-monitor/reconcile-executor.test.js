@@ -37,6 +37,239 @@ test('claim markers share one path across worktrees with the same common dir', (
 });
 
 describe('execute — watcher lifecycle', () => {
+	test('rejects non-array actions with a distinct validation code', async () => {
+		await expect(executor.execute(null)).rejects.toMatchObject({ code: 'INVALID_ACTIONS' });
+	});
+	test('processes oversized action sets in bounded resumable batches', async () => {
+		let writes = 0;
+		const diagnostics = [];
+		const actions = Array.from({ length: 130 }, (_, index) => ({
+			type: 'upsertPrRow', row: { number: index + 1 },
+		}));
+		await executor.execute(actions, {
+			broker: { upsertPr: async () => { writes += 1; return true; } },
+			watchers: [],
+			recordDiagnostic: entry => diagnostics.push(entry),
+		});
+		expect(writes).toBe(128);
+		expect(diagnostics).toContainEqual(expect.objectContaining({
+			kind: 'actions-truncated', requested: 130, processed: 128,
+		}));
+	});
+	test('persists and replays the public Flow process lifecycle across daemon restarts', async () => {
+		const first = await executor.execute(
+			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000,
+				spawnWatcher: () => ({ pid: 1234 }), writeClaim: () => {}, watchers: [],
+			},
+		);
+		expect(first[0].lifecycle.state).toMatchObject({ phase: 'RUNNING', attempts: 1 });
+
+		const restarted = await executor.execute([], {
+			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000, watchers: first,
+		});
+		expect(restarted).toEqual(first);
+	});
+
+	test('replays a structurally equal lifecycle checkpoint regardless of object key order', async () => {
+		const first = await executor.execute(
+			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000,
+				spawnWatcher: () => ({ pid: 1234 }), writeClaim: () => {}, watchers: [],
+			},
+		);
+		const state = first[0].lifecycle.state;
+		first[0].lifecycle.state = Object.fromEntries(Object.entries(state).reverse());
+
+		await expect(executor.execute([], {
+			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000, watchers: first,
+		})).resolves.toHaveLength(1);
+	});
+
+	test('bounds watcher lifecycle identities before a detached child is recorded', async () => {
+		const watchers = await executor.execute(
+			[{ type: 'startWatcher', pr: { repo: `owner/${'r'.repeat(180)}`, number: 42 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000,
+				spawnWatcher: () => ({ pid: 1234 }), writeClaim: () => {}, watchers: [],
+			},
+		);
+
+		expect(watchers[0].lifecycle.processId.length).toBeLessThanOrEqual(128);
+		expect(watchers[0].lifecycle.processId).toMatch(/^watcher:[0-9a-f]{64}$/);
+	});
+
+	test('fails closed before process mutation when a persisted lifecycle checkpoint conflicts', async () => {
+		let killed = false;
+		await expect(executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
+				watchers: [{
+					pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z',
+					lifecycle: { processId: 'watcher:forge:5:999', events: [{ id: 'bad', type: 'exit', at: 1000, code: 0 }] },
+				}],
+				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z', kill: () => { killed = true; },
+			},
+		)).rejects.toMatchObject({ code: 'INVALID_TRANSITION' });
+		expect(killed).toBe(false);
+	});
+
+	test('records cancellation acknowledgement and terminal reap before cleanup', async () => {
+		const checkpoints = [];
+		const cancelling = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
+				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
+				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z', kill: () => {},
+				removeClaim: () => {}, onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
+			},
+		);
+		expect(cancelling[0].lifecycle.state.phase).toBe('CANCEL_REQUESTED');
+		const watchers = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2001,
+				watchers: cancelling, isAlive: () => false, removeClaim: () => {},
+				onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
+			},
+		);
+		expect(watchers).toEqual([]);
+		expect(checkpoints.at(-1).state).toMatchObject({
+			phase: 'TERMINAL', status: 'CANCELLED', terminationAcknowledged: true, childReaped: true,
+		});
+	});
+
+	test('resumes a persisted termination acknowledgement by reaping the dead watcher', async () => {
+		const checkpoints = [];
+		const cancelling = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
+				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
+				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z', kill: () => {},
+				removeClaim: () => {},
+				onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
+			},
+		);
+		await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2001,
+				watchers: cancelling, isAlive: () => false, removeClaim: () => {},
+				onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
+			},
+		);
+		const acknowledged = checkpoints.find(checkpoint => checkpoint.state.phase === 'TERMINATION_ACKNOWLEDGED');
+		expect(acknowledged).toBeDefined();
+		const resumed = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2002,
+				watchers: [{
+					pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z', lifecycle: acknowledged,
+				}],
+				isAlive: () => false, removeClaim: () => {},
+			},
+		);
+		expect(resumed).toEqual([]);
+	});
+
+	test('terminates a newly spawned watcher when its authority checkpoint fails', async () => {
+		let writes = 0;
+		const killed = [];
+		await expect(executor.execute(
+			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
+				spawnWatcher: () => ({ pid: 1234 }),
+				persistLifecycleCheckpoint: () => { writes += 1; return writes === 1; },
+				writeClaim: () => {}, readClaim: () => '1970-01-01T00:00:01.000Z',
+				isAlive: () => true, kill: (pid, signal) => killed.push([pid, signal]),
+			},
+		)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+		expect(killed).toEqual([[1234, 'SIGKILL']]);
+	});
+
+	test('terminates every watcher spawned earlier in a batch when a later checkpoint fails', async () => {
+		let writes = 0;
+		let nextPid = 1000;
+		const killed = [];
+		await expect(executor.execute([
+			{ type: 'startWatcher', pr: { repo: 'forge', number: 41 } },
+			{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } },
+		], {
+			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
+			spawnWatcher: () => ({ pid: nextPid++ }),
+			persistLifecycleCheckpoint: () => { writes += 1; return writes < 4; },
+			writeClaim: () => {}, removeClaim: () => {}, readClaim: () => '1970-01-01T00:00:01.000Z',
+			isAlive: () => true, kill: (pid, signal) => killed.push([pid, signal]),
+		})).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+
+		expect(killed.sort((a, b) => a[0] - b[0])).toEqual([
+			[1000, 'SIGKILL'], [1001, 'SIGKILL'],
+		]);
+	});
+
+	test('retries a failed force-kill after cancellation grace expires', async () => {
+		const signals = [];
+		let forceKillAttempts = 0;
+		const kill = (_pid, signal) => {
+			signals.push(signal);
+			if (signal === 'SIGKILL' && forceKillAttempts++ === 0) throw new Error('transient kill failure');
+		};
+		const cancelling = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
+				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
+				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z',
+				kill,
+			},
+		);
+		const forced = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32000,
+				watchers: cancelling, isAlive: () => true,
+				readClaim: () => '1970-01-01T00:00:01.000Z', kill,
+			},
+		);
+		expect(forced[0].lifecycle.state.phase).toBe('FORCE_KILL_REQUESTED');
+		const retried = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32001,
+				watchers: forced, isAlive: () => true,
+				readClaim: () => '1970-01-01T00:00:01.000Z', kill,
+			},
+		);
+		expect(signals).toEqual([undefined, 'SIGKILL', 'SIGKILL']);
+		expect(retried[0].lifecycle.state.phase).toBe('FORCE_KILL_REQUESTED');
+
+		const reaped = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{ projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32002, watchers: retried, isAlive: () => false },
+		);
+		expect(reaped).toEqual([]);
+	});
+
+	test('provider loss fails closed before terminating a watcher', async () => {
+		let killed = false;
+		await expect(executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
+				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
+				persistLifecycleCheckpoint: () => false,
+				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z', kill: () => { killed = true; },
+			},
+		)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+		expect(killed).toBe(false);
+	});
 	test('startWatcher spawns a watcher and records a {pr,repo,pid,startedAt} entry + start-time marker', async () => {
 		const spawned = [];
 		const claims = [];
@@ -54,7 +287,7 @@ describe('execute — watcher lifecycle', () => {
 		expect(spawned).toHaveLength(1);
 		expect(spawned[0].prNumber).toBe(42);
 		expect(watchers).toHaveLength(1);
-		expect(watchers[0]).toEqual({ pr: 42, repo: 'forge', pid: 1234, startedAt: '2026-07-20T00:00:00.000Z' });
+		expect(watchers[0]).toMatchObject({ pr: 42, repo: 'forge', pid: 1234, startedAt: '2026-07-20T00:00:00.000Z' });
 		expect(claims).toHaveLength(1);
 		expect(claims[0].startedAt).toBe('2026-07-20T00:00:00.000Z');
 	});
@@ -117,7 +350,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
 
 	test('MISMATCH: pid alive but journal marker startedAt differs → kill is NOT called', async () => {
 		const kills = [];
-		await executor.execute(
+		const watchers = await executor.execute(
 			[{ type: 'reapOrphan', pid: 999, startedAt: 't1' }],
 			{
 				projectRoot: '/repo',
@@ -129,6 +362,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
 			},
 		);
 		expect(kills).toHaveLength(0);
+		expect(watchers).toEqual([]);
 	});
 
 	test('MATCH: pid alive AND marker startedAt equals watcher entry → kill called exactly once', async () => {
@@ -145,6 +379,27 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
 			},
 		);
 		expect(kills).toEqual([999]);
+	});
+
+	test('a live orphan escalates to SIGKILL after its grace deadline and is reaped after exit', async () => {
+		const kills = [];
+		const action = [{ type: 'reapOrphan', pid: 999, startedAt: 't1' }];
+		const common = {
+			projectRoot: '/repo', readClaim: () => 't1',
+			kill: (pid, signal) => kills.push([pid, signal || 'SIGTERM']), broker: {},
+		};
+		let watchers = await executor.execute(action, {
+			...common, watchers: [{ ...baseEntry }], now: () => 1_000, isAlive: () => true,
+		});
+		watchers = await executor.execute(action, {
+			...common, watchers, now: () => 31_001, isAlive: () => true,
+		});
+		watchers = await executor.execute(action, {
+			...common, watchers, now: () => 31_002, isAlive: () => false,
+		});
+
+		expect(kills).toEqual([[999, 'SIGTERM'], [999, 'SIGKILL']]);
+		expect(watchers).toEqual([]);
 	});
 
 	test('legacy/null startedAt → never killed (unverifiable)', async () => {
@@ -165,7 +420,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
 
 	test('absent marker → never killed', async () => {
 		const kills = [];
-		await executor.execute(
+		const watchers = await executor.execute(
 			[{ type: 'stopWatcher', pr: { number: 5 } }],
 			{
 				projectRoot: '/repo',
@@ -177,6 +432,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
 			},
 		);
 		expect(kills).toHaveLength(0);
+		expect(watchers).toEqual([]);
 	});
 });
 
@@ -353,14 +609,21 @@ describe('runDaemon — singleton lease lifecycle', () => {
 describe('watcher marker cleanup + superseded-daemon stop', () => {
 	test('stopWatcher/reapOrphan remove the start-time marker (a reused PID cannot match a stale one)', async () => {
 		const removed = [];
-		await executor.execute(
+		const cancelling = await executor.execute(
 			[{ type: 'stopWatcher', pr: { number: 5 } }],
 			{
-				projectRoot: '/repo',
+				projectRoot: '/repo', now: () => 1000,
 				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: 't1' }],
 				isAlive: () => true, readClaim: () => 't1', kill: () => {},
 				removeClaim: (e) => removed.push(e),
 				broker: {},
+			},
+		);
+		await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', watchers: cancelling, now: () => 2000,
+				isAlive: () => false, removeClaim: (e) => removed.push(e), broker: {},
 			},
 		);
 		expect(removed).toHaveLength(1);
@@ -1031,6 +1294,50 @@ describe('finding 4 — retire never strands an un-exited zombie on release fail
 	});
 });
 
+describe('daemon retirement waits for watcher termination', () => {
+	test('no desired PRs does not retire while a cancellation-requested watcher is retained', async () => {
+		let released = false;
+		let exited = false;
+		const watcher = {
+			pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z',
+			lifecycle: { state: { phase: 'CANCEL_REQUESTED', terminal: false } },
+		};
+		const res = await executor.runDaemon('/repo', {
+			gitCommonDir: '/g', intervalMs: 100000,
+			acquire: () => ({ ok: true, token: 't' }),
+			startHeartbeat: () => ({}), stopHeartbeat: () => {},
+			release: () => { released = true; },
+			exit: () => { exited = true; },
+			convergeOnce: async () => ({ actions: [], watchers: [watcher], desiredCount: 0 }),
+		});
+
+		expect(res.retired).not.toBe(true);
+		expect(released).toBe(false);
+		expect(exited).toBe(false);
+		clearInterval(res.timer);
+	});
+
+	test('once mode keeps the lease when cancellation is still awaiting acknowledgement', async () => {
+		let released = false;
+		let exited = false;
+		const res = await executor.runDaemon('/repo', {
+			gitCommonDir: '/g', once: true,
+			acquire: () => ({ ok: true, token: 't' }),
+			startHeartbeat: () => ({}), stopHeartbeat: () => {},
+			release: () => { released = true; },
+			exit: () => { exited = true; },
+			convergeOnce: async () => ({
+				actions: [], desiredCount: 0,
+				watchers: [{ pr: 5, pid: 999, lifecycle: { state: { phase: 'CANCEL_REQUESTED', terminal: false } } }],
+			}),
+		});
+
+		expect(released).toBe(false);
+		expect(exited).toBe(false);
+		expect(res.watchers).toHaveLength(1);
+	});
+});
+
 describe('finding 5 — re-entrancy guard on the converge interval', () => {
 	test('a slow converge → overlapping ticks never run two passes concurrently', async () => {
 		let concurrent = 0; let maxConcurrent = 0; let calls = 0;
@@ -1156,8 +1463,8 @@ describe('finding 9 — execute dispatches every action type via the handler map
 		expect(retires).toHaveLength(1);
 		expect(kills.slice().sort()).toEqual([300, 900]);
 		expect(watchers.some((w) => w.pr === 1)).toBe(true);
-		expect(watchers.some((w) => w.pr === 3)).toBe(false);   // stopped
-		expect(watchers.some((w) => w.pid === 900)).toBe(false); // reaped
+		expect(watchers.find((w) => w.pr === 3).lifecycle.state.phase).toBe('CANCEL_REQUESTED');
+		expect(watchers.find((w) => w.pid === 900).lifecycle.state.phase).toBe('ORPHANED');
 	});
 });
 

@@ -7,7 +7,7 @@ const path = require('node:path');
 
 const journal = require('../../lib/pr-monitor/journal');
 const {
-  watchLoop, jitter, defaultSleep, defaultClaim, releaseClaim, DEFAULT_INTERVAL_MS,
+  watchLoop, runWatchPass, jitter, defaultSleep, defaultClaim, releaseClaim, DEFAULT_INTERVAL_MS,
 } = require('../../lib/pr-monitor/watch');
 const { EVENT_TYPES: T } = require('../../lib/pr-monitor/events');
 
@@ -38,6 +38,53 @@ beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'prmon-w-')); di
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('watchLoop', () => {
+  test('stops immediately when durable Memory replays a terminal receipt', async () => {
+    const result = await runWatchPass({ pending: new Map() }, {
+      runMonitorPass: async () => ({ events: [], terminalReceiptId: 'receipt-terminal' }),
+    }, () => {});
+    expect(result).toEqual({ terminal: true });
+  });
+  test('flushes a held failure before stopping on an empty terminal replay', async () => {
+    const failure = { type: T.CHECK_FAILED, key: 'ci:head', data: { name: 'ci' } };
+    const state = { pending: new Map([['ci', failure]]) };
+    const emitted = [];
+    const result = await runWatchPass(state, {
+      runMonitorPass: async () => ({ events: [], terminalReceiptId: 'receipt-terminal' }),
+    }, event => emitted.push(event));
+    expect(result).toEqual({ terminal: true });
+    expect(emitted).toEqual([failure]);
+    expect(state.pending.size).toBe(0);
+  });
+  test('stops on a terminal receipt even when replay also returns events', async () => {
+    const held = { type: T.CHECK_FAILED, key: 'held', data: { name: 'held' } };
+    const current = { type: T.CHECK_FAILED, key: 'current', data: { name: 'current' } };
+    const terminal = { type: T.PR_MERGED, key: 'merged', data: {} };
+    const state = { pending: new Map([['held', held]]) };
+    const emitted = [];
+
+    const result = await runWatchPass(state, {
+      runMonitorPass: async () => ({ events: [current, terminal], terminalReceiptId: 'receipt-terminal' }),
+    }, event => emitted.push(event));
+
+    expect(result).toEqual({ terminal: true });
+    expect(emitted).toEqual([held, current, terminal]);
+    expect(state.pending.size).toBe(0);
+  });
+  test('reconciles recovered checks before flushing held failures on a terminal receipt', async () => {
+    const held = { type: T.CHECK_FAILED, key: 'ci', data: { name: 'ci' } };
+    const recovered = { type: T.CHECK_RECOVERED, key: 'ci', data: { name: 'ci' } };
+    const terminal = { type: T.PR_MERGED, key: 'merged', data: {} };
+    const state = { pending: new Map([['ci', held]]) };
+    const emitted = [];
+
+    const result = await runWatchPass(state, {
+      runMonitorPass: async () => ({ events: [recovered, terminal], terminalReceiptId: 'receipt-terminal' }),
+    }, event => emitted.push(event));
+
+    expect(result).toEqual({ terminal: true });
+    expect(emitted).toEqual([terminal]);
+    expect(state.pending.size).toBe(0);
+  });
   test('streams a confirmed check.failed as an emitted event on change', async () => {
     const green = snap({ checks: [{ name: 'ci', class: 'green' }] });
     const failed = snap({ checks: [{ name: 'ci', class: 'failed' }] });
@@ -52,6 +99,32 @@ describe('watchLoop', () => {
     expect(res.stopped).toBe(false);
     // Held one pass, then confirmed on the no-change third pass → pushed.
     expect(emitted.map((e) => e.type)).toContain(T.CHECK_FAILED);
+  });
+
+  test('streams journal-assigned compatibility sequences instead of raw Memory sequences', async () => {
+    const compatibility = {
+      seq: 2, ts: now(), type: T.VERDICT_CHANGED, key: 'state:ready',
+      repo: 'acme-forge', pr: '1', data: {},
+    };
+    const emitted = [];
+    await runWatchPass({ pending: new Map() }, {
+      dir,
+      runMonitorPass: async () => {
+        journal.appendEvents(dir, [{
+          ...compatibility, seq: 1, type: T.COMMENT_POSTED, key: 'pre-pass',
+        }]);
+        journal.appendEvents(dir, [compatibility]);
+        return {
+          journalCursor: 1,
+          events: [
+            { ...compatibility, seq: 2, type: 'monitor.checkpoint' },
+            { ...compatibility, seq: 3 },
+          ],
+        };
+      },
+    }, event => emitted.push(event));
+
+    expect(emitted).toEqual([compatibility]);
   });
 
   test('emits nothing after the baseline when the snapshot never changes', async () => {

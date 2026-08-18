@@ -83,6 +83,10 @@ describe('forge shepherd --bundle handler path', () => {
         adapter,
         buildContext,
         runPass: async () => ({ state: 'PENDING', actions: [], reason: 'waiting' }),
+        runLocalPreflight: async () => ({ status: 'PASS', blocking: false, providers: {}, findings: [] }),
+        collectConvergenceEvidence: async () => ({
+          deltas: [], deltaOverflow: false, receiptIds: [], exactHead: 'a'.repeat(40),
+        }),
       },
     );
     expect(result.bundle).toBeUndefined();
