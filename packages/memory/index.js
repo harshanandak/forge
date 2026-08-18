@@ -1,5 +1,6 @@
 'use strict';
 
+const { types } = require('node:util');
 const { ContractValidationError, validateContractStructure } = require('@forge/memory-contracts');
 
 const TARGET_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
@@ -15,6 +16,27 @@ const MAX_TARGETS = 32;
 const MAX_TARGET_LENGTH = 128;
 const PRIVATE_PATH_ROOTS = ['users', 'home', 'root'];
 const MAX_PRIVATE_SCAN_LENGTH = 16_384;
+const MONITOR_EVENT_ROW_FIELDS = Object.freeze([
+  'event_id', 'monitor_id', 'sequence', 'content_hash', 'envelope_json',
+  'artifact_digest', 'created_at',
+]);
+const MONITOR_CURSOR_ROW_FIELDS = Object.freeze([
+  'monitor_id', 'target', 'sequence', 'updated_at',
+]);
+const MONITOR_OUTBOX_ROW_FIELDS = Object.freeze([
+  'outbox_id', 'event_id', 'monitor_id', 'sequence', 'target', 'status',
+  'attempts', 'next_attempt_at', 'created_at',
+]);
+const MONITOR_TERMINAL_ROW_FIELDS = Object.freeze([
+  'monitor_id', 'content_hash', 'envelope_json', 'owner_run_id', 'terminal_state',
+  'last_sequence', 'evidence_digest', 'undelivered_cursor', 'created_at',
+]);
+const MONITOR_TAIL_FIELDS = Object.freeze([
+  'events', 'overflow', 'truncated_before_sequence',
+]);
+const MONITOR_DELIVERY_STATE_FIELDS = Object.freeze([
+  'cursors', 'outbox', 'terminal_receipt', 'overflow',
+]);
 
 class MonitorStoreError extends Error {
   constructor(code, message, options = {}) {
@@ -78,6 +100,87 @@ async function callMonitorDriver(operation) {
   } catch (error) {
     throw publicMonitorError(error);
   }
+}
+
+function ordinaryDataDescriptors(value, prototype) {
+  if (
+    !value
+    || typeof value !== 'object'
+    || types.isProxy(value)
+    || Object.getPrototypeOf(value) !== prototype
+    || !Object.isExtensible(value)
+  ) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(descriptors).some((key) => {
+    const descriptor = descriptors[key];
+    return typeof key !== 'string'
+      || !descriptor.enumerable
+      || !Object.hasOwn(descriptor, 'value');
+  })) return null;
+  return descriptors;
+}
+
+function hasExactFields(descriptors, fields) {
+  const keys = Object.keys(descriptors);
+  return keys.length === fields.length && fields.every(field => Object.hasOwn(descriptors, field));
+}
+
+function normalizeMonitorRow(value, fields) {
+  const descriptors = ordinaryDataDescriptors(value, null);
+  if (!descriptors || !hasExactFields(descriptors, fields) || Object.values(descriptors).some(({ value: field }) => (
+    field !== null
+    && typeof field !== 'string'
+    && !(typeof field === 'number' && Number.isFinite(field))
+  ))) return value;
+  return Object.defineProperties({}, descriptors);
+}
+
+function normalizeMonitorRows(value, fields) {
+  if (
+    !Array.isArray(value)
+    || types.isProxy(value)
+    || Object.getPrototypeOf(value) !== Array.prototype
+    || !Object.isExtensible(value)
+  ) return value;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const lengthDescriptor = descriptors.length;
+  if (
+    !lengthDescriptor
+    || !Object.hasOwn(lengthDescriptor, 'value')
+    || lengthDescriptor.value !== value.length
+    || lengthDescriptor.enumerable
+    || lengthDescriptor.configurable
+    || !lengthDescriptor.writable
+  ) return value;
+  const entryKeys = Reflect.ownKeys(descriptors).filter(key => key !== 'length');
+  if (entryKeys.length !== value.length || entryKeys.some((key) => {
+    const descriptor = descriptors[key];
+    const index = Number(key);
+    return typeof key !== 'string'
+      || !Number.isInteger(index)
+      || index < 0
+      || index >= 4_294_967_295
+      || index >= value.length
+      || String(index) !== key
+      || !descriptor.enumerable
+      || !descriptor.writable
+      || !descriptor.configurable
+      || !Object.hasOwn(descriptor, 'value');
+  })) return value;
+  return value.map(row => normalizeMonitorRow(row, fields));
+}
+
+function normalizeMonitorResult(value, expectedFields, fields) {
+  const descriptors = ordinaryDataDescriptors(value, Object.prototype);
+  if (!descriptors || !hasExactFields(descriptors, expectedFields)) return value;
+  for (const [field, normalize] of Object.entries(fields)) {
+    if (descriptors[field]) descriptors[field].value = normalize(descriptors[field].value);
+  }
+  return Object.defineProperties({}, descriptors);
+}
+
+async function readMonitorDriver(operation, normalize) {
+  return normalize(await callMonitorDriver(operation));
 }
 
 function hasNonWhitespacePathSegment(segment) {
@@ -181,16 +284,34 @@ function createMonitorStore(driver) {
       if (typeof eventId !== 'string' || !eventId || eventId.length > 255) {
         throw new TypeError('eventId must be a bounded non-empty string');
       }
-      return callMonitorDriver(() => driver.getMonitorEvent(eventId, config));
+      return readMonitorDriver(
+        () => driver.getMonitorEvent(eventId, config),
+        value => normalizeMonitorRow(value, MONITOR_EVENT_ROW_FIELDS),
+      );
     },
     readEventTail(monitorId, options = {}, config = {}) {
-      return callMonitorDriver(() => driver.readMonitorEventTail(assertMonitorId(monitorId), options, config));
+      return readMonitorDriver(
+        () => driver.readMonitorEventTail(assertMonitorId(monitorId), options, config),
+        value => normalizeMonitorResult(value, MONITOR_TAIL_FIELDS, {
+          events: rows => normalizeMonitorRows(rows, MONITOR_EVENT_ROW_FIELDS),
+        }),
+      );
     },
     readDeliveryState(monitorId, options = {}, config = {}) {
-      return callMonitorDriver(() => driver.readMonitorDeliveryState(assertMonitorId(monitorId), options, config));
+      return readMonitorDriver(
+        () => driver.readMonitorDeliveryState(assertMonitorId(monitorId), options, config),
+        value => normalizeMonitorResult(value, MONITOR_DELIVERY_STATE_FIELDS, {
+          cursors: rows => normalizeMonitorRows(rows, MONITOR_CURSOR_ROW_FIELDS),
+          outbox: rows => normalizeMonitorRows(rows, MONITOR_OUTBOX_ROW_FIELDS),
+          terminal_receipt: row => normalizeMonitorRow(row, MONITOR_TERMINAL_ROW_FIELDS),
+        }),
+      );
     },
     listEvents(monitorId, config = {}) {
-      return callMonitorDriver(() => driver.listMonitorEvents(assertMonitorId(monitorId), config));
+      return readMonitorDriver(
+        () => driver.listMonitorEvents(assertMonitorId(monitorId), config),
+        rows => normalizeMonitorRows(rows, MONITOR_EVENT_ROW_FIELDS),
+      );
     },
   };
 }
