@@ -75,7 +75,8 @@ async function run(options, dependencies = {}) {
 	const createBackup = dependencies.createVerifiedClaimRepairBackup
 		|| createVerifiedClaimRepairBackup;
 	const hardenPath = dependencies.hardenPath || hardenBackupPermissions;
-	const hardenPaths = dependencies.hardenPaths || hardenBackupPermissionsBatch;
+	const hardenPaths = dependencies.hardenPaths
+		|| (dependencies.hardenPath ? dependencies.hardenPath.batch : hardenBackupPermissionsBatch);
 	const sourceDriver = openDriver(options.databasePath);
 	try {
 		if (options.mode === 'dry-run') {

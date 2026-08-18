@@ -308,6 +308,30 @@ describe('legacy claim repair preflight', () => {
 		})).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
 	});
 
+	test('uses an injected single-path hardener without pairing it with the production batch', async () => {
+		const driver = {
+			async preflightLegacyClaimRepair() { return { digest: 'a'.repeat(64) }; },
+			close() {},
+		};
+		const hardenPath = () => {};
+		let received;
+		await run({
+			mode: 'dry-run',
+			databasePath: 'source.sqlite',
+			backupPath: 'backup.sqlite',
+			observedAt: OBSERVED_AT,
+		}, {
+			openDriver: () => driver,
+			hardenPath,
+			createVerifiedClaimRepairBackup: async options => {
+				received = options;
+				return { plan_digest: 'a'.repeat(64) };
+			},
+		});
+		expect(received.hardenPath).toBe(hardenPath);
+		expect(received.hardenPaths).toBeUndefined();
+	});
+
 	test('classifies terminal rows before expiry and emits deterministic privacy-safe counts', async () => {
 		const fixture = await createFixture();
 		await seedMixedClaims(fixture);
