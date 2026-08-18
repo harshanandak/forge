@@ -61,6 +61,7 @@ function deps(overrides = {}) {
     verifyIssueOwnership: async () => ({
       owned: true, actor: 'release-actor', claimedBy: 'release-actor', sessionId: 'release-session', expired: false,
     }),
+    resolveLocalRepository: async () => 'acme/forge',
     verifyPrIssueBinding: async () => ({ bound: true }),
     verifyMergeGate: async () => true,
     prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
