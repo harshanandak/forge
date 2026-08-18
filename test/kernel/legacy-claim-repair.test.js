@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { afterEach, describe, expect, test } = require('bun:test');
 
 const { createLocalBroker } = require('../../lib/kernel/broker');
@@ -41,6 +42,65 @@ async function removeDirWithRetry(dir, attempts = 10) {
 		}
 	}
 }
+
+function sanitizeSavedWindowsAcl(serializedAcl) {
+	return String(serializedAcl)
+		.split(/\r?\n/)
+		.map(line => line.trim())
+		.map(line => {
+			const daclStart = line.search(/D:(?=[A-Z(])/);
+			return daclStart === -1 ? '' : line.slice(daclStart);
+		})
+		.filter(line => line.startsWith('D:'))
+		.map(line => line
+			.replace(/\(([^()]*)\)/g, (_ace, contents) => {
+				const fields = contents.split(';');
+				if (fields.length >= 6) {
+					fields.splice(5, fields.length - 5, '<IDENTITY>');
+				}
+				return `(${fields.join(';')})`;
+			})
+			.replace(/S-\d+(?:-\d+)+/gi, '<SID>'));
+}
+
+function collectSanitizedWindowsAclShapes(targets) {
+	const systemRoot = process.env.SystemRoot;
+	if (typeof systemRoot !== 'string' || !path.win32.isAbsolute(systemRoot)) return [{ diagnostic: 'unavailable' }];
+	const icaclsPath = path.win32.join(systemRoot, 'System32', 'icacls.exe');
+	let proofDirectory;
+	try {
+		proofDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-acl-diagnostic-'));
+		return targets.map((target, index) => {
+			try {
+				const kind = fs.statSync(target).isDirectory() ? 'directory' : 'file';
+				const proofPath = path.join(proofDirectory, `${index}.acl`);
+				execFileSync(icaclsPath, [target, '/save', proofPath, '/q'], {
+					cwd: path.win32.dirname(icaclsPath),
+					env: { SystemRoot: systemRoot },
+					stdio: 'ignore',
+					timeout: 15_000,
+					windowsHide: false,
+				});
+				return { kind, descriptors: sanitizeSavedWindowsAcl(fs.readFileSync(proofPath, 'utf16le')) };
+			} catch {
+				return { diagnostic: 'unavailable' };
+			}
+		});
+	} catch {
+		return [{ diagnostic: 'unavailable' }];
+	} finally {
+		if (proofDirectory) {
+			try { fs.rmSync(proofDirectory, { recursive: true, force: true }); } catch { /* diagnostic cleanup is best effort */ }
+		}
+	}
+}
+
+test('sanitizes hosted Windows ACL diagnostics without paths or identities', () => {
+	const serialized = 'D:\\private\\user\\backup.sqlite\r\nO:S-1-5-21-1G:DOMAIN\\userD:PAI(A;;FA;;;S-1-5-21-1)(A;OICI;0x1f01ff;;;BU)S:AI';
+	expect(sanitizeSavedWindowsAcl(serialized)).toEqual([
+		'D:PAI(A;;FA;;;<IDENTITY>)(A;OICI;0x1f01ff;;;<IDENTITY>)S:AI',
+	]);
+});
 
 afterEach(async () => {
 	while (tempDirs.length > 0) await removeDirWithRetry(tempDirs.pop());
@@ -390,7 +450,13 @@ describe('legacy claim repair preflight', () => {
 		const file = path.join(directory, 'bäckup-Δ.sqlite');
 		fs.mkdirSync(directory);
 		fs.writeFileSync(file, 'backup');
-		secureWindowsPathsAcl([directory, file]);
+		try {
+			secureWindowsPathsAcl([directory, file]);
+		} catch (error) {
+			if (error.message !== 'owner-only ACL verification failed') throw error;
+			const shapes = collectSanitizedWindowsAclShapes([directory, file]);
+			throw new Error(`owner-only ACL verification failed; sanitized ACL shape: ${JSON.stringify(shapes)}`);
+		}
 	});
 
 	test('restore-proof cleanup retries Windows file locks without replacing valid proof', () => {
