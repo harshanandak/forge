@@ -37,6 +37,20 @@ describe('shepherd command handler', () => {
     expect(out.state).toBe('PENDING');
   });
 
+  test('preserves performed actions when durable convergence evidence fails', async () => {
+    const actions = [{ type: 'rerunCheck', name: 'ci' }];
+    const out = await shepherdCmd.handler(['123'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
+      runPass: async () => ({ state: 'PENDING', actions, reason: 'reran ci' }),
+      collectConvergenceEvidence: async () => { throw new Error('Memory unavailable'); },
+      buildContext: async () => ({
+        pr: '123', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      }),
+    });
+
+    expect(out).toMatchObject({ success: false, state: 'INCOMPLETE', actions });
+  });
+
   test('--auto-rebase defaults to false and is opt-in via flag', async () => {
     let seenAutoRebase;
     const fakeRun = async (ctx) => {

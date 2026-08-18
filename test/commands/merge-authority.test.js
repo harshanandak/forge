@@ -424,7 +424,7 @@ describe('merge command — mandatory release authority', () => {
     expect(gateChecks).toBe(0);
   });
 
-  test('replays existing terminal evidence after auto-merge configuration is disabled', async () => {
+  test('keeps terminal evidence private when auto-merge is disabled', async () => {
     let ownershipChecks = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
       loadConfig: () => ({ merge: { auto: { enabled: false } } }),
@@ -439,14 +439,13 @@ describe('merge command — mandatory release authority', () => {
       }),
     }));
 
-    expect(out).toMatchObject({
-      success: true, merged: true, recovered: true,
-      decisionId: 'decision-existing', receiptId: 'receipt-existing',
-    });
+    expect(out).toMatchObject({ success: true, merged: false, enabled: false });
+    expect(out.decisionId).toBeUndefined();
+    expect(out.receiptId).toBeUndefined();
     expect(ownershipChecks).toBe(0);
   });
 
-  test('replays existing terminal evidence after the live ownership claim expires', async () => {
+  test('requires live ownership before exposing terminal evidence', async () => {
     let ownershipChecks = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
       verifyIssueOwnership: async () => {
@@ -466,11 +465,10 @@ describe('merge command — mandatory release authority', () => {
       }),
     }));
 
-    expect(out).toMatchObject({
-      success: true, merged: true, recovered: true,
-      decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
-    });
-    expect(ownershipChecks).toBe(0);
+    expect(out).toMatchObject({ success: false, merged: false });
+    expect(out.error).toMatch(/ownership|claim/i);
+    expect(out.decisionId).toBeUndefined();
+    expect(ownershipChecks).toBe(1);
   });
 
   test('requires live ownership before repairing missing terminal evidence', async () => {
@@ -631,7 +629,7 @@ describe('merge command — mandatory release authority', () => {
     }
   });
 
-  test('requires an active Kernel claim after the read-only terminal replay check', async () => {
+  test('requires an active Kernel claim before provider state', async () => {
     let fetchCalls = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
       verifyIssueOwnership: async () => ({
@@ -644,7 +642,7 @@ describe('merge command — mandatory release authority', () => {
     expect(out.success).toBe(false);
     expect(out.merged).toBe(false);
     expect(out.error).toMatch(/ownership|claim/i);
-    expect(fetchCalls).toBe(1);
+    expect(fetchCalls).toBe(0);
   });
 
   test('requires the live claim to carry the exact merge session before mutation', async () => {

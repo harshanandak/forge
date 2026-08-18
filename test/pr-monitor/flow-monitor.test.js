@@ -512,6 +512,13 @@ describe('Flow-backed PR monitor authority', () => {
     expect(batches).toHaveLength(128);
   });
 
+  test('fails closed when segmented recovery has no remaining records', () => {
+    expect(() => _internals.remainingSegmentedRecords({
+      records: [{ seq: 1 }],
+      remainingOffset: 1,
+    })).toThrow('Pending monitor transition has no remaining records');
+  });
+
   test('supersedes a pre-commit plan truncated by its replacement at the bounded tail', async () => {
     const store = durableStore();
     const checks = Array.from({ length: 128 }, (_, index) => ({
