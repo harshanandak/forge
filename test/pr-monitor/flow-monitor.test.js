@@ -1,6 +1,7 @@
 'use strict';
 
 const { describe, expect, test } = require('bun:test');
+const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 
 const { runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
@@ -352,8 +353,19 @@ describe('Flow-backed PR monitor authority', () => {
         actual.content_hash = computeContentHash(actual);
       },
       (events) => {
+        for (const event of events.filter(item => item.payload.bounded_payload.batch_plan)) {
+          event.payload.bounded_payload.batch_plan.id = 'invalid';
+          event.content_hash = computeContentHash(event);
+        }
+      },
+      (events) => {
         const actual = events.find(event => event.payload.type === 'check.failed');
         actual.payload.sequence += 1;
+        actual.content_hash = computeContentHash(actual);
+      },
+      (events) => {
+        const actual = events.find(event => event.payload.type === 'check.failed');
+        actual.payload.actionability = 'advisory';
         actual.content_hash = computeContentHash(actual);
       },
       (events) => {
@@ -379,16 +391,54 @@ describe('Flow-backed PR monitor authority', () => {
     retainedActual.at(-1).payload.bounded_payload.snapshot = null;
     retainedActual.at(-1).content_hash = computeContentHash(retainedActual.at(-1));
     missingPlan.events.push(...retainedActual);
-    missingPlan.setCursor('legacy-journal', retainedActual.at(-1).payload.sequence);
+    missingPlan.setCursor('legacy-journal', retainedActual[0].payload.sequence - 1);
     missingPlan.getEvent = undefined;
+    const leaked = [];
     await expect(runFlowMonitorPass(context(
       missingPlan,
       async () => { throw new Error('committed plan loss must not gather'); },
-      async () => {},
+      async record => leaked.push(record),
     ))).rejects.toMatchObject({
       code: 'MONITOR_HISTORY_INCOMPLETE',
       message: 'Durable monitor transition plan marker is missing',
     });
+    expect(leaked).toHaveLength(0);
+
+    const finalTampered = durableStore();
+    finalTampered.events.push(...structuredClone(store.events));
+    const finalEvent = finalTampered.events.at(-1);
+    finalTampered.setCursor('legacy-journal', finalEvent.payload.sequence - 1);
+    finalEvent.payload.actionability = 'advisory';
+    finalEvent.content_hash = computeContentHash(finalEvent);
+    const finalLeaks = [];
+    await expect(runFlowMonitorPass(context(
+      finalTampered,
+      async () => { throw new Error('unacknowledged final plan event must be proven before gather'); },
+      async record => finalLeaks.push(record),
+    ))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+    expect(finalLeaks).toHaveLength(0);
+  }, 30_000);
+
+  test('segments a transition that exceeds the decoded recovery bound before compression', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 128 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let next = snapshot({ checks });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    ctx.enrich = async records => {
+      for (const [index, record] of records.entries()) {
+        record.repo = `owner/${index}-${'x'.repeat(3_000)}`;
+      }
+    };
+
+    await runFlowMonitorPass(ctx);
+
+    const segments = store.events.filter(event => event.payload.bounded_payload.pending_batch);
+    expect(segments.length).toBeGreaterThan(1);
+    expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(128);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
   }, 30_000);
 
   test('supersedes an orphaned pre-commit recovery plan with a fresh observation', async () => {
@@ -404,12 +454,15 @@ describe('Flow-backed PR monitor authority', () => {
     next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
 
     const appendEvent = store.appendEvent.bind(store);
+    let interruptions = 0;
     store.appendEvent = async (...args) => {
-      if (args[0].payload.bounded_payload.batch_plan?.index === 1) {
+      if (args[0].payload.bounded_payload.batch_plan?.index === 1 && interruptions < 2) {
+        interruptions += 1;
         throw new Error('pre-commit plan interruption');
       }
       return appendEvent(...args);
     };
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
     await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
     store.appendEvent = appendEvent;
 
@@ -419,6 +472,119 @@ describe('Flow-backed PR monitor authority', () => {
     expect(delivered.filter(event => event.type === 'check.failed')).toHaveLength(128);
     expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
   }, 30_000);
+
+  test('rejects a complete pre-commit plan whose identity was rewritten', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 128 }, (_, index) => ({
+      name: Array.from({ length: 4 }, (_value, salt) => computeContentHash({ index, salt })).join(''),
+      class: 'green',
+    }));
+    let next = snapshot({ checks });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    const appendEvent = store.appendEvent.bind(store);
+    store.appendEvent = async (...args) => {
+      if (args[0].payload.bounded_payload.batch_plan?.committed === true) {
+        throw new Error('commit marker interruption');
+      }
+      return appendEvent(...args);
+    };
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    store.appendEvent = appendEvent;
+
+    const replacementId = '0'.repeat(64);
+    for (const event of store.events.filter(item => Number.isSafeInteger(
+      item.payload.bounded_payload.batch_plan?.index,
+    ))) {
+      const index = event.payload.bounded_payload.batch_plan.index;
+      const key = `batch-plan:${replacementId}:${index}`;
+      event.payload.bounded_payload.batch_plan.id = replacementId;
+      event.payload.bounded_payload.record.key = `sha256:${crypto.createHash('sha256').update(key).digest('hex')}`;
+      event.payload.event_id = crypto.createHash('sha256')
+        .update(`${ctx.monitorId}:${event.payload.sequence}:${event.payload.type}:${key}`)
+        .digest('hex');
+      event.content_hash = computeContentHash(event);
+    }
+    let gathers = 0;
+    await expect(runFlowMonitorPass(context(
+      store,
+      async () => { gathers += 1; return next; },
+      async () => {},
+    ))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+    expect(gathers).toBe(0);
+  }, 30_000);
+
+  test('recovers exactly once across every segmented persistence boundary', async () => {
+    const checks = Array.from({ length: 128 }, (_, index) => ({
+      name: Array.from({ length: 4 }, (_value, salt) => computeContentHash({ index, salt })).join(''),
+      class: 'green',
+    }));
+    const failed = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+
+    const probe = durableStore();
+    let probeNext = snapshot({ checks });
+    const probeCtx = context(probe, async () => probeNext, async () => {});
+    await runFlowMonitorPass(probeCtx);
+    probeNext = failed;
+    await runFlowMonitorPass(probeCtx);
+    const probeSegments = probe.events.filter(event => Number.isSafeInteger(
+      event.payload.bounded_payload.batch_plan?.index,
+    ));
+    const probeMarker = probe.events.find(event => event.payload.bounded_payload.batch_plan?.committed === true);
+    const segmentLengths = probeSegments.map(event => JSON.parse(zlib.gunzipSync(Buffer.from(
+      event.payload.bounded_payload.pending_batch,
+      'base64url',
+    ))).records.length);
+    const actualStart = probeMarker.payload.sequence + 1;
+    let boundary = 0;
+    const transitionSequences = segmentLengths.map(length => {
+      const sequence = actualStart + boundary;
+      boundary += length;
+      return sequence;
+    });
+    const failureSequences = [...new Set([
+      ...probeSegments.map(event => event.payload.sequence),
+      probeMarker.payload.sequence,
+      ...transitionSequences,
+      actualStart + boundary - 1,
+    ])];
+
+    for (const failureSequence of failureSequences) {
+      const store = durableStore();
+      let next = snapshot({ checks });
+      const delivered = [];
+      const ctx = context(store, async () => next, async record => delivered.push(record));
+      await runFlowMonitorPass(ctx);
+      next = failed;
+      const appendEvent = store.appendEvent.bind(store);
+      let interrupted = false;
+      store.appendEvent = async (...args) => {
+        if (!interrupted && args[0].payload.sequence === failureSequence) {
+          interrupted = true;
+          throw new Error(`storage failure at sequence ${failureSequence}`);
+        }
+        return appendEvent(...args);
+      };
+      await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+      const committed = store.events.some(event => event.payload.bounded_payload.batch_plan?.committed === true);
+      if (!committed) expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(0);
+      store.appendEvent = appendEvent;
+      if (committed) {
+        ctx.gather = async () => { throw new Error('committed transition recovery must precede provider state'); };
+      }
+
+      await runFlowMonitorPass(ctx);
+      const actualEvents = store.events.filter(event => event.payload.type === 'check.failed');
+      expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(128);
+      expect(actualEvents).toHaveLength(128);
+      expect(new Set(actualEvents.map(event => event.payload.sequence)).size).toBe(128);
+      expect(actualEvents.slice(0, -1).every(event => (
+        event.payload.bounded_payload.checkpoint_complete === false
+      ))).toBe(true);
+      expect(actualEvents.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+    }
+  }, 120_000);
 
   test('recovers a retained suffix of an accepted transition batch', async () => {
     const store = durableStore();
