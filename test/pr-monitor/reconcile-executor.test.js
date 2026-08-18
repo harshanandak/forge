@@ -240,6 +240,31 @@ describe('execute — watcher lifecycle', () => {
 		expect(persisted.at(-1)).toEqual([]);
 	});
 
+	test('keeps a surviving cleanup watcher under singleton authority', async () => {
+		let writes = 0;
+		let attempts = 0;
+		let persisted = [];
+		await expect(executor.execute(
+			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
+				spawnWatcher: () => ({ pid: 1234 }),
+				persistLifecycleCheckpoint: current => {
+					writes += 1;
+					persisted = structuredClone(current);
+					return writes !== 2;
+				},
+				writeClaim: () => {}, readClaim: () => '1970-01-01T00:00:01.000Z',
+				isAlive: () => true,
+				kill: () => { attempts += 1; throw new Error('still alive'); },
+				waitForKillRetry: async () => {},
+			},
+		)).rejects.toMatchObject({ code: 'WATCHER_CLEANUP_FAILED' });
+		expect(attempts).toBe(3);
+		expect(persisted).toHaveLength(1);
+		expect(persisted[0]).toMatchObject({ pid: 1234, pr: 42, repo: 'forge' });
+	});
+
 	test('retries a failed force-kill after cancellation grace expires', async () => {
 		const signals = [];
 		let forceKillAttempts = 0;

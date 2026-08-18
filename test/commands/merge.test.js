@@ -97,6 +97,36 @@ describe('merge command — opt-in conditional auto-merge', () => {
     expect(context.reviewEvidenceReadable).toBe(false);
   });
 
+  test('default fetch uses an explicit base repository without consulting the checkout repository', async () => {
+    const calls = [];
+    const gh = (args) => {
+      calls.push(args);
+      if (args[0] === 'repo') throw new Error('checkout repository must not be consulted');
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return JSON.stringify({
+          number: 42, headRefOid: HEAD, baseRefName: 'master', state: 'OPEN', isDraft: false,
+          mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', statusCheckRollup: [], comments: [],
+          updatedAt: '2026-08-02T12:00:00Z',
+        });
+      }
+      if (args[0] === 'api') {
+        const connection = { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } };
+        return JSON.stringify({ data: { repository: { pullRequest: {
+          reviews: connection, reviewThreads: connection,
+        } } } });
+      }
+      return '';
+    };
+
+    const context = await mergeCmd.defaultFetchPrContext({
+      pr: '42', repository: 'upstream/forge', gh,
+    });
+
+    expect(context.repository).toBe('upstream/forge');
+    expect(calls.find(args => args[0] === 'pr')).toContain('--repo');
+    expect(calls.find(args => args[0] === 'pr')).toContain('upstream/forge');
+  });
+
   test('satisfies the _registry { name, description, handler } contract', () => {
     expect(validateCommand(mergeCmd)).toEqual({ valid: true });
     expect(mergeCmd.name).toBe('merge');

@@ -403,12 +403,19 @@ describe('merge authority — exact reviewer regressions', () => {
   });
 
   test('requires a canonical positive-decimal PR number', () => {
-    for (const selector of ['-R=evil/other', '--repo=evil/other', '0', '-1', '1.5', 'https://github.com/acme/forge/pull/42', '', ' 42']) {
+    for (const selector of ['-R=evil/other', '0', '-1', '1.5', 'https://github.com/acme/forge/pull/42', '', ' 42']) {
       const parsed = mergeCmd.parseMergeArgs(args(selector));
       expect(parsed.error).toMatch(/PR number|selector|invalid|unknown merge option/i);
       expect(parsed.pr).toBeNull();
     }
     expect(mergeCmd.parseMergeArgs(args('42')).pr).toBe('42');
+  });
+
+  test('accepts one canonical base repository binding', () => {
+    const parsed = mergeCmd.parseMergeArgs([...args('42'), '--repo', 'upstream/forge']);
+    expect(parsed).toMatchObject({ pr: '42', repository: 'upstream/forge', error: null });
+    expect(mergeCmd.parseMergeArgs([...args('42'), '--repo', 'not-a-repository']).error)
+      .toMatch(/--repo.*invalid/i);
   });
 
   test('only OPEN proceeds, MERGED reconciles evidence, and CLOSED is a terminal no-op', async () => {

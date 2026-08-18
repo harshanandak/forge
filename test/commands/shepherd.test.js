@@ -5,10 +5,11 @@ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 const shepherdCmd = require('../../lib/commands/shepherd');
 const { validateCommand } = require('../../lib/commands/_registry');
 
+const STABLE_HEAD = 'a'.repeat(40);
 const CONVERGENCE_DEPS = {
   runLocalPreflight: async () => ({ status: 'PASS', blocking: false, providers: {}, findings: [] }),
   collectConvergenceEvidence: async () => ({
-    deltas: [], deltaOverflow: false, receiptIds: [], exactHead: 'a'.repeat(40),
+    deltas: [], deltaOverflow: false, receiptIds: [], exactHead: STABLE_HEAD,
   }),
 };
 
@@ -394,6 +395,34 @@ describe('shepherd command handler', () => {
 
     expect(out).toMatchObject({ success: true, state: 'MERGE_READY' });
     expect(out.handoff.command).toContain(`--expect-head ${lowerHead}`);
+  });
+
+  test('binds the merge handoff to the authoritative base repository', async () => {
+    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
+      runPass: async () => ({ state: 'MERGE_READY', actions: [], reason: 'ready', expectedHead: STABLE_HEAD }),
+      buildContext: async () => ({
+        pr: '7', owner: 'upstream', repo: 'forge', base: 'master', baseRef: 'origin/master',
+        headSha: STABLE_HEAD, localHead: STABLE_HEAD,
+      }),
+      git: (_command, args) => (args[0] === 'rev-parse' ? `${STABLE_HEAD}\n` : ''),
+    });
+
+    expect(out.handoff.command).toContain('--repo upstream/forge');
+  });
+
+  test('withholds verify handoff whenever merged evidence lacks a terminal receipt', async () => {
+    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
+      runPass: async () => ({ state: 'MERGED', actions: [], reason: 'merged' }),
+      buildContext: async () => ({
+        pr: '7', owner: 'upstream', repo: 'forge', base: 'master', baseRef: 'origin/master',
+        headSha: STABLE_HEAD, localHead: STABLE_HEAD,
+      }),
+    });
+
+    expect(out).toMatchObject({ success: false, state: 'INCOMPLETE', remoteState: 'MERGED' });
+    expect(out.handoff).toBeUndefined();
   });
 
   test('fails closed when a merge-ready pass moved beyond the locally reviewed head', async () => {
