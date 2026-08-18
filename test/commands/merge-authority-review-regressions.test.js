@@ -80,7 +80,7 @@ function makeGh(threadPayload, viewOverrides = {}, checkRuns = null) {
       return JSON.stringify(payload);
     }
     if (argv[0] === 'repo' && argv[1] === 'view') {
-      return JSON.stringify({ owner: { login: 'acme' }, name: 'forge' });
+      return JSON.stringify({ owner: { login: 'acme' }, name: 'forge', isFork: false, parent: null });
     }
     if (argv[0] === 'api' && argv[1] === 'repos/acme/forge/branches/master/protection/required_status_checks') {
       return JSON.stringify({ contexts: ['ci'], checks: [{ context: 'ci', app_id: 123 }] });
@@ -731,8 +731,8 @@ describe('merge authority — exact reviewer regressions', () => {
       if (argv[0] === 'repo' && argv[1] === 'view') {
         repoReads += 1;
         return JSON.stringify(repoReads === 1
-          ? { owner: { login: 'acme' }, name: 'forge' }
-          : { owner: { login: 'evil' }, name: 'other' });
+          ? { owner: { login: 'acme' }, name: 'forge', isFork: false, parent: null }
+          : { owner: { login: 'evil' }, name: 'other', isFork: false, parent: null });
       }
       if (argv[0] === 'api' && argv[1] === 'graphql') graphqlArgs = argv;
       return baseGh(argv);

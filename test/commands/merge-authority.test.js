@@ -342,7 +342,11 @@ describe('merge command — mandatory release authority', () => {
   });
 
   test('fails closed on incomplete retired trace gaps before provider I/O', async () => {
-    for (const suffix of ['incomplete', 'overflow']) {
+    for (const gaps of [
+      ['iterations:pr-1:incomplete'],
+      ['iterations:pr-1:overflow'],
+      ['pull_requests:overflow'],
+    ]) {
       let fetches = 0;
       const injected = deps({
         fetchPrContext: async () => { fetches += 1; return context(); },
@@ -350,7 +354,7 @@ describe('merge command — mandatory release authority', () => {
         buildPrBindingBroker: async () => ({
           gitCommonDir: '/repo/.git',
           broker: { readTrace: async () => ({
-            gaps: [`iterations:pr-1:${suffix}`],
+            gaps,
             pull_requests: [{
               id: 'pr-1', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
               git_common_dir: '/repo/.git',
@@ -1079,6 +1083,60 @@ describe('merge command — mandatory release authority', () => {
     expect(exact).toMatchObject({ owned: true, sessionId: 'release-session' });
   });
 
+  test('default fetch resolves a fork parent before reading PR context', async () => {
+    const seen = [];
+    const gh = (argv, options) => {
+      seen.push({ argv, options });
+      if (argv[0] === 'repo' && argv[1] === 'view') {
+        return JSON.stringify({
+          owner: { login: 'contributor' },
+          name: 'forge',
+          isFork: true,
+          parent: { nameWithOwner: 'acme/forge' },
+        });
+      }
+      if (argv[0] === 'pr' && argv[1] === 'view') {
+        return JSON.stringify({
+          number: 42,
+          headRefOid: HEAD,
+          baseRefName: null,
+          state: 'OPEN',
+          isDraft: false,
+          mergeable: 'MERGEABLE',
+          mergeStateStatus: 'CLEAN',
+          statusCheckRollup: [],
+          comments: [],
+          updatedAt: '2026-08-01T00:00:00Z',
+        });
+      }
+      if (argv[0] === 'api' && argv[1] === 'graphql') {
+        const queryArg = argv.find((arg) => String(arg).startsWith('query=')) || '';
+        if (queryArg.includes('reviews(first')) {
+          return JSON.stringify({
+            data: { repository: { pullRequest: { reviews: {
+              nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+            } } } },
+          });
+        }
+        return JSON.stringify({
+          data: { repository: { pullRequest: { reviewThreads: {
+            nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+          } } } },
+        });
+      }
+      throw new Error(`unexpected gh call: ${argv.join(' ')}`);
+    };
+
+    const out = await mergeCmd.defaultFetchPrContext({ pr: '42', projectRoot: '/workspace/forge', gh });
+
+    expect(out.repository).toBe('acme/forge');
+    expect(seen[0]).toEqual({
+      argv: ['repo', 'view', '--json', 'owner,name,isFork,parent'],
+      options: { cwd: '/workspace/forge' },
+    });
+    expect(seen[1].argv).toEqual(expect.arrayContaining(['pr', 'view', '42', '--repo', 'acme/forge']));
+  });
+
   test('default fetch exposes exact head and only authoritative protection requirements', async () => {
     const seen = [];
     const gh = (argv) => {
@@ -1101,7 +1159,7 @@ describe('merge command — mandatory release authority', () => {
         });
       }
       if (argv[0] === 'repo' && argv[1] === 'view') {
-        return JSON.stringify({ owner: { login: 'acme' }, name: 'forge' });
+        return JSON.stringify({ owner: { login: 'acme' }, name: 'forge', isFork: false, parent: null });
       }
       if (argv[0] === 'api' && argv[1] === 'repos/acme/forge/branches/master/protection/required_status_checks') {
         return JSON.stringify({
@@ -1152,6 +1210,6 @@ describe('merge command — mandatory release authority', () => {
       { id: 2, name: 'optional', appId: 999, status: 'COMPLETED', conclusion: 'SUCCESS' },
     ]);
     expect(out.requiredCheckSource).toBe('protection');
-    expect(seen[0].join(' ')).toContain('headRefOid');
+    expect(seen.find(argv => argv[0] === 'pr' && argv[1] === 'view').join(' ')).toContain('headRefOid');
   });
 });
