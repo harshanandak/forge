@@ -43,24 +43,75 @@ async function removeDirWithRetry(dir, attempts = 10) {
 	}
 }
 
+function sanitizeAclTokens(value, allowedTokens) {
+	let remaining = value;
+	let sanitized = '';
+	while (remaining.length > 0) {
+		const token = allowedTokens.find(candidate => remaining.startsWith(candidate));
+		if (!token) return '<MALFORMED>';
+		sanitized += token;
+		remaining = remaining.slice(token.length);
+	}
+	return sanitized;
+}
+
+function sanitizeAclRights(value) {
+	if (value === '') return '<MALFORMED>';
+	if (/^0x[0-9a-f]{1,16}$/i.test(value)) return value.toLowerCase();
+	return sanitizeAclTokens(value, [
+		'FA', 'FR', 'FW', 'FX', 'GA', 'GR', 'GW', 'GX', 'RC', 'SD', 'WD', 'WO',
+		'RP', 'WP', 'CC', 'DC', 'LC', 'SW', 'LO', 'DT', 'CR',
+	]);
+}
+
+function sanitizeAclGuid(value) {
+	if (value === '') return '';
+	return /^\{?[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\}?$/i.test(value)
+		? '<GUID>'
+		: '<MALFORMED>';
+}
+
+function sanitizeSavedWindowsDacl(descriptor) {
+	const dacl = descriptor.match(/^D:([A-Z]*)(.*)$/);
+	if (!dacl) return null;
+	const daclFlags = sanitizeAclTokens(dacl[1], ['AR', 'AI', 'P']);
+	if (daclFlags === '<MALFORMED>') return 'D:<MALFORMED>';
+	let remaining = dacl[2];
+	let sanitized = `D:${daclFlags}`;
+	while (remaining.startsWith('(')) {
+		const end = remaining.indexOf(')');
+		if (end === -1) return `${sanitized}<MALFORMED>`;
+		const contents = remaining.slice(1, end);
+		remaining = remaining.slice(end + 1);
+		if (contents.includes('(')) return `${sanitized}<MALFORMED>`;
+		const fields = contents.split(';');
+		if (fields.length !== 6) {
+			sanitized += '(<MALFORMED>)';
+			continue;
+		}
+		const [type, flags, rights, objectGuid, inheritObjectGuid, identity] = fields;
+		const safeType = ['A', 'D', 'OA', 'OD', 'AU', 'AL', 'OU', 'OL', 'ML', 'XA', 'XD', 'RA', 'SP', 'TL', 'FL'].includes(type)
+			? type
+			: '<MALFORMED>';
+		const safeFlags = sanitizeAclTokens(flags, ['OI', 'CI', 'NP', 'IO', 'ID', 'SA', 'FA']);
+		const safeRights = sanitizeAclRights(rights);
+		const safeIdentity = identity === '' ? '<MALFORMED>' : '<IDENTITY>';
+		sanitized += `(${safeType};${safeFlags};${safeRights};${sanitizeAclGuid(objectGuid)};${sanitizeAclGuid(inheritObjectGuid)};${safeIdentity})`;
+	}
+	if (remaining === '') return sanitized;
+	const sacl = remaining.match(/^S:([A-Z]*)$/);
+	if (!sacl) return `${sanitized}<MALFORMED>`;
+	const saclFlags = sanitizeAclTokens(sacl[1], ['AR', 'AI', 'P']);
+	return `${sanitized}S:${saclFlags}`;
+}
+
 function sanitizeSavedWindowsAcl(serializedAcl) {
 	return String(serializedAcl)
 		.split(/\r?\n/)
 		.map(line => line.trim())
-		.map(line => {
-			const daclStart = line.search(/D:(?=[A-Z(])/);
-			return daclStart === -1 ? '' : line.slice(daclStart);
-		})
-		.filter(line => line.startsWith('D:'))
-		.map(line => line
-			.replace(/\(([^()]*)\)/g, (_ace, contents) => {
-				const fields = contents.split(';');
-				if (fields.length >= 6) {
-					fields.splice(5, fields.length - 5, '<IDENTITY>');
-				}
-				return `(${fields.join(';')})`;
-			})
-			.replace(/S-\d+(?:-\d+)+/gi, '<SID>'));
+		.filter(line => /^D:(?=[A-Z(])/.test(line))
+		.map(sanitizeSavedWindowsDacl)
+		.filter(Boolean);
 }
 
 function collectSanitizedWindowsAclShapes(targets) {
@@ -96,10 +147,28 @@ function collectSanitizedWindowsAclShapes(targets) {
 }
 
 test('sanitizes hosted Windows ACL diagnostics without paths or identities', () => {
-	const serialized = 'D:\\private\\user\\backup.sqlite\r\nO:S-1-5-21-1G:DOMAIN\\userD:PAI(A;;FA;;;S-1-5-21-1)(A;OICI;0x1f01ff;;;BU)S:AI';
+	const serialized = 'D:\\private\\user\\backup.sqlite\r\nD:PAI(A;;FA;;;S-1-5-21-1)(A;OICI;0x1f01ff;;;BU)S:AI';
 	expect(sanitizeSavedWindowsAcl(serialized)).toEqual([
 		'D:PAI(A;;FA;;;<IDENTITY>)(A;OICI;0x1f01ff;;;<IDENTITY>)S:AI',
 	]);
+});
+
+test('makes malformed, trailing, and GUID ACL diagnostic fields non-disclosing', () => {
+	const privateGuid = '12345678-1234-1234-1234-123456789abc';
+	const diagnostic = sanitizeSavedWindowsAcl([
+		'D:P(secret-user)',
+		'D:P(A;;FA;;;private-account)D:\\private\\trailing-path',
+		`D:P(OA;CI;FA;${privateGuid};not-a-guid;S-1-5-21-999)`,
+	].join('\r\n'));
+	expect(diagnostic).toEqual([
+		'D:P(<MALFORMED>)',
+		'D:P(A;;FA;;;<IDENTITY>)<MALFORMED>',
+		'D:P(OA;CI;FA;<GUID>;<MALFORMED>;<IDENTITY>)',
+	]);
+	expect(JSON.stringify(diagnostic)).not.toContain('secret-user');
+	expect(JSON.stringify(diagnostic)).not.toContain('private-account');
+	expect(JSON.stringify(diagnostic)).not.toContain('trailing-path');
+	expect(JSON.stringify(diagnostic)).not.toContain(privateGuid);
 });
 
 afterEach(async () => {
