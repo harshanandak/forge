@@ -80,7 +80,9 @@ describe('shepherd command handler', () => {
     const gh = (cmd, args) => {
       ghCalls.push(args.join(' '));
       if (args.includes('pr') && args.includes('view')) {
-        return JSON.stringify({ baseRefName: 'release/2.0', headRefOid: 'a'.repeat(40) });
+        return JSON.stringify({
+          baseRefName: 'release/2.0', baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40),
+        });
       }
       if (args.includes('repo') && args.includes('view')) {
         return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
@@ -92,7 +94,7 @@ describe('shepherd command handler', () => {
     const ctx = await shepherdCmd.defaultBuildContext({ pr: '42', gh, git });
 
     expect(ctx.base).toBe('release/2.0');
-    expect(ctx.baseRef).toBe('origin/release/2.0');
+    expect(ctx.baseRef).toBe('b'.repeat(40));
     expect(ctx.headSha).toBe('a'.repeat(40));
     expect(ctx.owner).toBe('acme');
     expect(ctx.repo).toBe('widget');
@@ -100,10 +102,22 @@ describe('shepherd command handler', () => {
     expect(ghCalls.some((c) => c.includes('pr view') && c.includes('42'))).toBe(true);
   });
 
+  test('defaultBuildContext fails closed without an exact provider base commit', async () => {
+    const gh = (_cmd, args) => {
+      if (args.includes('pr') && args.includes('view')) {
+        return JSON.stringify({ baseRefName: 'release/2.0', baseRefOid: 'not-a-commit' });
+      }
+      return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
+    };
+
+    expect(shepherdCmd.defaultBuildContext({ pr: '42', gh, git: () => 'origin\n' }))
+      .rejects.toThrow(/base commit/i);
+  });
+
   test('defaultBuildContext threads the worktree root through as ctx.cwd', async () => {
     const gh = (cmd, args) => {
       if (args.includes('pr') && args.includes('view')) {
-        return JSON.stringify({ baseRefName: 'master' });
+        return JSON.stringify({ baseRefName: 'master', baseRefOid: 'b'.repeat(40) });
       }
       return JSON.stringify({ owner: { login: 'o' }, name: 'r' });
     };

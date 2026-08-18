@@ -214,15 +214,20 @@ describe('execute — watcher lifecycle', () => {
 		]);
 	});
 
-	test('force-kills only after cancellation grace expires and reaps after acknowledgement', async () => {
+	test('retries a failed force-kill after cancellation grace expires', async () => {
 		const signals = [];
+		let forceKillAttempts = 0;
+		const kill = (_pid, signal) => {
+			signals.push(signal);
+			if (signal === 'SIGKILL' && forceKillAttempts++ === 0) throw new Error('transient kill failure');
+		};
 		const cancelling = await executor.execute(
 			[{ type: 'stopWatcher', pr: { number: 5 } }],
 			{
 				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
 				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
 				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z',
-				kill: (_pid, signal) => signals.push(signal),
+				kill,
 			},
 		);
 		const forced = await executor.execute(
@@ -230,15 +235,24 @@ describe('execute — watcher lifecycle', () => {
 			{
 				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32000,
 				watchers: cancelling, isAlive: () => true,
-				readClaim: () => '1970-01-01T00:00:01.000Z', kill: (_pid, signal) => signals.push(signal),
+				readClaim: () => '1970-01-01T00:00:01.000Z', kill,
 			},
 		);
-		expect(signals).toEqual([undefined, 'SIGKILL']);
 		expect(forced[0].lifecycle.state.phase).toBe('FORCE_KILL_REQUESTED');
+		const retried = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32001,
+				watchers: forced, isAlive: () => true,
+				readClaim: () => '1970-01-01T00:00:01.000Z', kill,
+			},
+		);
+		expect(signals).toEqual([undefined, 'SIGKILL', 'SIGKILL']);
+		expect(retried[0].lifecycle.state.phase).toBe('FORCE_KILL_REQUESTED');
 
 		const reaped = await executor.execute(
 			[{ type: 'stopWatcher', pr: { number: 5 } }],
-			{ projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32001, watchers: forced, isAlive: () => false },
+			{ projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32002, watchers: retried, isAlive: () => false },
 		);
 		expect(reaped).toEqual([]);
 	});

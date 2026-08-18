@@ -848,17 +848,40 @@ describe('merge command — mandatory release authority', () => {
   });
 
   test('default merge action uses GitHub server-side expected-head lease', () => {
-    let observed;
+    const observed = [];
     const out = mergeCmd.defaultMergePr({
       pr: '42',
       expectedHead: HEAD,
       repository: 'acme/forge',
-      gh: (argv) => { observed = argv; return ''; },
+      gh: (argv) => {
+        observed.push(argv);
+        if (argv[1] === 'view') return JSON.stringify({ state: 'MERGED', headRefOid: HEAD });
+        return '';
+      },
     });
     expect(out.merged).toBe(true);
     expect(observed).toEqual([
-      'pr', 'merge', '42', '--repo', 'acme/forge', '--squash', '--match-head-commit', HEAD,
+      ['pr', 'merge', '42', '--repo', 'acme/forge', '--squash', '--match-head-commit', HEAD],
+      ['pr', 'view', '42', '--repo', 'acme/forge', '--json', 'state,headRefOid'],
     ]);
+  });
+
+  test('default merge action does not confirm a merge-queue enrollment as merged', () => {
+    const calls = [];
+    const out = mergeCmd.defaultMergePr({
+      pr: '42',
+      expectedHead: HEAD,
+      repository: 'acme/forge',
+      gh: (argv) => {
+        calls.push(argv);
+        if (argv[1] === 'view') return JSON.stringify({ state: 'OPEN', headRefOid: HEAD });
+        return '';
+      },
+    });
+
+    expect(out).toMatchObject({ merged: false });
+    expect(out.reason).toMatch(/not confirmed/i);
+    expect(calls).toHaveLength(2);
   });
 
   test('default ownership verifier requires explicit identity and matching unexpired Kernel data', async () => {
