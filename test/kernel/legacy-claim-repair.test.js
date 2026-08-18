@@ -202,7 +202,7 @@ describe('legacy claim repair preflight', () => {
 		})).toThrow('owner-only permissions');
 	});
 
-	test('runs Windows ACL hardening without Bun hidden-window or output-pipe overhead', () => {
+	test('runs Windows ACL hardening without Bun hidden-window overhead', () => {
 		let invocation;
 		secureWindowsPathsAcl(['backup.sqlite'], {
 			environment: { SystemRoot: 'C:\\Windows' },
@@ -213,7 +213,7 @@ describe('legacy claim repair preflight', () => {
 			'-NoLogo', '-NoProfile', '-NonInteractive', '-Command', expect.any(String),
 		]);
 		expect(invocation.options).toMatchObject({
-			stdio: 'ignore',
+			stdio: 'pipe',
 			timeout: 15_000,
 			windowsHide: false,
 			env: {
