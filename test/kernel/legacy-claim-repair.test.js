@@ -215,6 +215,7 @@ describe('legacy claim repair preflight', () => {
 			'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
 			'-NoLogo', '-NoProfile', '-NonInteractive', '-Command', expect.any(String),
 		]);
+		expect(invocation.command.at(-1)).not.toContain('{;');
 		expect(invocation.options).toMatchObject({
 			cwd: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
 			stderr: 'pipe',
