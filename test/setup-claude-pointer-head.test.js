@@ -44,11 +44,12 @@ describe('CLAUDE.md pointer authorization source head', () => {
 		});
 
 		expect(content).toEqual(Buffer.from('@AGENTS.md\n'));
-		expect(call).toEqual({
-			file: 'git',
-			args: ['show', ':CLAUDE.md'],
-			options: { cwd: 'C:\\repo', encoding: null, stdio: 'pipe' },
-		});
+		expect(call.file).toBe('git');
+		expect(call.args).toEqual(['show', ':CLAUDE.md']);
+		expect(call.options.cwd).toBe('C:\\repo');
+		expect(call.options.encoding).toBe(null);
+		expect(call.options.stdio).toBe('pipe');
+		expect(call.options.env.GIT_INDEX_FILE).toContain('forge-claude-index-');
 	});
 
 	test('uses clean worktree pointer bytes when the index still has previous content', () => {
