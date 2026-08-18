@@ -58,15 +58,16 @@ describe('CLAUDE.md pointer authorization source head', () => {
 			const calls = [];
 			const content = setupCommand.readStagedClaudePointerContent(cwd, (file, args, options) => {
 				calls.push({ file, args, options });
-				if (args[0] === 'show') return Buffer.from('previous-content\n');
-				return Buffer.from('clean-pointer-hash\n');
+				if (args[0] === 'show') return calls.length === 1 ? Buffer.from('previous-content\n') : Buffer.from('@AGENTS.md\r\n');
+				return Buffer.alloc(0);
 			});
 
-			expect(content).toEqual(Buffer.from('@AGENTS.md\n'));
+			expect(content).toEqual(Buffer.from('@AGENTS.md\r\n'));
 			expect(calls.map(call => call.args)).toEqual([
 				['show', ':CLAUDE.md'],
-				['hash-object', '--path=CLAUDE.md', '--stdin'],
-				['hash-object', '--stdin'],
+				['read-tree', 'HEAD'],
+				['add', '--', 'CLAUDE.md'],
+				['show', ':CLAUDE.md'],
 			]);
 		} finally {
 			fs.rmSync(cwd, { recursive: true, force: true });
@@ -80,7 +81,7 @@ describe('CLAUDE.md pointer authorization source head', () => {
 			const calls = [];
 			const content = setupCommand.readStagedClaudePointerContent(cwd, (file, args, options) => {
 				calls.push({ file, args, options });
-				if (args[0] === 'show') {
+				if (args[0] === 'show' && calls.length === 1) {
 					const error = new Error('untracked');
 					error.status = 128;
 					throw error;
@@ -90,15 +91,17 @@ describe('CLAUDE.md pointer authorization source head', () => {
 					error.status = 1;
 					throw error;
 				}
-				return Buffer.from('clean-pointer-hash\n');
+				if (args[0] === 'show') return Buffer.from('@AGENTS.md\r\n');
+				return Buffer.alloc(0);
 			});
 
-			expect(content).toEqual(Buffer.from('@AGENTS.md\n'));
+			expect(content).toEqual(Buffer.from('@AGENTS.md\r\n'));
 			expect(calls.map(call => call.args)).toEqual([
 				['show', ':CLAUDE.md'],
 				['ls-files', '--error-unmatch', '--', 'CLAUDE.md'],
-				['hash-object', '--path=CLAUDE.md', '--stdin'],
-				['hash-object', '--stdin'],
+				['read-tree', 'HEAD'],
+				['add', '--', 'CLAUDE.md'],
+				['show', ':CLAUDE.md'],
 			]);
 		} finally {
 			fs.rmSync(cwd, { recursive: true, force: true });
