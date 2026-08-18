@@ -294,4 +294,19 @@ describe('pollEvents (events --since)', () => {
     expect(res.events).toHaveLength(128);
     expect(res.events[0].seq).toBe(13);
   });
+
+  test('propagates durable continuation separately from journal overflow', async () => {
+    const store = memoryStore();
+    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let current = snap({ checks });
+    const ctx = memoryContext(store, async () => current);
+    await runMonitorPass(ctx);
+    current = snap({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+
+    const res = await pollEvents({ ...ctx, since: 0, watcherRunning: () => false });
+
+    expect(res.continuationPending).toBe(true);
+    expect(res.receiptIds).toHaveLength(128);
+    expect(res.receiptIds.length).toBeLessThanOrEqual(128);
+  });
 });

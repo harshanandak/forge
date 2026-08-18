@@ -146,6 +146,40 @@ describe('shepherd command handler', () => {
     expect(out.handoff).toMatchObject({ next: 'merge', humanApprovalRequired: true });
   });
 
+  test('keeps merge-ready remote state pending while durable continuation remains', async () => {
+    let passes = 0;
+    let evidenceCalls = 0;
+    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
+      runPass: async () => (++passes === 1
+        ? { state: 'MERGE_READY', actions: [], reason: 'ready', expectedHead: 'a'.repeat(40) }
+        : { state: 'NEEDS_REVIEW', actions: [], reason: 'changed', expectedHead: 'a'.repeat(40) }),
+      collectConvergenceEvidence: async () => {
+        evidenceCalls += 1;
+        return {
+          deltas: [], deltaOverflow: false,
+          receiptIds: Array.from({ length: 128 }, (_, index) => `receipt-${index}`),
+          continuationPending: true, exactHead: 'a'.repeat(40),
+        };
+      },
+      buildContext: async () => ({
+        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+        headSha: 'a'.repeat(40), localHead: 'a'.repeat(40),
+      }),
+      git: (_command, args) => (args[0] === 'rev-parse' ? `${'a'.repeat(40)}\n` : ''),
+    });
+
+    expect(out).toMatchObject({
+      success: true,
+      state: 'PENDING',
+      remoteState: 'MERGE_READY',
+      continuationPending: true,
+    });
+    expect(passes).toBe(1);
+    expect(evidenceCalls).toBe(1);
+    expect(out.handoff).toBeUndefined();
+  });
+
   test('reconfirms mutable PR evidence before returning a merge handoff', async () => {
     let passes = 0;
     const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
@@ -292,13 +326,17 @@ describe('shepherd command handler', () => {
         watcherRunning: () => true,
         pollEvents: async input => {
           observedWatcherRunning = input.watcherRunning(input.dir);
-          return { events: [], overflow: false, receiptIds: [], ranPass: !observedWatcherRunning };
+          return {
+            events: [], overflow: false, receiptIds: [], continuationPending: true,
+            ranPass: !observedWatcherRunning,
+          };
         },
       },
     });
 
     expect(observedWatcherRunning).toBe(false);
     expect(evidence.exactHead).toBe(head);
+    expect(evidence.continuationPending).toBe(true);
   });
 
   test('compares exact heads case-insensitively at evidence and handoff fences', async () => {

@@ -269,8 +269,32 @@ describe('Flow-backed PR monitor authority', () => {
     ctx.gather = async () => { throw new Error('accepted batch recovery must precede provider state'); };
 
     const resumed = await runFlowMonitorPass(ctx);
+    const completed = await runFlowMonitorPass(ctx);
 
-    expect(resumed.events).toHaveLength(129);
+    expect(resumed.events).toHaveLength(128);
+    expect(completed.events).toHaveLength(1);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+  });
+
+  test('bounds a captured transition across restart-safe passes before gathering again', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let next = snapshot({ checks });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    const first = await runFlowMonitorPass(ctx);
+    expect(first.events).toHaveLength(128);
+    expect(first.receiptIds.length).toBeLessThanOrEqual(128);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(false);
+
+    ctx.gather = async () => { throw new Error('captured continuation must precede provider state'); };
+    const second = await runFlowMonitorPass(ctx);
+    expect(second.events).toHaveLength(2);
+    expect(second.receiptIds.length).toBeLessThanOrEqual(128);
+    expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(130);
     expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
   });
 
@@ -493,7 +517,13 @@ describe('Flow-backed PR monitor authority', () => {
       }
     };
 
-    await runFlowMonitorPass(ctx);
+    const first = await runFlowMonitorPass(ctx);
+    expect(first.receiptIds.length).toBeLessThanOrEqual(128);
+    if (store.events.at(-1).payload.bounded_payload.checkpoint_complete === false) {
+      ctx.gather = async () => { throw new Error('segmented continuation must precede provider state'); };
+      const resumed = await runFlowMonitorPass(ctx);
+      expect(resumed.receiptIds.length).toBeLessThanOrEqual(128);
+    }
 
     const segments = store.events.filter(event => event.payload.bounded_payload.pending_batch);
     expect(segments.length).toBeGreaterThan(1);
@@ -512,6 +542,46 @@ describe('Flow-backed PR monitor authority', () => {
     expect(batches).toHaveLength(128);
   });
 
+  test('continues a complete 128-segment pre-commit plan before provider observation', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 128 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let next = snapshot({ checks });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    ctx.enrich = async records => {
+      for (const [index, record] of records.entries()) {
+        record.repo = `owner/${index}-${Array.from(
+          { length: 160 },
+          (_value, salt) => crypto.createHash('sha256')
+            .update(`${index}:${salt}`)
+            .digest('base64url')
+            .replace(/[-_A]/g, '.'),
+        ).join('')}`;
+      }
+    };
+
+    const prepared = await runFlowMonitorPass(ctx);
+    expect(prepared).toMatchObject({ continuationPending: true });
+    expect(prepared.receiptIds).toHaveLength(128);
+    expect(store.events.filter(event => Number.isSafeInteger(
+      event.payload.bounded_payload.batch_plan?.index,
+    ))).toHaveLength(128);
+    expect(store.events.some(event => event.payload.bounded_payload.batch_plan?.committed === true)).toBe(false);
+
+    ctx.gather = async () => { throw new Error('complete pre-commit continuation must precede provider state'); };
+    const committed = await runFlowMonitorPass(ctx);
+    const completed = await runFlowMonitorPass(ctx);
+
+    expect(committed.receiptIds).toHaveLength(128);
+    expect(committed.events).toHaveLength(127);
+    expect(committed).toMatchObject({ continuationPending: true });
+    expect(completed.events).toHaveLength(1);
+    expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(128);
+    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+  }, 30_000);
+
   test('fails closed when segmented recovery has no remaining records', () => {
     expect(() => _internals.remainingSegmentedRecords({
       records: [{ seq: 1 }],
@@ -519,7 +589,7 @@ describe('Flow-backed PR monitor authority', () => {
     })).toThrow('Pending monitor transition has no remaining records');
   });
 
-  test('supersedes a pre-commit plan truncated by its replacement at the bounded tail', async () => {
+  test('supersedes consecutive incomplete pre-commit plans at the bounded tail', async () => {
     const store = durableStore();
     const checks = Array.from({ length: 128 }, (_, index) => ({
       name: `check-${index}`,
@@ -546,34 +616,38 @@ describe('Flow-backed PR monitor authority', () => {
     const appendEvent = store.appendEvent.bind(store);
     let markerFailures = 0;
     store.appendEvent = async (...args) => {
-      if (args[0].payload.bounded_payload.batch_plan?.committed === true && markerFailures === 0) {
+      const reference = args[0].payload.bounded_payload.batch_plan;
+      if (reference?.index === reference?.segment_count - 1 && markerFailures === 0) {
         markerFailures += 1;
-        throw new Error('first commit marker interruption');
+        throw new Error('first pre-commit interruption');
       }
       return appendEvent(...args);
     };
     await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
     expect(enrichedRecordCount).toBe(128);
     const originalPlanId = store.events.at(-1).payload.bounded_payload.batch_plan.id;
+    const originalSegmentCount = store.events.at(-1).payload.bounded_payload.batch_plan.segment_count;
     expect(store.events.filter(event => (
       event.payload.bounded_payload.batch_plan?.id === originalPlanId
-    ))).toHaveLength(127);
+    ))).toHaveLength(originalSegmentCount - 1);
 
     store.appendEvent = async (...args) => {
       const reference = args[0].payload.bounded_payload.batch_plan;
-      if (reference?.id !== originalPlanId && reference?.index === 2) {
+      if (reference?.id !== originalPlanId && reference?.index === 1) {
         throw new Error('replacement pre-commit interruption');
       }
       return appendEvent(...args);
     };
     await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
     store.appendEvent = appendEvent;
-    const retainedPlans = store.events.slice(-128);
+    const retainedPlans = store.events.slice(-128).filter(event => (
+      event.payload.bounded_payload.batch_plan
+    ));
     const truncatedOriginal = retainedPlans.filter(event => (
       event.payload.bounded_payload.batch_plan?.id === originalPlanId
     ));
-    expect(truncatedOriginal[0].payload.bounded_payload.batch_plan.index).toBe(1);
-    expect(_internals.validOrphanedPrecommitPlan(ctx, truncatedOriginal, ctx.subjectId)).toBe(false);
+    expect(truncatedOriginal[0].payload.bounded_payload.batch_plan.index).toBe(0);
+    expect(_internals.validOrphanedPrecommitPlan(ctx, truncatedOriginal, ctx.subjectId)).toBe(true);
     expect(_internals.validOrphanedPrecommitPlan(ctx, retainedPlans, ctx.subjectId)).toBe(true);
     for (const mutate of [
       event => { event.payload.bounded_payload.batch_plan.committed = false; },
@@ -587,10 +661,14 @@ describe('Flow-backed PR monitor authority', () => {
       expect(_internals.validOrphanedPrecommitPlan(ctx, malformed, ctx.subjectId)).toBe(false);
     }
 
-    const resumed = await runFlowMonitorPass(ctx);
+    const resumedRecords = [];
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const resumed = await runFlowMonitorPass(ctx);
+      resumedRecords.push(...resumed.events);
+      if (!resumed.continuationPending) break;
+    }
 
-    expect(resumed).toMatchObject({ changed: true, authority: 'memory' });
-    expect(resumed.events).toHaveLength(1);
+    expect(resumedRecords.filter(event => event.type === 'check.failed')).toHaveLength(128);
     expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
   }, 60_000);
 
@@ -619,9 +697,14 @@ describe('Flow-backed PR monitor authority', () => {
     await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
     store.appendEvent = appendEvent;
 
-    const resumed = await runFlowMonitorPass(ctx);
+    const resumedEvents = [];
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const resumed = await runFlowMonitorPass(ctx);
+      resumedEvents.push(...resumed.events);
+      if (!resumed.continuationPending) break;
+    }
 
-    expect(resumed.events.filter(event => event.type === 'check.failed')).toHaveLength(128);
+    expect(resumedEvents.filter(event => event.type === 'check.failed')).toHaveLength(128);
     expect(delivered.filter(event => event.type === 'check.failed')).toHaveLength(128);
     expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
   }, 30_000);
@@ -707,7 +790,10 @@ describe('Flow-backed PR monitor authority', () => {
       let next = snapshot({ checks });
       const delivered = [];
       const ctx = context(store, async () => next, async record => delivered.push(record));
-      await runFlowMonitorPass(ctx);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const resumed = await runFlowMonitorPass(ctx);
+        if (!resumed.continuationPending) break;
+      }
       next = failed;
       const appendEvent = store.appendEvent.bind(store);
       let interrupted = false;
@@ -718,7 +804,16 @@ describe('Flow-backed PR monitor authority', () => {
         }
         return appendEvent(...args);
       };
-      await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+      let observedFailure = null;
+      for (let attempt = 0; attempt < 3 && !observedFailure; attempt += 1) {
+        try {
+          const partial = await runFlowMonitorPass(ctx);
+          expect(partial).toMatchObject({ continuationPending: true });
+        } catch (error) {
+          observedFailure = error;
+        }
+      }
+      expect(observedFailure).toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
       const committed = store.events.some(event => event.payload.bounded_payload.batch_plan?.committed === true);
       if (!committed) expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(0);
       store.appendEvent = appendEvent;
@@ -726,7 +821,15 @@ describe('Flow-backed PR monitor authority', () => {
         ctx.gather = async () => { throw new Error('committed transition recovery must precede provider state'); };
       }
 
-      await runFlowMonitorPass(ctx);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        let resumed;
+        try {
+          resumed = await runFlowMonitorPass(ctx);
+        } catch (error) {
+          throw new Error(`recovery failed at sequence ${failureSequence}: ${error.message}`, { cause: error });
+        }
+        if (!resumed.continuationPending) break;
+      }
       const actualEvents = store.events.filter(event => event.payload.type === 'check.failed');
       expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(128);
       expect(actualEvents).toHaveLength(128);
@@ -754,6 +857,8 @@ describe('Flow-backed PR monitor authority', () => {
       return appendEvent(...args);
     };
 
+    const captured = await runFlowMonitorPass(ctx);
+    expect(captured).toMatchObject({ continuationPending: true });
     await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
     store.appendEvent = appendEvent;
     ctx.gather = async () => { throw new Error('retained suffix recovery must precede provider state'); };
@@ -784,6 +889,30 @@ describe('Flow-backed PR monitor authority', () => {
       code: 'INVALID_OBSERVATION', message: 'MonitorEvent validation failed',
     });
     expect(store.events).toHaveLength(before);
+  });
+
+  test('validates records beyond the pass budget before the first durable mutation', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let next = snapshot({ checks });
+    const delivered = [];
+    const ctx = context(store, async () => next, async record => delivered.push(record));
+    await runFlowMonitorPass(ctx);
+    const before = store.events.length;
+    const deliveredBefore = delivered.length;
+    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+    ctx.enrich = async records => {
+      Object.assign(records[128].data, Object.fromEntries(Array.from({ length: 24 }, (_, outer) => [
+        `group-${outer}`,
+        Object.fromEntries(Array.from({ length: 24 }, (_, inner) => [`item-${inner}`, 'x'.repeat(64)])),
+      ])));
+    };
+
+    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({
+      code: 'INVALID_OBSERVATION', message: 'MonitorEvent validation failed',
+    });
+    expect(store.events).toHaveLength(before);
+    expect(delivered).toHaveLength(deliveredBefore);
   });
 
   test('preserves the provider root cause when durable history is unavailable', async () => {
@@ -1227,5 +1356,29 @@ describe('Flow-backed PR monitor authority', () => {
     await expect(runFlowMonitorPass(context(store, async () => {
       throw new Error('corrupt terminal replay must not poll the provider');
     }, async () => {}))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    });
+
+  test('defers a terminal receipt when event receipts consume the full pass budget', async () => {
+    const store = durableStore();
+    const checks = Array.from({ length: 128 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+    let next = snapshot({ checks });
+    const ctx = context(store, async () => next, async () => {});
+    await runFlowMonitorPass(ctx);
+    next = snapshot({
+      state: 'MERGED',
+      checks: checks.map(check => ({ ...check, class: 'failed' })),
+    });
+
+    const bounded = await runFlowMonitorPass(ctx);
+    expect(bounded.events).toHaveLength(128);
+    expect(bounded.receiptIds).toHaveLength(128);
+    expect(bounded).toMatchObject({ continuationPending: true });
+    expect(bounded.terminalReceiptId).toBeUndefined();
+
+    ctx.gather = async () => { throw new Error('terminal continuation must precede provider state'); };
+    const completed = await runFlowMonitorPass(ctx);
+    expect(completed.events).toEqual([]);
+    expect(completed.receiptIds).toHaveLength(1);
+    expect(completed.terminalReceiptId).toBeString();
   });
 });
