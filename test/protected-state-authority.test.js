@@ -233,6 +233,17 @@ describe('protected-state Kernel authority', () => {
 		}
 	});
 
+	test('accepts a valid SHA-256 source HEAD for exact authorization', () => {
+		const sourceHead = 'c'.repeat(64);
+		const target = { ...claudePointerTarget, sourceHead };
+		const rows = [
+			claudePointerEvent(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'sha256-capability', { sourceHead }),
+			claudePointerEvent(PROTECTED_STATE_WRITE_COMPLETED, 'sha256-capability', { sourceHead }),
+		];
+
+		expect(evaluateAuthorization(target, rows)).toMatchObject({ allowed: true, sourceHead });
+	});
+
 	test('denies a pre-write authorization until the owning writer records completion', () => {
 		const decision = evaluateAuthorization(target, [
 			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-pre-write'),
