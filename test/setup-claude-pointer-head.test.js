@@ -51,6 +51,28 @@ describe('CLAUDE.md pointer authorization source head', () => {
 		});
 	});
 
+	test('uses clean worktree pointer bytes when the index still has previous content', () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claude-pointer-'));
+		try {
+			fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), Buffer.from('@AGENTS.md\r\n'));
+			const calls = [];
+			const content = setupCommand.readStagedClaudePointerContent(cwd, (file, args, options) => {
+				calls.push({ file, args, options });
+				if (args[0] === 'show') return Buffer.from('previous-content\n');
+				return Buffer.from('clean-pointer-hash\n');
+			});
+
+			expect(content).toEqual(Buffer.from('@AGENTS.md\n'));
+			expect(calls.map(call => call.args)).toEqual([
+				['show', ':CLAUDE.md'],
+				['hash-object', '--path=CLAUDE.md', '--stdin'],
+				['hash-object', '--stdin'],
+			]);
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	test('cleans untracked pointer bytes using Git filters before authorization', () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claude-pointer-'));
 		try {
