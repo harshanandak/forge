@@ -28,6 +28,8 @@ const REQUIRED_TABLES = [
 	'dead_letters',
 	'memories',
 	'pr',
+	'pr_watch_owners',
+	'pr_watch_migration_gate',
 ];
 
 describe('kernel schema registry', () => {
@@ -39,7 +41,10 @@ describe('kernel schema registry', () => {
 			const table = KERNEL_TABLES[tableName];
 			expect(table).toBeDefined();
 			expect(table.sqlName).toMatch(/^kernel_[a-z0-9_]+$/);
-			expect(table.fields.some(field => field.primaryKey)).toBe(true);
+			expect(
+				table.fields.some(field => field.primaryKey)
+				|| (Array.isArray(table.primaryKey) && table.primaryKey.length > 0),
+			).toBe(true);
 			expect(table.fields.length).toBeGreaterThan(2);
 		}
 
