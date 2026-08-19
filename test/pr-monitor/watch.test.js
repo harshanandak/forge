@@ -183,9 +183,9 @@ describe('watchLoop', () => {
     expect(res).toMatchObject({ started: true, stopped: true, cleanupPersisted: true });
   });
 
-  test('reports failed terminal cleanup while retaining the process pid', async () => {
+  test('retains the process pid until terminal cleanup recovers', async () => {
     const order = [];
-    const signal = { aborted: false };
+    let cleanupAttempts = 0;
     const terminal = { type: T.PR_CLOSED, key: 'closed', data: {} };
     const res = await watchLoop({
       dir,
@@ -194,24 +194,24 @@ describe('watchLoop', () => {
       writePid: () => order.push('write-pid'),
       beforeClaim: () => { order.push('generation-claimed'); return true; },
       onTerminal: () => {
-        order.push('terminal-cleanup-failed');
-        if (order.filter((value) => value === 'terminal-cleanup-failed').length === 3) signal.aborted = true;
-        return false;
+        cleanupAttempts += 1;
+        order.push(cleanupAttempts < 4 ? 'terminal-cleanup-failed' : 'terminal-cleanup');
+        return cleanupAttempts >= 4;
       },
       onReleased: () => order.push('generation-released'),
       removePid: () => { order.push('remove-pid'); return true; },
+      sleep: async () => {},
       emit: () => {},
-      signal,
       maxPasses: 1,
     });
 
     expect(order).toEqual([
       'generation-claimed', 'write-pid',
       'terminal-cleanup-failed', 'terminal-cleanup-failed', 'terminal-cleanup-failed',
+      'terminal-cleanup', 'remove-pid', 'generation-released',
     ]);
     expect(res).toMatchObject({
-      started: true, stopped: true, cleanupPersisted: false,
-      reason: 'terminal-cleanup-persistence-failed',
+      started: true, stopped: true, cleanupPersisted: true,
     });
   });
 
@@ -261,9 +261,9 @@ describe('watchLoop', () => {
     expect(res).toMatchObject({ stopped: true, cleanupPersisted: true });
   });
 
-  test('contains a throwing terminal cleanup hook and reports retained proof', async () => {
-    const removes = [];
+  test('continues terminal cleanup after an abort once the PR is terminal', async () => {
     let cleanupAttempts = 0;
+    let cleanupSleeps = 0;
     const signal = { aborted: false };
     const terminal = { type: T.PR_CLOSED, key: 'closed', data: {} };
     const res = await watchLoop({
@@ -274,20 +274,46 @@ describe('watchLoop', () => {
       beforeClaim: () => true,
       onTerminal: () => {
         cleanupAttempts += 1;
-        if (cleanupAttempts === 3) signal.aborted = true;
-        throw new Error('disk unavailable');
+        signal.aborted = true;
+        return cleanupAttempts >= 2;
       },
-      removePid: (value) => { removes.push(value); return true; },
-      emit: () => {},
+      removePid: () => true,
+      cleanupAttempts: 1,
+      cleanupRetryMs: 25,
+      sleep: async () => { cleanupSleeps += 1; },
       signal,
+      emit: () => {},
       maxPasses: 1,
     });
 
-    expect(removes).toEqual([]);
-    expect(res).toMatchObject({
-      cleanupPersisted: false,
-      reason: 'terminal-cleanup-persistence-failed',
+    expect(cleanupAttempts).toBe(2);
+    expect(cleanupSleeps).toBe(1);
+    expect(res).toMatchObject({ stopped: true, cleanupPersisted: true });
+  });
+
+  test('contains throwing terminal cleanup attempts until persistence recovers', async () => {
+    const removes = [];
+    let cleanupAttempts = 0;
+    const terminal = { type: T.PR_CLOSED, key: 'closed', data: {} };
+    const res = await watchLoop({
+      dir,
+      runMonitorPass: async () => ({ events: [terminal] }),
+      watcherRunning: () => false,
+      writePid: () => {},
+      beforeClaim: () => true,
+      onTerminal: () => {
+        cleanupAttempts += 1;
+        if (cleanupAttempts >= 4) return true;
+        throw new Error('disk unavailable');
+      },
+      removePid: (value) => { removes.push(value); return true; },
+      sleep: async () => {},
+      emit: () => {},
+      maxPasses: 1,
     });
+
+    expect(removes).toEqual([dir]);
+    expect(res).toMatchObject({ cleanupPersisted: true });
   });
 
   test('fails closed before the first pass when generation persistence fails', async () => {
@@ -349,11 +375,10 @@ describe('watchLoop', () => {
     expect(released).toBe(false);
   });
 
-  test('keeps the PID slot when terminal cleanup proof is not persisted', async () => {
+  test('keeps the PID slot while terminal cleanup proof is not persisted', async () => {
     let pidRemoved = false;
     let authorityReleased = false;
     let cleanupAttempts = 0;
-    const signal = { aborted: false };
     const terminal = { type: T.PR_CLOSED, key: 'closed', data: {} };
     const res = await watchLoop({
       dir,
@@ -363,21 +388,20 @@ describe('watchLoop', () => {
       beforeClaim: () => true,
       onTerminal: () => {
         cleanupAttempts += 1;
-        if (cleanupAttempts === 3) signal.aborted = true;
-        return false;
+        expect(pidRemoved).toBe(false);
+        expect(authorityReleased).toBe(false);
+        return cleanupAttempts >= 2;
       },
       removePid: () => { pidRemoved = true; return true; },
       releaseAuthority: () => { authorityReleased = true; return true; },
+      sleep: async () => {},
       emit: () => {},
-      signal,
       maxPasses: 1,
     });
 
-    expect(res).toMatchObject({
-      cleanupPersisted: false, reason: 'terminal-cleanup-persistence-failed',
-    });
+    expect(res).toMatchObject({ cleanupPersisted: true });
     expect(pidRemoved).toBe(false);
-    expect(authorityReleased).toBe(false);
+    expect(authorityReleased).toBe(true);
   });
 
   test.each([
