@@ -265,8 +265,53 @@ describe('watchLoop', () => {
       emit: () => {},
       maxPasses: 1,
     });
-    expect(res.cleanupPersisted).toBe(true);
+    expect(res).toMatchObject({
+      cleanupPersisted: false, reason: 'terminal-cleanup-persistence-failed',
+    });
     expect(released).toBe(false);
+  });
+
+  test.each([
+    ['false return', () => false],
+    ['throw', () => { throw new Error('transient release failure'); }],
+  ])('reports incomplete cleanup when generation release has a %s', async (_label, onReleased) => {
+    const terminal = { type: T.PR_CLOSED, key: 'closed', data: {} };
+    const res = await watchLoop({
+      dir,
+      runMonitorPass: async () => ({ events: [terminal] }),
+      watcherRunning: () => false,
+      writePid: () => {},
+      beforeClaim: () => true,
+      onTerminal: () => true,
+      removePid: () => true,
+      onReleased,
+      emit: () => {},
+      maxPasses: 1,
+    });
+
+    expect(res).toMatchObject({
+      cleanupPersisted: false, reason: 'terminal-cleanup-persistence-failed',
+    });
+  });
+
+  test('uses one atomic authority-release hook when supplied', async () => {
+    let removedSeparately = false;
+    const terminal = { type: T.PR_MERGED, key: 'merged', data: {} };
+    const res = await watchLoop({
+      dir,
+      runMonitorPass: async () => ({ events: [terminal] }),
+      watcherRunning: () => false,
+      writePid: () => {},
+      beforeClaim: () => true,
+      onTerminal: () => true,
+      removePid: () => { removedSeparately = true; return true; },
+      releaseAuthority: () => true,
+      emit: () => {},
+      maxPasses: 1,
+    });
+
+    expect(res.cleanupPersisted).toBe(true);
+    expect(removedSeparately).toBe(false);
   });
 
   test('is an idempotent no-op when another live watcher owns the PR', async () => {

@@ -80,10 +80,53 @@ test('generation-conditional release preserves a replacement claim', async () =>
 	executor.writeClaimMarker(base, 'owner/forge', 42, 'replacement', gitCommonDir);
 	expect(await executor.releaseClaimMarker(
 		base, 'owner/forge', 42, gitCommonDir, 'old-generation',
-	)).toBe(false);
+	)).toBe(true);
 	expect(executor.readClaimMarker(base, 'owner/forge', 42, gitCommonDir)).toEqual({
 		status: 'present', value: 'replacement',
 	});
+	fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('generation release treats confirmed absence as complete', async () => {
+	const base = tmpRepo();
+	const gitCommonDir = path.join(base, '.git');
+	expect(await executor.releaseClaimMarker(
+		base, 'owner/forge', 42, gitCommonDir, 'old-generation',
+	)).toBe(true);
+	fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('terminal cleanup authority retries PID removal without touching a replacement generation', async () => {
+	const base = tmpRepo();
+	const gitCommonDir = path.join(base, '.git');
+	const repo = 'owner/forge';
+	const pr = 42;
+	const dir = monitorJournal.journalDir({ root: base, gitCommonDir, repo, pr });
+	executor.writeClaimMarker(base, repo, pr, 'generation-1', gitCommonDir);
+	fs.mkdirSync(monitorJournal.pidPath(dir));
+	expect(await executor.releaseCleanupAuthority(
+		base, repo, pr, gitCommonDir, 'generation-1',
+	)).toBe(false);
+	expect(executor.readClaimMarker(base, repo, pr, gitCommonDir)).toMatchObject({
+		status: 'present', value: 'generation-1',
+	});
+	fs.rmSync(monitorJournal.pidPath(dir), { recursive: true });
+	monitorJournal.writePid(dir, 1234);
+	expect(await executor.releaseCleanupAuthority(
+		base, repo, pr, gitCommonDir, 'generation-1',
+	)).toBe(true);
+	expect(executor.readClaimMarker(base, repo, pr, gitCommonDir)).toEqual({ status: 'absent' });
+	expect(monitorJournal.readPid(dir)).toBeNull();
+
+	executor.writeClaimMarker(base, repo, pr, 'replacement', gitCommonDir);
+	monitorJournal.writePid(dir, 5678);
+	expect(await executor.releaseCleanupAuthority(
+		base, repo, pr, gitCommonDir, 'generation-1',
+	)).toBe(false);
+	expect(executor.readClaimMarker(base, repo, pr, gitCommonDir)).toMatchObject({
+		status: 'present', value: 'replacement',
+	});
+	expect(monitorJournal.readPid(dir)).toBe(5678);
 	fs.rmSync(base, { recursive: true, force: true });
 });
 
@@ -219,7 +262,7 @@ test('last-open daemon retirement leaves proof that the bounded handoff accepts'
 	});
 
 	expect(shepherdLease.inspect(base, { gitCommonDir }).status).toBe('absent');
-	expect(shepherdCmd.terminalCleanupEvidence({
+	expect(await shepherdCmd.terminalCleanupEvidence({
 		owner: 'owner', repo: 'forge', pr: 42, dir: path.join(base, 'journal'),
 		projectRoot: base, gitCommonDir,
 	}, { watcherRunning: () => false })).toMatchObject({
@@ -266,7 +309,7 @@ test('cleanup-proof persistence failure retains authority and prevents daemon re
 	})).rejects.toMatchObject({ code: 'WATCHER_CLEANUP_FAILED' });
 	expect(released).toBe(false);
 	expect(executor.readClaimMarker(base, 'owner/forge', 42, gitCommonDir)).toMatchObject({ status: 'present' });
-	expect(shepherdCmd.terminalCleanupEvidence({
+	expect(await shepherdCmd.terminalCleanupEvidence({
 		owner: 'owner', repo: 'forge', pr: 42, dir: path.join(base, 'journal'),
 		projectRoot: base, gitCommonDir,
 	}, { watcherRunning: () => false })).toEqual({ complete: false });
@@ -401,6 +444,35 @@ describe('execute — watcher lifecycle', () => {
 		expect(reaped).toEqual([]);
 	});
 
+	test('retains a terminal watcher until claim release is confirmed', async () => {
+		let attempts = 0;
+		const action = [{ type: 'stopWatcher', pr: { number: 5 } }];
+		const cancelling = await executor.execute(action, {
+			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
+			watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
+			isAlive: () => false, removeClaim: () => true,
+		});
+		let failure;
+		try {
+			await executor.execute(action, {
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2001,
+				watchers: cancelling, isAlive: () => false,
+				removeClaim: () => { attempts += 1; return false; },
+			});
+		} catch (error) {
+			failure = error;
+		}
+		expect(failure).toMatchObject({ code: 'WATCHER_CLEANUP_FAILED' });
+		expect(failure.watchers[0].lifecycle.state.terminal).toBe(true);
+		const reaped = await executor.execute(action, {
+			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2002,
+			watchers: failure.watchers, isAlive: () => false,
+			removeClaim: () => { attempts += 1; return true; },
+		});
+		expect(reaped).toEqual([]);
+		expect(attempts).toBe(2);
+	});
+
 	test('resumes a persisted termination acknowledgement by reaping the dead watcher', async () => {
 		const checkpoints = [];
 		const cancelling = await executor.execute(
@@ -467,6 +539,38 @@ describe('execute — watcher lifecycle', () => {
 		expect(checkpoints.map(checkpoint => checkpoint.state.phase)).toEqual([
 			'EXITED', 'TERMINATION_ACKNOWLEDGED', 'TERMINAL',
 		]);
+	});
+
+	test('retains a spawned terminal watcher when rollback claim release is unconfirmed', async () => {
+		let alive = true;
+		let failure;
+		try {
+			await executor.execute(
+				[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
+				{
+					projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
+					spawnWatcher: () => ({ pid: 1234 }),
+					persistLifecycleCheckpoint: current => current.length !== 1,
+					writeClaim: () => true, readClaim: () => '1970-01-01T00:00:01.000Z',
+					isAlive: () => alive,
+					kill: () => { alive = false; },
+					removeClaim: () => false,
+					waitForKillRetry: async () => {},
+				},
+			);
+		} catch (error) {
+			failure = error;
+		}
+		expect(failure).toMatchObject({ code: 'WATCHER_CLEANUP_FAILED' });
+		expect(failure.watchers[0].lifecycle.state.terminal).toBe(true);
+		const reaped = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 42 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1001,
+				watchers: failure.watchers, isAlive: () => false, removeClaim: () => true,
+			},
+		);
+		expect(reaped).toEqual([]);
 	});
 
 	test('reaps an observed natural exit without fabricating a SIGKILL', async () => {
@@ -750,7 +854,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
 		expect(kills).toEqual([999]);
 	});
 
-	test('a live orphan escalates to SIGKILL after its grace deadline and is reaped after exit', async () => {
+		test('a live orphan escalates to SIGKILL after its grace deadline and is reaped after exit', async () => {
 		const kills = [];
 		const action = [{ type: 'reapOrphan', pid: 999, startedAt: 't1' }];
 		const common = {
@@ -769,8 +873,34 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
 		});
 
 		expect(kills).toEqual([[999, 'SIGTERM'], [999, 'SIGKILL']]);
-		expect(watchers).toEqual([]);
-	});
+			expect(watchers).toEqual([]);
+		});
+
+		test('retains a terminal orphan until claim release succeeds on a later pass', async () => {
+			const action = [{ type: 'reapOrphan', pid: 999, startedAt: 't1' }];
+			const common = {
+				projectRoot: '/repo', readClaim: () => 't1', broker: {}, kill: () => {},
+			};
+			let watchers = await executor.execute(action, {
+				...common, watchers: [{ ...baseEntry }], now: () => 1_000, isAlive: () => true,
+			});
+			let failure;
+			try {
+				await executor.execute(action, {
+					...common, watchers, now: () => 1_001, isAlive: () => false,
+					removeClaim: () => false,
+				});
+			} catch (error) {
+				failure = error;
+			}
+			expect(failure).toMatchObject({ code: 'WATCHER_CLEANUP_FAILED' });
+			expect(failure.watchers[0].lifecycle.state.terminal).toBe(true);
+			watchers = await executor.execute(action, {
+				...common, watchers: failure.watchers, now: () => 1_002, isAlive: () => false,
+				removeClaim: () => true,
+			});
+			expect(watchers).toEqual([]);
+		});
 
 	test('legacy/null startedAt → never killed (unverifiable)', async () => {
 		const kills = [];

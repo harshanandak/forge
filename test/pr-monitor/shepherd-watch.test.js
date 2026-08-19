@@ -82,13 +82,13 @@ describe('forge shepherd watch <pr>', () => {
         });
         expect(await ctx.onTerminal()).toBe(true);
         expect(executor.readClaimMarker(root, repo, pr, gitCommonDir)).toMatchObject({ status: 'present' });
-        await ctx.onReleased();
+        expect(await ctx.releaseAuthority()).toBe(true);
         return { started: true, passes: 1, stopped: true, cleanupPersisted: true };
       },
     });
     expect(res.cleanupPersisted).toBe(true);
     expect(executor.readClaimMarker(root, repo, pr, gitCommonDir)).toEqual({ status: 'absent' });
-    expect(shepherd.terminalCleanupEvidence({
+    expect(await shepherd.terminalCleanupEvidence({
       owner: 'owner', repo: 'forge', pr, dir, projectRoot: root, gitCommonDir,
     }, {
       watcherRunning: () => false,

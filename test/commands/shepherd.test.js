@@ -22,7 +22,7 @@ describe('shepherd command handler', () => {
     expect(typeof shepherdCmd.handler).toBe('function');
   });
 
-  test('terminal cleanup evidence requires a reaped watcher and a reduced valid lease checkpoint', () => {
+  test('terminal cleanup evidence requires a reaped watcher and a reduced valid lease checkpoint', async () => {
     const base = {
       owner: 'owner', repo: 'forge', pr: 42, dir: '/journal',
       projectRoot: '/repo', gitCommonDir: '/repo/.git',
@@ -31,51 +31,99 @@ describe('shepherd command handler', () => {
       watcherRunning: () => false,
       inspectLease: () => ({ status: 'valid', watchers: [] }),
       readClaim: () => ({ status: 'absent' }),
+      releaseCleanupAuthority: () => true,
     };
 
-    expect(shepherdCmd.terminalCleanupEvidence(base, deps)).toMatchObject({
+    expect(await shepherdCmd.terminalCleanupEvidence(base, deps)).toMatchObject({
       complete: true,
       processCleanup: { status: 'reaped' },
       leaseCleanup: { status: 'checkpointed', continuing_authority: false },
     });
-    expect(shepherdCmd.terminalCleanupEvidence(base, {
+    expect(await shepherdCmd.terminalCleanupEvidence(base, {
       ...deps, watcherRunning: () => true,
     })).toMatchObject({ complete: true });
-    expect(shepherdCmd.terminalCleanupEvidence(base, {
+    expect(await shepherdCmd.terminalCleanupEvidence(base, {
       ...deps, inspectLease: () => ({ status: 'valid', watchers: [{ repo: 'owner/forge', pr: 42 }] }),
     })).toEqual({ complete: false });
-    expect(shepherdCmd.terminalCleanupEvidence(base, {
+    expect(await shepherdCmd.terminalCleanupEvidence(base, {
       ...deps, inspectLease: () => ({ status: 'invalid', watchers: [] }),
     })).toEqual({ complete: false });
-    expect(shepherdCmd.terminalCleanupEvidence(base, {
+    expect(await shepherdCmd.terminalCleanupEvidence(base, {
       ...deps, inspectLease: () => ({ status: 'absent', watchers: [] }),
     })).toEqual({ complete: false });
-    expect(shepherdCmd.terminalCleanupEvidence(base, {
+    expect(await shepherdCmd.terminalCleanupEvidence(base, {
       ...deps,
       inspectLease: () => ({ status: 'absent', watchers: [] }),
-      readCleanup: () => ({ repo: 'owner/forge', pr: 42, status: 'reaped' }),
+      readCleanup: () => ({ repo: 'owner/forge', pr: 42, status: 'reaped', startedAt: 'generation-1' }),
     })).toMatchObject({
       complete: true,
       processCleanup: { status: 'reaped' },
       leaseCleanup: { status: 'released', continuing_authority: false },
     });
-    expect(shepherdCmd.terminalCleanupEvidence(base, {
+    expect(await shepherdCmd.terminalCleanupEvidence(base, {
       ...deps,
       inspectLease: () => ({ status: 'absent', watchers: [] }),
       readCleanup: () => ({ repo: 'other/forge', pr: 42, status: 'reaped' }),
     })).toEqual({ complete: false });
-    expect(shepherdCmd.terminalCleanupEvidence(base, {
+    expect(await shepherdCmd.terminalCleanupEvidence(base, {
       ...deps, inspectLease: () => null,
     })).toEqual({ complete: false });
-    expect(shepherdCmd.terminalCleanupEvidence(base, {
+    expect(await shepherdCmd.terminalCleanupEvidence(base, {
       ...deps, readClaim: () => ({ status: 'present', value: 'still-owned' }),
     })).toEqual({ complete: false });
-    expect(shepherdCmd.terminalCleanupEvidence(base, {
+    expect(await shepherdCmd.terminalCleanupEvidence(base, {
       ...deps, readClaim: () => ({ status: 'unreadable' }),
     })).toEqual({ complete: false });
-    expect(shepherdCmd.terminalCleanupEvidence(base, {
+    expect(await shepherdCmd.terminalCleanupEvidence(base, {
       ...deps, readClaim: () => null,
     })).toEqual({ complete: false });
+  });
+
+  test('terminal cleanup evidence retries durable direct-watcher authority release', async () => {
+    let attempts = 0;
+    const base = {
+      owner: 'owner', repo: 'forge', pr: 42,
+      projectRoot: '/repo', gitCommonDir: '/repo/.git',
+    };
+    const deps = {
+      inspectLease: () => ({ status: 'absent' }),
+      readCleanup: () => ({
+        repo: 'owner/forge', pr: 42, status: 'reaped', startedAt: 'generation-1',
+      }),
+      releaseCleanupAuthority: () => ++attempts > 1,
+      readClaim: () => ({ status: 'absent' }),
+    };
+
+    expect(await shepherdCmd.terminalCleanupEvidence(base, deps)).toEqual({ complete: false });
+    expect(await shepherdCmd.terminalCleanupEvidence(base, deps)).toMatchObject({ complete: true });
+    expect(attempts).toBe(2);
+  });
+
+  test('terminal cleanup evidence retries direct cleanup while the daemon owns other PRs', async () => {
+    let claim = { status: 'present', value: 'generation-1' };
+    let releases = 0;
+    const result = await shepherdCmd.terminalCleanupEvidence({
+      owner: 'owner', repo: 'forge', pr: 42,
+      projectRoot: '/repo', gitCommonDir: '/repo/.git',
+    }, {
+      inspectLease: () => ({
+        status: 'valid', watchers: [{ repo: 'owner/forge', pr: 99 }],
+      }),
+      readCleanup: () => ({
+        repo: 'owner/forge', pr: 42, status: 'reaped', startedAt: 'generation-1',
+      }),
+      readClaim: () => claim,
+      releaseCleanupAuthority: () => {
+        releases += 1;
+        claim = { status: 'absent' };
+        return true;
+      },
+    });
+
+    expect(result).toMatchObject({
+      complete: true, leaseCleanup: { status: 'checkpointed', continuing_authority: false },
+    });
+    expect(releases).toBe(1);
   });
 
   test('one invocation runs exactly ONE bounded pass (no in-process loop)', async () => {
@@ -143,7 +191,9 @@ describe('shepherd command handler', () => {
         });
       }
       if (args.includes('repo') && args.includes('view')) {
-        throw new Error('checkout repository identity must not be consulted');
+        return JSON.stringify({
+          nameWithOwner: 'contributor/widget', parent: { nameWithOwner: 'upstream/widget' },
+        });
       }
       return '{}';
     };
@@ -156,9 +206,10 @@ describe('shepherd command handler', () => {
     expect(ctx.headSha).toBe('a'.repeat(40));
     expect(ctx.owner).toBe('upstream');
     expect(ctx.repo).toBe('widget');
-    expect(ghCalls).toHaveLength(1);
-    expect(ghCalls[0]).toContain('pr view 42');
-    expect(ghCalls[0]).toContain('url');
+    expect(ghCalls).toHaveLength(2);
+    expect(ghCalls[0]).toBe('repo view --json nameWithOwner,parent');
+    expect(ghCalls[1]).toContain('pr view 42 --repo upstream/widget');
+    expect(ghCalls[1]).toContain('url');
   });
 
   test('defaultBuildContext fails closed without an exact provider base commit', async () => {
@@ -169,7 +220,7 @@ describe('shepherd command handler', () => {
           url: 'https://github.example/acme/widget/pull/42',
         });
       }
-      return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
+      return JSON.stringify({ nameWithOwner: 'acme/widget', parent: null });
     };
 
     await expect(shepherdCmd.defaultBuildContext({ pr: '42', gh, git: () => 'origin\n' }))
@@ -177,23 +228,52 @@ describe('shepherd command handler', () => {
   });
 
   test('defaultBuildContext fails closed without an authoritative base repository URL', async () => {
-    const gh = () => JSON.stringify({
-      baseRefName: 'master', baseRefOid: 'b'.repeat(40), url: 'https://github.example/acme/widget/issues/42',
-    });
+    const gh = (_cmd, args) => args.includes('repo')
+      ? JSON.stringify({ nameWithOwner: 'acme/widget', parent: null })
+      : JSON.stringify({
+        baseRefName: 'master', baseRefOid: 'b'.repeat(40),
+        url: 'https://github.example/acme/widget/issues/42',
+      });
 
     await expect(shepherdCmd.defaultBuildContext({ pr: '42', gh, git: () => 'origin\n' }))
       .rejects.toThrow(/base repository/i);
   });
 
   test('defaultBuildContext rejects non-canonical or mismatched PR numbers', async () => {
-    const gh = () => JSON.stringify({
-      baseRefName: 'master', baseRefOid: 'b'.repeat(40),
-      url: 'https://github.example/acme/widget/pull/42',
-    });
+    const gh = (_cmd, args) => args.includes('repo')
+      ? JSON.stringify({ nameWithOwner: 'acme/widget', parent: null })
+      : JSON.stringify({
+        baseRefName: 'master', baseRefOid: 'b'.repeat(40),
+        url: 'https://github.example/acme/widget/pull/42',
+      });
     await expect(shepherdCmd.defaultBuildContext({ pr: '42e0', gh, git: () => 'origin\n' }))
       .rejects.toThrow(/PR number/i);
     await expect(shepherdCmd.defaultBuildContext({ pr: '43', gh, git: () => 'origin\n' }))
       .rejects.toThrow(/base repository/i);
+  });
+
+  test('defaultBuildContext rejects unusable checkout identity before PR lookup', async () => {
+    const calls = [];
+    const gh = (_cmd, args) => {
+      calls.push(args.join(' '));
+      return JSON.stringify({ nameWithOwner: 'not/a/repository', parent: null });
+    };
+
+    await expect(shepherdCmd.defaultBuildContext({ pr: '42', gh, git: () => 'origin\n' }))
+      .rejects.toThrow(/base repository/i);
+    expect(calls).toEqual(['repo view --json nameWithOwner,parent']);
+  });
+
+  test('defaultBuildContext rejects a PR URL from another repository', async () => {
+    const gh = (_cmd, args) => args.includes('repo')
+      ? JSON.stringify({ nameWithOwner: 'upstream/widget', parent: null })
+      : JSON.stringify({
+        baseRefName: 'master', baseRefOid: 'b'.repeat(40),
+        url: 'https://github.example/other/widget/pull/42',
+      });
+
+    await expect(shepherdCmd.defaultBuildContext({ pr: '42', gh, git: () => 'origin\n' }))
+      .rejects.toThrow(/does not match/i);
   });
 
   test('defaultBuildContext threads the worktree root through as ctx.cwd', async () => {
@@ -204,7 +284,7 @@ describe('shepherd command handler', () => {
           url: 'https://github.example/o/r/pull/9',
         });
       }
-      return JSON.stringify({ owner: { login: 'o' }, name: 'r' });
+      return JSON.stringify({ nameWithOwner: 'o/r', parent: null });
     };
     const git = () => 'origin\n';
 
