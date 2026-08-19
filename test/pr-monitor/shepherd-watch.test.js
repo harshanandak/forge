@@ -141,6 +141,14 @@ describe('forge shepherd watch <pr>', () => {
     const missingRepository = await shepherd.handleWatch(['watch', '42', '--repo'], '/repo', runnable);
     expect(missingRepository).toMatchObject({ success: false });
     expect(missingRepository.error).toMatch(/canonical owner\/name/);
+    const emptyRepository = await shepherd.handleWatch(['watch', '42', '--repo', ''], '/repo', runnable);
+    expect(emptyRepository).toMatchObject({ success: false });
+    expect(emptyRepository.error).toMatch(/canonical owner\/name/);
+    const duplicateRepository = await shepherd.handleWatch([
+      'watch', '42', '--repo', 'upstream/forge', '--repo',
+    ], '/repo', runnable);
+    expect(duplicateRepository).toMatchObject({ success: false });
+    expect(duplicateRepository.error).toMatch(/canonical owner\/name/);
 
     const badGeneration = await shepherd.handleWatch([
       'watch', '42', '--started-at', '2026-08-19', '--repo', 'upstream/forge',
@@ -151,5 +159,13 @@ describe('forge shepherd watch <pr>', () => {
     const missingGeneration = await shepherd.handleWatch(['watch', '42', '--started-at'], '/repo', runnable);
     expect(missingGeneration).toMatchObject({ success: false });
     expect(missingGeneration.error).toMatch(/canonical ISO instant/);
+    const emptyGeneration = await shepherd.handleWatch(['watch', '42', '--started-at', ''], '/repo', runnable);
+    expect(emptyGeneration).toMatchObject({ success: false });
+    expect(emptyGeneration.error).toMatch(/canonical ISO instant/);
+    const duplicateGeneration = await shepherd.handleWatch([
+      'watch', '42', '--started-at', '2026-08-19T01:02:03.004Z', '--started-at',
+    ], '/repo', runnable);
+    expect(duplicateGeneration).toMatchObject({ success: false });
+    expect(duplicateGeneration.error).toMatch(/canonical ISO instant/);
   });
 });
