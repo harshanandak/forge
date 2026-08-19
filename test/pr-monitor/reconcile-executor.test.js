@@ -1162,21 +1162,22 @@ describe('real kernel broker wiring (no module-namespace default)', () => {
 	const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
 
 	async function realBroker(dir) {
+		const gitCommonDir = path.join(dir, '.git');
 		const driver = createBuiltinSQLiteDriver({});
-		const broker = createLocalBroker({ projectRoot: dir, gitCommonDir: '/gcd/.git', databasePath: path.join(dir, 'kernel.sqlite'), driver });
+		const broker = createLocalBroker({ projectRoot: dir, gitCommonDir, databasePath: path.join(dir, 'kernel.sqlite'), driver });
 		await broker.initialize();
-		return { broker, driver };
+		return { broker, driver, gitCommonDir };
 	}
 
 	test('execute upsertPrRow actually writes a kernel_pr row via a real broker instance', async () => {
 		const dir = tmpRepo();
-		const { broker, driver } = await realBroker(dir);
+		const { broker, driver, gitCommonDir } = await realBroker(dir);
 		try {
 			await executor.execute(
-				[{ type: 'upsertPrRow', row: { git_common_dir: '/gcd/.git', repo: 'owner/a', number: 5, branch: 'feat/5', head_sha: 'sha5' } }],
-				{ broker, gitCommonDir: '/gcd/.git', projectRoot: dir, watchers: [] },
+				[{ type: 'upsertPrRow', row: { git_common_dir: gitCommonDir, repo: 'owner/a', number: 5, branch: 'feat/5', head_sha: 'sha5' } }],
+				{ broker, gitCommonDir, projectRoot: dir, watchers: [] },
 			);
-			const rows = await broker.listOpenPrs('/gcd/.git');
+			const rows = await broker.listOpenPrs(gitCommonDir);
 			expect(rows.some((r) => r.number === 5 && r.repo === 'owner/a')).toBe(true);
 		} finally {
 			driver.close();
@@ -1186,21 +1187,21 @@ describe('real kernel broker wiring (no module-namespace default)', () => {
 
 	test('runDaemon threads its broker end-to-end: a desired PR is registered in kernel_pr', async () => {
 		const dir = tmpRepo();
-		const { broker, driver } = await realBroker(dir);
+		const { broker, driver, gitCommonDir } = await realBroker(dir);
 		try {
 			const res = await executor.runDaemon(dir, {
 				once: true,
-				gitCommonDir: '/gcd/.git',
+				gitCommonDir,
 				acquire: () => ({ ok: true, token: 'tok' }),
 				startHeartbeat: () => null, stopHeartbeat: () => {}, release: () => {},
 				broker, // injected real broker → threaded through convergeArgs → execute
-				gatherDesired: async () => ({ gitCommonDir: '/gcd/.git', openPrs: [{ repo: 'owner/a', number: 7, branch: 'feat/7', headSha: 'sha7', issueId: null, worktreeId: null, journalPtr: null }] }),
+				gatherDesired: async () => ({ gitCommonDir, openPrs: [{ repo: 'owner/a', number: 7, branch: 'feat/7', headSha: 'sha7', issueId: null, worktreeId: null, journalPtr: null }] }),
 				gatherObserved: async () => ({ lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] }),
 				spawnWatcher: () => ({ pid: 111 }),
 				updateWatchers: () => {},
 			});
 			expect(res.ok).toBe(true);
-			const rows = await broker.listOpenPrs('/gcd/.git');
+			const rows = await broker.listOpenPrs(gitCommonDir);
 			expect(rows.some((r) => r.number === 7)).toBe(true);
 		} finally {
 			driver.close();
