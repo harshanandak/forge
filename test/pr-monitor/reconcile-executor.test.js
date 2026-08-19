@@ -9,6 +9,7 @@ const { spawn } = require('node:child_process');
 const executor = require('../../lib/pr-monitor/reconcile-executor');
 const shepherdLease = require('../../lib/pr-monitor/shepherd-lease');
 const shepherdCmd = require('../../lib/commands/shepherd');
+const monitorJournal = require('../../lib/pr-monitor/journal');
 const FOREIGN_LEASE_CHILD_EXIT_TIMEOUT_MS = 5000;
 
 function tmpRepo() {
@@ -22,7 +23,9 @@ test('claim markers share one path across worktrees with the same common dir', (
 	const mainRoot = path.join(base, 'main');
 	const worktreeRoot = path.join(base, 'feature');
 	executor.writeClaimMarker(mainRoot, 'forge', 42, 'stamp', gitCommonDir);
-	expect(executor.readClaimMarker(worktreeRoot, 'forge', 42, gitCommonDir)).toBe('stamp');
+	expect(executor.readClaimMarker(worktreeRoot, 'forge', 42, gitCommonDir)).toEqual({
+		status: 'present', value: 'stamp',
+	});
 	const kills = [];
 	expect(executor.verifiedKill(
 		{ repo: 'forge', pr: 42, pid: 1234, startedAt: 'stamp' },
@@ -34,6 +37,63 @@ test('claim markers share one path across worktrees with the same common dir', (
 		},
 	)).toBe(true);
 	expect(kills).toEqual([1234]);
+	fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('singleton claim acquisition preserves a direct generation that wins the journal lock', async () => {
+	const base = tmpRepo();
+	const gitCommonDir = path.join(base, '.git');
+	const repo = 'owner/forge';
+	const pr = 42;
+	const dir = monitorJournal.journalDir({ root: base, gitCommonDir, repo, pr });
+	const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+	let releaseLock;
+	let lockHeld;
+	const held = new Promise(resolve => { lockHeld = resolve; });
+	const release = new Promise(resolve => { releaseLock = resolve; });
+	try {
+		const directClaim = monitorJournal.withJournalLock(dir, async () => {
+			executor.writeClaimMarker(base, repo, pr, 'direct-generation', gitCommonDir);
+			monitorJournal.writePid(dir, child.pid);
+			lockHeld();
+			await release;
+		});
+		await held;
+		const singletonClaim = executor.acquireClaimMarker(
+			base, repo, pr, 'singleton-generation', gitCommonDir,
+		);
+		releaseLock();
+		await directClaim;
+		expect(await singletonClaim).toBe(false);
+		expect(executor.readClaimMarker(base, repo, pr, gitCommonDir)).toEqual({
+			status: 'present', value: 'direct-generation',
+		});
+	} finally {
+		try { child.kill('SIGKILL'); } catch { /* already exited */ }
+		fs.rmSync(base, { recursive: true, force: true });
+	}
+});
+
+test('generation-conditional release preserves a replacement claim', async () => {
+	const base = tmpRepo();
+	const gitCommonDir = path.join(base, '.git');
+	executor.writeClaimMarker(base, 'owner/forge', 42, 'replacement', gitCommonDir);
+	expect(await executor.releaseClaimMarker(
+		base, 'owner/forge', 42, gitCommonDir, 'old-generation',
+	)).toBe(false);
+	expect(executor.readClaimMarker(base, 'owner/forge', 42, gitCommonDir)).toEqual({
+		status: 'present', value: 'replacement',
+	});
+	fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('claim marker reads distinguish confirmed absence from unreadable authority', () => {
+	const base = tmpRepo();
+	const gitCommonDir = path.join(base, '.git');
+	expect(executor.readClaimMarker(base, 'owner/forge', 42, gitCommonDir)).toEqual({ status: 'absent' });
+	const dir = monitorJournal.journalDir({ root: base, gitCommonDir, repo: 'owner/forge', pr: 42 });
+	fs.mkdirSync(path.join(dir, 'watch.startedat'), { recursive: true });
+	expect(executor.readClaimMarker(base, 'owner/forge', 42, gitCommonDir)).toEqual({ status: 'unreadable' });
 	fs.rmSync(base, { recursive: true, force: true });
 });
 
@@ -63,7 +123,7 @@ test('a reaped watcher leaves durable per-PR cleanup proof after its lease is re
 	);
 
 	expect(reaped).toEqual([]);
-	expect(executor.readClaimMarker(base, 'owner/forge', 42, gitCommonDir)).toBeNull();
+	expect(executor.readClaimMarker(base, 'owner/forge', 42, gitCommonDir)).toEqual({ status: 'absent' });
 	const cleanup = executor.readCleanupMarker(base, 'owner/forge', 42, gitCommonDir);
 	expect(cleanup).toMatchObject({
 		repo: 'owner/forge', pr: 42, status: 'reaped', startedAt: new Date(1000).toISOString(),
@@ -84,6 +144,12 @@ test('cleanup proof fails closed on reversed lifecycle time', () => {
 	expect(executor.writeCleanupMarker(base, {
 		repo: 'owner/forge', pr: 42, startedAt: new Date(4000).toISOString(),
 	}, 3000, gitCommonDir)).toBe(false);
+	expect(executor.readCleanupMarker(base, 'owner/forge', 42, gitCommonDir)).toBeNull();
+	const dir = monitorJournal.journalDir({ root: base, gitCommonDir, repo: 'owner/forge', pr: 42 });
+	fs.writeFileSync(path.join(dir, 'watch.cleanup.json'), JSON.stringify({
+		version: 1, repo: 'owner/forge', pr: 42, status: 'reaped',
+		startedAt: new Date(4000).toISOString(), reapedAt: new Date(3000).toISOString(),
+	}));
 	expect(executor.readCleanupMarker(base, 'owner/forge', 42, gitCommonDir)).toBeNull();
 	fs.rmSync(base, { recursive: true, force: true });
 });
@@ -174,7 +240,7 @@ test('cleanup-proof persistence failure retains authority and prevents daemon re
 		}),
 	})).rejects.toMatchObject({ code: 'WATCHER_CLEANUP_FAILED' });
 	expect(released).toBe(false);
-	expect(executor.readClaimMarker(base, 'owner/forge', 42, gitCommonDir)).not.toBeNull();
+	expect(executor.readClaimMarker(base, 'owner/forge', 42, gitCommonDir)).toMatchObject({ status: 'present' });
 	expect(shepherdCmd.terminalCleanupEvidence({
 		owner: 'owner', repo: 'forge', pr: 42, dir: path.join(base, 'journal'),
 		projectRoot: base, gitCommonDir,
@@ -516,10 +582,38 @@ describe('execute — watcher lifecycle', () => {
 		);
 		expect(spawned).toHaveLength(1);
 		expect(spawned[0].prNumber).toBe(42);
+		expect(spawned[0].startedAt).toBe('2026-07-20T00:00:00.000Z');
 		expect(watchers).toHaveLength(1);
 		expect(watchers[0]).toMatchObject({ pr: 42, repo: 'forge', pid: 1234, startedAt: '2026-07-20T00:00:00.000Z' });
 		expect(claims).toHaveLength(1);
 		expect(claims[0].startedAt).toBe('2026-07-20T00:00:00.000Z');
+	});
+
+	test('does not replace a live direct watcher generation during singleton convergence', async () => {
+		const base = tmpRepo();
+		const gitCommonDir = path.join(base, '.git');
+		const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+		const dir = monitorJournal.journalDir({ root: base, gitCommonDir, repo: 'owner/forge', pr: 42 });
+		monitorJournal.writePid(dir, child.pid);
+		executor.writeClaimMarker(base, 'owner/forge', 42, 'direct-generation', gitCommonDir);
+		let spawned = false;
+		try {
+			expect(monitorJournal.watcherRunning(dir)).toBe(true);
+			await executor.execute(
+				[{ type: 'startWatcher', pr: { repo: 'owner/forge', number: 42 } }],
+				{
+					projectRoot: base, gitCommonDir, now: () => 1000, watchers: [],
+					spawnWatcher: () => { spawned = true; return { started: false, reason: 'already-running' }; },
+				},
+			);
+			expect(spawned).toBe(false);
+			expect(executor.readClaimMarker(base, 'owner/forge', 42, gitCommonDir)).toEqual({
+				status: 'present', value: 'direct-generation',
+			});
+		} finally {
+			child.kill();
+			fs.rmSync(base, { recursive: true, force: true });
+		}
 	});
 
 	test('hand-opened PR (kernel has no row) → upsertPrRow writes a kernel_pr row (issue/worktree null) AND a watcher starts, ZERO user invocation', async () => {

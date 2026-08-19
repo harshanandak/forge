@@ -40,6 +40,36 @@ describe('startPrWatcherDetached', () => {
     expect(child.wasUnrefd()).toBe(true);
   });
 
+  test('propagates the caller-owned watcher generation exactly to the child', () => {
+    const calls = [];
+    const startedAt = '2026-08-19T01:02:03.004Z';
+    const res = startPrWatcherDetached({
+      prNumber: 42,
+      cwd: '/repo',
+      startedAt,
+      resolveSlug: () => null,
+      spawn: (bin, args, opts) => { calls.push({ bin, args, opts }); return fakeChild(999); },
+    });
+
+    expect(calls[0].args.slice(-2)).toEqual(['--started-at', startedAt]);
+    expect(res.startedAt).toBe(startedAt);
+  });
+
+  test('creates one canonical generation for a directly launched watcher', () => {
+    const calls = [];
+    const now = Date.parse('2026-08-19T05:06:07.008Z');
+    const res = startPrWatcherDetached({
+      prNumber: 42,
+      cwd: '/repo',
+      now: () => now,
+      resolveSlug: () => null,
+      spawn: (bin, args, opts) => { calls.push({ bin, args, opts }); return fakeChild(999); },
+    });
+
+    expect(res.startedAt).toBe('2026-08-19T05:06:07.008Z');
+    expect(calls[0].args.slice(-2)).toEqual(['--started-at', res.startedAt]);
+  });
+
   test('is a no-op when a live watcher already owns the PR (spawn not called)', () => {
     let spawned = false;
     let journalArgs;
@@ -112,14 +142,14 @@ describe('startPrWatcherDetached', () => {
 });
 
 describe('defaultResolveSlug', () => {
-  test('extracts the bare repo name from an SSH remote url', () => {
+  test('extracts the canonical repository from an SSH remote url', () => {
     const slug = defaultResolveSlug({ cwd: '/repo', exec: () => 'git@github.com:harshanandak/forge.git\n' });
-    expect(slug).toBe('forge');
+    expect(slug).toBe('harshanandak/forge');
   });
 
-  test('extracts the bare repo name from an HTTPS remote url', () => {
+  test('extracts the canonical repository from an HTTPS remote url', () => {
     const slug = defaultResolveSlug({ cwd: '/repo', exec: () => 'https://github.com/harshanandak/forge\n' });
-    expect(slug).toBe('forge');
+    expect(slug).toBe('harshanandak/forge');
   });
 
   test('returns null when the git command fails', () => {

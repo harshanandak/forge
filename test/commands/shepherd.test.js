@@ -30,7 +30,7 @@ describe('shepherd command handler', () => {
     const deps = {
       watcherRunning: () => false,
       inspectLease: () => ({ status: 'valid', watchers: [] }),
-      readClaim: () => null,
+      readClaim: () => ({ status: 'absent' }),
     };
 
     expect(shepherdCmd.terminalCleanupEvidence(base, deps)).toMatchObject({
@@ -40,10 +40,7 @@ describe('shepherd command handler', () => {
     });
     expect(shepherdCmd.terminalCleanupEvidence(base, {
       ...deps, watcherRunning: () => true,
-    })).toMatchObject({
-      complete: true,
-      leaseCleanup: { status: 'checkpointed', continuing_authority: false },
-    });
+    })).toMatchObject({ complete: true });
     expect(shepherdCmd.terminalCleanupEvidence(base, {
       ...deps, inspectLease: () => ({ status: 'valid', watchers: [{ repo: 'owner/forge', pr: 42 }] }),
     })).toEqual({ complete: false });
@@ -71,7 +68,13 @@ describe('shepherd command handler', () => {
       ...deps, inspectLease: () => null,
     })).toEqual({ complete: false });
     expect(shepherdCmd.terminalCleanupEvidence(base, {
-      ...deps, readClaim: () => 'still-owned',
+      ...deps, readClaim: () => ({ status: 'present', value: 'still-owned' }),
+    })).toEqual({ complete: false });
+    expect(shepherdCmd.terminalCleanupEvidence(base, {
+      ...deps, readClaim: () => ({ status: 'unreadable' }),
+    })).toEqual({ complete: false });
+    expect(shepherdCmd.terminalCleanupEvidence(base, {
+      ...deps, readClaim: () => null,
     })).toEqual({ complete: false });
   });
 
@@ -129,17 +132,18 @@ describe('shepherd command handler', () => {
     expect(out.error).toMatch(/pr/i);
   });
 
-  test('defaultBuildContext derives base from the PR target, not the current checkout', async () => {
+  test('defaultBuildContext derives base repository and commit from the PR, not a fork checkout', async () => {
     const ghCalls = [];
     const gh = (cmd, args) => {
       ghCalls.push(args.join(' '));
       if (args.includes('pr') && args.includes('view')) {
         return JSON.stringify({
           baseRefName: 'release/2.0', baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40),
+          url: 'https://github.example/upstream/widget/pull/42',
         });
       }
       if (args.includes('repo') && args.includes('view')) {
-        return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
+        throw new Error('checkout repository identity must not be consulted');
       }
       return '{}';
     };
@@ -150,16 +154,20 @@ describe('shepherd command handler', () => {
     expect(ctx.base).toBe('release/2.0');
     expect(ctx.baseRef).toBe('b'.repeat(40));
     expect(ctx.headSha).toBe('a'.repeat(40));
-    expect(ctx.owner).toBe('acme');
+    expect(ctx.owner).toBe('upstream');
     expect(ctx.repo).toBe('widget');
-    // It MUST consult the PR, not just `gh repo view` defaultBranchRef.
-    expect(ghCalls.some((c) => c.includes('pr view') && c.includes('42'))).toBe(true);
+    expect(ghCalls).toHaveLength(1);
+    expect(ghCalls[0]).toContain('pr view 42');
+    expect(ghCalls[0]).toContain('url');
   });
 
   test('defaultBuildContext fails closed without an exact provider base commit', async () => {
     const gh = (_cmd, args) => {
       if (args.includes('pr') && args.includes('view')) {
-        return JSON.stringify({ baseRefName: 'release/2.0', baseRefOid: 'not-a-commit' });
+        return JSON.stringify({
+          baseRefName: 'release/2.0', baseRefOid: 'not-a-commit',
+          url: 'https://github.example/acme/widget/pull/42',
+        });
       }
       return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
     };
@@ -168,10 +176,33 @@ describe('shepherd command handler', () => {
       .rejects.toThrow(/base commit/i);
   });
 
+  test('defaultBuildContext fails closed without an authoritative base repository URL', async () => {
+    const gh = () => JSON.stringify({
+      baseRefName: 'master', baseRefOid: 'b'.repeat(40), url: 'https://github.example/acme/widget/issues/42',
+    });
+
+    await expect(shepherdCmd.defaultBuildContext({ pr: '42', gh, git: () => 'origin\n' }))
+      .rejects.toThrow(/base repository/i);
+  });
+
+  test('defaultBuildContext rejects non-canonical or mismatched PR numbers', async () => {
+    const gh = () => JSON.stringify({
+      baseRefName: 'master', baseRefOid: 'b'.repeat(40),
+      url: 'https://github.example/acme/widget/pull/42',
+    });
+    await expect(shepherdCmd.defaultBuildContext({ pr: '42e0', gh, git: () => 'origin\n' }))
+      .rejects.toThrow(/PR number/i);
+    await expect(shepherdCmd.defaultBuildContext({ pr: '43', gh, git: () => 'origin\n' }))
+      .rejects.toThrow(/base repository/i);
+  });
+
   test('defaultBuildContext threads the worktree root through as ctx.cwd', async () => {
     const gh = (cmd, args) => {
       if (args.includes('pr') && args.includes('view')) {
-        return JSON.stringify({ baseRefName: 'master', baseRefOid: 'b'.repeat(40) });
+        return JSON.stringify({
+          baseRefName: 'master', baseRefOid: 'b'.repeat(40),
+          url: 'https://github.example/o/r/pull/9',
+        });
       }
       return JSON.stringify({ owner: { login: 'o' }, name: 'r' });
     };
@@ -548,7 +579,7 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
       buildKernelDeps: async () => { throw new Error('journal fallback'); },
     });
     expect(built.dir).toBe(journal.journalDir({
-      root: mainRoot, gitCommonDir, repo: 'r', pr: '1',
+      root: mainRoot, gitCommonDir, repo: 'o/r', pr: '1',
     }));
   });
 

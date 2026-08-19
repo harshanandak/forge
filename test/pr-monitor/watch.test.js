@@ -161,13 +161,124 @@ describe('watchLoop', () => {
     expect(emitted[emitted.length - 1].type).toBe(T.PR_MERGED);
   });
 
+  test('checkpoints the claimed generation and terminal cleanup before releasing the pid', async () => {
+    const order = [];
+    const terminal = { type: T.PR_MERGED, key: 'merged', data: {} };
+    const res = await watchLoop({
+      dir,
+      runMonitorPass: async () => ({ events: [terminal] }),
+      watcherRunning: () => false,
+      writePid: () => order.push('write-pid'),
+      beforeClaim: () => { order.push('generation-claimed'); return true; },
+      onTerminal: () => { order.push('terminal-cleanup'); return true; },
+      onReleased: () => order.push('generation-released'),
+      removePid: () => { order.push('remove-pid'); return true; },
+      emit: () => {},
+      maxPasses: 1,
+    });
+
+    expect(order).toEqual([
+      'generation-claimed', 'write-pid', 'terminal-cleanup', 'remove-pid', 'generation-released',
+    ]);
+    expect(res).toMatchObject({ started: true, stopped: true, cleanupPersisted: true });
+  });
+
+  test('reports failed terminal cleanup while still releasing the process pid', async () => {
+    const order = [];
+    const terminal = { type: T.PR_CLOSED, key: 'closed', data: {} };
+    const res = await watchLoop({
+      dir,
+      runMonitorPass: async () => ({ events: [terminal] }),
+      watcherRunning: () => false,
+      writePid: () => order.push('write-pid'),
+      beforeClaim: () => { order.push('generation-claimed'); return true; },
+      onTerminal: () => { order.push('terminal-cleanup-failed'); return false; },
+      onReleased: () => order.push('generation-released'),
+      removePid: () => { order.push('remove-pid'); return true; },
+      emit: () => {},
+      maxPasses: 1,
+    });
+
+    expect(order).toEqual(['generation-claimed', 'write-pid', 'terminal-cleanup-failed', 'remove-pid']);
+    expect(res).toMatchObject({
+      started: true, stopped: true, cleanupPersisted: false,
+      reason: 'terminal-cleanup-persistence-failed',
+    });
+  });
+
+  test('contains a throwing terminal cleanup hook and reports retained proof', async () => {
+    const removes = [];
+    const terminal = { type: T.PR_CLOSED, key: 'closed', data: {} };
+    const res = await watchLoop({
+      dir,
+      runMonitorPass: async () => ({ events: [terminal] }),
+      watcherRunning: () => false,
+      writePid: () => {},
+      beforeClaim: () => true,
+      onTerminal: () => { throw new Error('disk unavailable'); },
+      removePid: (value) => { removes.push(value); return true; },
+      emit: () => {},
+      maxPasses: 1,
+    });
+
+    expect(removes).toEqual([dir]);
+    expect(res).toMatchObject({
+      cleanupPersisted: false,
+      reason: 'terminal-cleanup-persistence-failed',
+    });
+  });
+
+  test('fails closed before the first pass when generation persistence fails', async () => {
+    let gathered = false;
+    const removes = [];
+    const res = await watchLoop({
+      dir,
+      gather: async () => { gathered = true; return snap(); },
+      watcherRunning: () => false,
+      writePid: () => {},
+      beforeClaim: () => false,
+      removePid: (value) => removes.push(value),
+      emit: () => {},
+      maxPasses: 1,
+    });
+
+    expect(gathered).toBe(false);
+    expect(removes).toEqual([]);
+    expect(res).toMatchObject({
+      started: false, passes: 0, stopped: false,
+      reason: 'watcher-generation-persistence-failed',
+    });
+  });
+
+  test('retains generation authority when PID removal is unconfirmed', async () => {
+    let released = false;
+    const terminal = { type: T.PR_CLOSED, key: 'closed', data: {} };
+    const res = await watchLoop({
+      dir,
+      runMonitorPass: async () => ({ events: [terminal] }),
+      watcherRunning: () => false,
+      writePid: () => {},
+      beforeClaim: () => true,
+      onTerminal: () => true,
+      removePid: () => false,
+      onReleased: () => { released = true; },
+      emit: () => {},
+      maxPasses: 1,
+    });
+    expect(res.cleanupPersisted).toBe(true);
+    expect(released).toBe(false);
+  });
+
   test('is an idempotent no-op when another live watcher owns the PR', async () => {
     const emitted = [];
     let wrotepid = false;
+    let lifecycleHookCalled = false;
     const res = await watchLoop({
       dir, gather: async () => { throw new Error('must not gather'); },
       watcherRunning: () => true,
       writePid: () => { wrotepid = true; },
+      beforeClaim: () => { lifecycleHookCalled = true; },
+      onTerminal: () => { lifecycleHookCalled = true; },
       removePid: () => {},
       emit: (e) => emitted.push(e), maxPasses: 3,
     });
@@ -175,6 +286,7 @@ describe('watchLoop', () => {
     expect(res.reason).toBe('watcher-already-running');
     expect(res.passes).toBe(0);
     expect(wrotepid).toBe(false);
+    expect(lifecycleHookCalled).toBe(false);
     expect(emitted).toHaveLength(0);
   });
 
@@ -194,15 +306,18 @@ describe('watchLoop', () => {
   test('writes the pid on start and removes it on exit', async () => {
     const writes = [];
     const removes = [];
+    let terminalHookCalled = false;
     await watchLoop({
       dir, gather: gatherQueue([snap()]),
       now, rng: rngMid, sleep: async () => {}, maxPasses: 1,
       writePid: (d) => writes.push(d),
+      onTerminal: () => { terminalHookCalled = true; },
       removePid: (d) => removes.push(d),
       emit: () => {},
     });
     expect(writes).toEqual([dir]);
     expect(removes).toEqual([dir]);
+    expect(terminalHookCalled).toBe(false);
   });
 
   test('removes the pid even when a pass throws (finally cleanup)', async () => {
