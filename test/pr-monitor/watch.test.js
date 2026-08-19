@@ -183,7 +183,7 @@ describe('watchLoop', () => {
     expect(res).toMatchObject({ started: true, stopped: true, cleanupPersisted: true });
   });
 
-  test('reports failed terminal cleanup while still releasing the process pid', async () => {
+  test('reports failed terminal cleanup while retaining the process pid', async () => {
     const order = [];
     const terminal = { type: T.PR_CLOSED, key: 'closed', data: {} };
     const res = await watchLoop({
@@ -199,7 +199,7 @@ describe('watchLoop', () => {
       maxPasses: 1,
     });
 
-    expect(order).toEqual(['generation-claimed', 'write-pid', 'terminal-cleanup-failed', 'remove-pid']);
+    expect(order).toEqual(['generation-claimed', 'write-pid', 'terminal-cleanup-failed']);
     expect(res).toMatchObject({
       started: true, stopped: true, cleanupPersisted: false,
       reason: 'terminal-cleanup-persistence-failed',
@@ -221,7 +221,7 @@ describe('watchLoop', () => {
       maxPasses: 1,
     });
 
-    expect(removes).toEqual([dir]);
+    expect(removes).toEqual([]);
     expect(res).toMatchObject({
       cleanupPersisted: false,
       reason: 'terminal-cleanup-persistence-failed',
@@ -269,6 +269,30 @@ describe('watchLoop', () => {
       cleanupPersisted: false, reason: 'terminal-cleanup-persistence-failed',
     });
     expect(released).toBe(false);
+  });
+
+  test('keeps the PID slot when terminal cleanup proof is not persisted', async () => {
+    let pidRemoved = false;
+    let authorityReleased = false;
+    const terminal = { type: T.PR_CLOSED, key: 'closed', data: {} };
+    const res = await watchLoop({
+      dir,
+      runMonitorPass: async () => ({ events: [terminal] }),
+      watcherRunning: () => false,
+      writePid: () => {},
+      beforeClaim: () => true,
+      onTerminal: () => false,
+      removePid: () => { pidRemoved = true; return true; },
+      releaseAuthority: () => { authorityReleased = true; return true; },
+      emit: () => {},
+      maxPasses: 1,
+    });
+
+    expect(res).toMatchObject({
+      cleanupPersisted: false, reason: 'terminal-cleanup-persistence-failed',
+    });
+    expect(pidRemoved).toBe(false);
+    expect(authorityReleased).toBe(false);
   });
 
   test.each([
