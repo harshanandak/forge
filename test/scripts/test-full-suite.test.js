@@ -399,6 +399,7 @@ describe('scripts/test-full-suite.js', () => {
       'test-env/edge-cases/file-limits.test.js',
       'test/hooks-session-start.test.js',
       'test/integration/standalone-package-smoke.test.js',
+      'test/patch-intent.test.js',
       'test/pr-monitor/flow-monitor.test.js',
       'test/scripts/process-tree.test.js',
     ]);
