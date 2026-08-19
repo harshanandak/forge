@@ -87,6 +87,16 @@ test('generation-conditional release preserves a replacement claim', async () =>
 	fs.rmSync(base, { recursive: true, force: true });
 });
 
+test('generation release fails closed when its journal root cannot be created', async () => {
+	const base = tmpRepo();
+	const blockedRoot = path.join(base, 'not-a-directory');
+	fs.writeFileSync(blockedRoot, 'file');
+	expect(await executor.releaseClaimMarker(
+		blockedRoot, 'owner/forge', 42, null, 'generation',
+	)).toBe(false);
+	fs.rmSync(base, { recursive: true, force: true });
+});
+
 test('claim marker reads distinguish confirmed absence from unreadable authority', () => {
 	const base = tmpRepo();
 	const gitCommonDir = path.join(base, '.git');
