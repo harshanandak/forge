@@ -97,6 +97,21 @@ test('generation release fails closed when its journal root cannot be created', 
 	fs.rmSync(base, { recursive: true, force: true });
 });
 
+test('an injected claim writer does not consult the production journal preflight', async () => {
+	const base = tmpRepo();
+	const blockedRoot = path.join(base, 'not-a-directory');
+	fs.writeFileSync(blockedRoot, 'file');
+	const watchers = await executor.execute(
+		[{ type: 'startWatcher', pr: { repo: 'owner/forge', number: 42 } }],
+		{
+			projectRoot: blockedRoot, now: () => 1000, watchers: [],
+			writeClaim: () => true, spawnWatcher: () => ({ pid: 1234 }),
+		},
+	);
+	expect(watchers[0]).toMatchObject({ repo: 'owner/forge', pr: 42, pid: 1234 });
+	fs.rmSync(base, { recursive: true, force: true });
+});
+
 test('claim marker reads distinguish confirmed absence from unreadable authority', () => {
 	const base = tmpRepo();
 	const gitCommonDir = path.join(base, '.git');
