@@ -39,6 +39,10 @@ function getPackFiles() {
 describe('package distribution (npm pack --dry-run)', () => {
   const packFiles = getPackFiles();
 
+  it('includes the fixed Windows ACL cscript verifier', () => {
+    expect(packFiles).toContain('lib/kernel/windows-private-acl.js');
+  });
+
   describe('scripts/ directory — hook scripts', () => {
     const requiredScripts = [
       'scripts/commitlint.js',

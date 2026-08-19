@@ -1,8 +1,10 @@
 'use strict';
 
 const fs = require('node:fs');
+const { EventEmitter } = require('node:events');
 const os = require('node:os');
 const path = require('node:path');
+const { PassThrough } = require('node:stream');
 const { afterEach, describe, expect, test } = require('bun:test');
 
 const { createLocalBroker } = require('../../lib/kernel/broker');
@@ -10,9 +12,11 @@ const {
 	createBuiltinSQLiteDriver,
 	hardenBackupPermissions,
 	hardenBackupPermissionsBatch,
-	resolveWindowsPowerShellPath,
+	resolveWindowsCscriptPath,
 	secureWindowsPathsAcl,
 	syncClaimRepairRecoveryDirectory,
+	WINDOWS_PRIVATE_ACL_SCRIPT_PATH,
+	_runWindowsProcess,
 } = require('../../lib/kernel/sqlite-driver');
 const {
 	cleanupRestoreProofDirectory,
@@ -157,9 +161,9 @@ describe('legacy claim repair preflight', () => {
 	});
 
 	test('hardens backup files to owner-only mode and fails closed when permissions remain broad', async () => {
-		expect(resolveWindowsPowerShellPath({ SystemRoot: 'C:\\Windows' }))
-			.toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
-		expect(() => resolveWindowsPowerShellPath({ SystemRoot: 'relative' })).toThrow('absolute SystemRoot');
+		expect(resolveWindowsCscriptPath({ SystemRoot: 'C:\\Windows' }))
+			.toBe('C:\\Windows\\System32\\cscript.exe');
+		expect(() => resolveWindowsCscriptPath({ SystemRoot: 'relative' })).toThrow('absolute SystemRoot');
 		const calls = [];
 		await hardenBackupPermissions('backup.sqlite', {
 			platform: 'linux',
@@ -212,170 +216,147 @@ describe('legacy claim repair preflight', () => {
 		})).rejects.toThrow('owner-only permissions');
 	});
 
-	test('uses one direct bounded async PowerShell process for Bun ACL hardening', async () => {
-		const invocations = [];
-		let timeoutDelay;
-		let clearedTimer;
-		await secureWindowsPathsAcl(['backup.sqlite', 'restore-dir'], {
+	test('fails before reading the cscript asset in the standalone binary', async () => {
+		let readAsset = false;
+		let spawned = false;
+		await expect(secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
 			runtime: 'bun',
 			environment: { SystemRoot: 'C:\\Windows' },
+			isCompiledBinary: () => true,
+			fsApi: {
+				readFileSync() { readAsset = true; throw new Error('asset must not be read'); },
+			},
+			bunSpawn() { spawned = true; throw new Error('child must not spawn'); },
+		})).rejects.toThrow('bun scripts/legacy-claim-repair.js');
+		expect(readAsset).toBe(false);
+		expect(spawned).toBe(false);
+	});
+
+	test('uses direct bounded whoami and cscript children with one shared Bun deadline', async () => {
+		const invocations = [];
+		const timerDelays = [];
+		const clearedTimers = [];
+		const times = [1_000, 1_005, 1_010];
+		await secureWindowsPathsAcl(['C:\\private\\backup.sqlite', 'C:\\private\\restore-dir'], {
+			runtime: 'bun',
+			environment: { SystemRoot: 'C:\\Windows', PATH: 'secret-path-sentinel' },
 			bunSpawn(command, options) {
 				invocations.push({ command, options });
-				return { exited: Promise.resolve(0), kill() {} };
+				return {
+					exited: Promise.resolve(0),
+					kill() {},
+					stdout: command[0].endsWith('whoami.exe')
+						? new Blob(['"runner","S-1-5-21-1-2-3-4"\r\n']).stream()
+						: undefined,
+				};
 			},
-			setTimer(_callback, delay) { timeoutDelay = delay; return 17; },
-			clearTimer(timer) { clearedTimer = timer; },
+			now() { return times.shift(); },
+			setTimer(_callback, delay) { timerDelays.push(delay); return timerDelays.length; },
+			clearTimer(timer) { clearedTimers.push(timer); },
 		});
-		expect(invocations).toHaveLength(1);
-		const [{ command, options }] = invocations;
-		expect(command.slice(0, -1)).toEqual([
-			'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
-			'-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
-		]);
-		expect(options).toEqual({
-			cwd: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
-			env: {
-				FORGE_PRIVATE_ACL_TARGETS: '["backup.sqlite","restore-dir"]',
-				SystemRoot: 'C:\\Windows',
-				WINDIR: 'C:\\Windows',
+		expect(invocations).toHaveLength(2);
+		expect(invocations[0]).toEqual({
+			command: ['C:\\Windows\\System32\\whoami.exe', '/user', '/fo', 'csv', '/nh'],
+			options: {
+				cwd: 'C:\\Windows\\System32',
+				env: { SystemRoot: 'C:\\Windows' },
+				stderr: 'ignore',
+				stdout: 'pipe',
+				windowsHide: false,
 			},
-			stderr: 'ignore',
-			stdout: 'ignore',
-			windowsHide: false,
 		});
-		expect(timeoutDelay).toBe(15_000);
-		expect(clearedTimer).toBe(17);
-	});
-
-	test('allowlists only existing local Windows runtime directories for PowerShell startup', async () => {
-		let childEnvironment;
-		const environment = {
-			SystemRoot: 'C:\\Windows',
-			TEMP: 'C:\\Temp',
-			TMP: 'relative-temp',
-			USERPROFILE: 'D:\\Users\\runner',
-			LOCALAPPDATA: 'C:\\missing',
-			PATH: 'secret-path-sentinel',
-			PATHEXT: 'secret-pathext-sentinel',
-			COMSPEC: 'secret-comspec-sentinel',
-			PSModulePath: 'C:\\hostile-modules',
-			APPDATA: 'C:\\secret-appdata',
-			ProgramData: 'C:\\secret-program-data',
-			FORGE_API_TOKEN: 'secret-token-sentinel',
-		};
-		await secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
-			runtime: 'bun',
-			environment,
-			fsApi: {
-				statSync(directory) {
-					if (['C:\\Temp', 'D:\\Users\\runner'].includes(directory)) return { isDirectory: () => true };
-					throw new Error('missing');
+		expect(invocations[1]).toEqual({
+			command: [
+				'C:\\Windows\\System32\\cscript.exe',
+				'//B', '//Nologo', '//E:JScript', '//T:14', WINDOWS_PRIVATE_ACL_SCRIPT_PATH,
+			],
+			options: {
+				cwd: 'C:\\Windows\\System32',
+				env: {
+					FORGE_PRIVATE_ACL_COUNT: '2',
+					FORGE_PRIVATE_ACL_SID: 'S-1-5-21-1-2-3-4',
+					FORGE_PRIVATE_ACL_TARGET_0: 'C:\\private\\backup.sqlite',
+					FORGE_PRIVATE_ACL_TARGET_1: 'C:\\private\\restore-dir',
+					SystemRoot: 'C:\\Windows',
 				},
+				stderr: 'ignore',
+				stdout: 'ignore',
+				windowsHide: false,
 			},
-			bunSpawn(_command, options) {
-				childEnvironment = options.env;
-				return { exited: Promise.resolve(0), kill() {} };
-			},
-			setTimer() { return 21; },
-			clearTimer() {},
 		});
-		expect(childEnvironment).toEqual({
-			FORGE_PRIVATE_ACL_TARGETS: '["C:\\\\private\\\\backup.sqlite"]',
-			SystemRoot: 'C:\\Windows',
-			WINDIR: 'C:\\Windows',
-			TEMP: 'C:\\Temp',
-			USERPROFILE: 'D:\\Users\\runner',
-		});
-		expect(JSON.stringify(childEnvironment)).not.toMatch(/sentinel|PSModulePath|TOKEN|APPDATA|ProgramData|PATH|PATHEXT|COMSPEC/);
+		expect(timerDelays).toEqual([14_995, 14_990]);
+		expect(clearedTimers).toEqual([1, 2]);
+		expect(JSON.stringify(invocations)).not.toContain('secret-path-sentinel');
 	});
 
-	test('prechecks every owner and verifies one protected current-SID DACL without changing ownership', async () => {
-		let script;
-		await secureWindowsPathsAcl(['backup.sqlite'], {
-			runtime: 'bun',
-			environment: { SystemRoot: 'C:\\Windows' },
-			bunSpawn(command) {
-				script = command.at(-1);
-				return { exited: Promise.resolve(0), kill() {} };
-			},
-			setTimer() { return 18; },
-			clearTimer() {},
-		});
-		expect(script).toStartWith('$ErrorActionPreference = "Stop"');
-		expect(script).not.toMatch(/SetOwner|icacls|whoami|\/reset|\/setowner/i);
-		const precheck = script.indexOf('foreach ($targetPath in $targets)');
-		const mutationPass = script.indexOf('foreach ($target in $checkedTargets)');
-		const immediateOwnerCheck = script.indexOf('$immediateOwner =');
-		const mutation = script.indexOf('SetAccessControl($targetPath, $acl)');
-		const postReadback = script.indexOf('$verified =');
-		expect(precheck).toBeGreaterThan(-1);
-		expect(mutationPass).toBeGreaterThan(precheck);
-		expect(immediateOwnerCheck).toBeGreaterThan(mutationPass);
-		expect(mutation).toBeGreaterThan(immediateOwnerCheck);
-		expect(postReadback).toBeGreaterThan(mutation);
-		expect(script).toContain('SetAccessRuleProtection($true, $false)');
-		expect(script).toContain('$rules.Count -eq 1');
-		expect(script).toContain('$verified.AreAccessRulesProtected');
-		expect(script).toContain('$rules[0].IdentityReference.Value -eq $sid.Value');
-		expect(script).toContain('$rules[0].FileSystemRights -eq [System.Security.AccessControl.FileSystemRights]::FullControl');
-	});
-
-	test('fails closed after killing and awaiting a timed-out Bun PowerShell subprocess', async () => {
+	test('fails closed after killing and awaiting timed-out or failed Bun children', async () => {
 		let killedWith;
 		let resolveExit;
 		const exited = new Promise(resolve => { resolveExit = resolve; });
-		await expect(secureWindowsPathsAcl(['backup.sqlite'], {
+		await expect(secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
 			runtime: 'bun',
 			environment: { SystemRoot: 'C:\\Windows' },
 			bunSpawn() {
 				return {
 					exited,
 					kill(signal) { killedWith = signal; resolveExit(1); },
+					stdout: new Blob(['']).stream(),
 				};
 			},
 			setTimer(callback) { callback(); return 19; },
 			clearTimer() {},
 		})).rejects.toThrow('subprocess timed out');
 		expect(killedWith).toBe('SIGKILL');
-		await expect(secureWindowsPathsAcl(['backup.sqlite'], {
-				runtime: 'bun',
-				environment: { SystemRoot: 'C:\\Windows' },
-				bunSpawn() { return { exited: Promise.resolve(9), kill() {} }; },
-				setTimer() { return 20; },
-				clearTimer() {},
-			})).rejects.toThrow('subprocess failed');
-	});
-
-	test('retains the same direct bounded PowerShell script for Node', async () => {
-		let invocation;
-		await secureWindowsPathsAcl(['backup.sqlite'], {
-			runtime: 'node',
-			environment: { SystemRoot: 'C:\\Windows' },
-			execFile(command, args, options) { invocation = { command, args, options }; },
-		});
-		expect(invocation.command).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
-		expect(invocation.args.at(-1)).not.toContain('{;');
-		expect(invocation.args.at(-1)).toStartWith('$ErrorActionPreference = "Stop"');
-		expect(invocation.options).toEqual({
-			cwd: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
-			encoding: 'utf8',
-			env: {
-				FORGE_PRIVATE_ACL_TARGETS: '["backup.sqlite"]',
-				SystemRoot: 'C:\\Windows',
-				WINDIR: 'C:\\Windows',
-			},
-			stdio: 'pipe',
-			timeout: 15_000,
-			windowsHide: true,
-		});
-	});
-
-	(process.platform === 'win32' ? test : test.skip)('kills and awaits a timed-out real Bun PowerShell child', async () => {
-		let childPid;
 		await expect(secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
 			runtime: 'bun',
-			environment: process.env,
-			script: 'Start-Sleep -Seconds 30',
+			environment: { SystemRoot: 'C:\\Windows' },
+			bunSpawn() { return { exited: Promise.resolve(9), kill() {}, stdout: new Blob(['']).stream() }; },
+			setTimer() { return 20; },
+			clearTimer() {},
+		})).rejects.toThrow('subprocess failed');
+	});
+
+	test('uses the same direct whoami and cscript contract for Node', async () => {
+		const invocations = [];
+		await secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
+			runtime: 'node',
+			environment: { SystemRoot: 'C:\\Windows' },
+			nodeSpawn(command, args, options) {
+				invocations.push({ args, command, options });
+				const child = new EventEmitter();
+				child.kill = () => {};
+				if (options.stdio[1] === 'pipe') child.stdout = new PassThrough();
+				queueMicrotask(() => {
+					if (child.stdout) child.stdout.end('"runner","S-1-5-21-1-2-3-4"\r\n');
+					child.emit('close', 0);
+				});
+				return child;
+			},
+		});
+		expect(invocations).toHaveLength(2);
+		expect(invocations[0]).toMatchObject({
+			command: 'C:\\Windows\\System32\\whoami.exe',
+			args: ['/user', '/fo', 'csv', '/nh'],
+			options: { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: false },
+		});
+		expect(invocations[1]).toMatchObject({
+			command: 'C:\\Windows\\System32\\cscript.exe',
+			args: ['//B', '//Nologo', '//E:JScript', '//T:14', WINDOWS_PRIVATE_ACL_SCRIPT_PATH],
+			options: { stdio: ['ignore', 'ignore', 'ignore'], windowsHide: false },
+		});
+	});
+
+	(process.platform === 'win32' && globalThis.Bun ? test : test.skip)('kills and awaits a timed-out real cscript child', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-cscript-timeout-'));
+		tempDirs.push(root);
+		const script = path.join(root, 'timeout.js');
+		fs.writeFileSync(script, 'WScript.Sleep(30000);\r\n');
+		let childPid;
+		const cscript = resolveWindowsCscriptPath(process.env);
+		await expect(_runWindowsProcess(cscript, ['//B', '//Nologo', '//E:JScript', '//T:14', script], {
+			runtime: 'bun',
+			cwd: path.win32.dirname(cscript),
+			env: { SystemRoot: process.env.SystemRoot },
 			timeout: 200,
 			bunSpawn(command, options) {
 				const child = globalThis.Bun.spawn(command, options);
