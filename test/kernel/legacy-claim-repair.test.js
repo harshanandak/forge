@@ -27,6 +27,16 @@ const tempDirs = [];
 const hardenPath = filePath => hardenBackupPermissions(filePath);
 hardenPath.batch = filePaths => hardenBackupPermissionsBatch(filePaths);
 
+function deferred() {
+	let resolve;
+	let reject;
+	const promise = new Promise((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, reject, resolve };
+}
+
 async function removeDirWithRetry(dir, attempts = 10) {
 	for (let attempt = 0; attempt < attempts; attempt += 1) {
 		try {
@@ -146,12 +156,12 @@ describe('legacy claim repair preflight', () => {
 		])).toThrow('Unknown argument: constructor');
 	});
 
-	test('hardens backup files to owner-only mode and fails closed when permissions remain broad', () => {
+	test('hardens backup files to owner-only mode and fails closed when permissions remain broad', async () => {
 		expect(resolveWindowsPowerShellPath({ SystemRoot: 'C:\\Windows' }))
 			.toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
 		expect(() => resolveWindowsPowerShellPath({ SystemRoot: 'relative' })).toThrow('absolute SystemRoot');
 		const calls = [];
-		hardenBackupPermissions('backup.sqlite', {
+		await hardenBackupPermissions('backup.sqlite', {
 			platform: 'linux',
 			effectiveUserId: 1000,
 			fsApi: {
@@ -161,7 +171,7 @@ describe('legacy claim repair preflight', () => {
 		});
 		expect(calls).toEqual([{ filePath: 'backup.sqlite', mode: 0o600 }]);
 		const directoryCalls = [];
-		hardenBackupPermissions('restore-dir', {
+		await hardenBackupPermissions('restore-dir', {
 			platform: 'linux',
 			effectiveUserId: 1000,
 			fsApi: {
@@ -170,47 +180,51 @@ describe('legacy claim repair preflight', () => {
 			},
 		});
 		expect(directoryCalls).toEqual([{ filePath: 'restore-dir', mode: 0o700 }]);
-		expect(() => hardenBackupPermissions('backup.sqlite', {
+		await expect(hardenBackupPermissions('backup.sqlite', {
 			platform: 'linux',
 			fsApi: {
 				chmodSync() {},
 				statSync() { return { mode: 0o100644 }; },
 			},
-		})).toThrow('owner-only permissions');
+		})).rejects.toThrow('owner-only permissions');
 		const secured = [];
-		hardenBackupPermissions('backup.sqlite', {
+		await hardenBackupPermissions('backup.sqlite', {
 			platform: 'win32',
 			aclSecurer(filePath) { secured.push(filePath); },
 		});
 		expect(secured).toEqual(['backup.sqlite']);
-		expect(() => hardenBackupPermissions('backup.sqlite', {
+		await expect(hardenBackupPermissions('backup.sqlite', {
 			platform: 'win32',
 			aclSecurer() { throw new Error('ACL remained inherited'); },
-		})).toThrow('owner-only permissions');
+		})).rejects.toThrow('owner-only permissions');
 	});
 
-	test('batches Windows ACL hardening while preserving per-path failure handling', () => {
+	test('batches Windows ACL hardening while preserving per-path failure handling', async () => {
 		const secured = [];
-		hardenBackupPermissionsBatch(['backup.sqlite', 'restore.sqlite', 'backup.sqlite'], {
+		await hardenBackupPermissionsBatch(['backup.sqlite', 'restore.sqlite', 'backup.sqlite'], {
 			platform: 'win32',
 			aclSecurer(filePath) { secured.push(filePath); },
 		});
 		expect(secured).toEqual(['backup.sqlite', 'restore.sqlite']);
-		expect(() => hardenBackupPermissionsBatch(['backup.sqlite'], {
+		await expect(hardenBackupPermissionsBatch(['backup.sqlite'], {
 			platform: 'win32',
 			aclSecurer() { throw new Error('ACL remained inherited'); },
-		})).toThrow('owner-only permissions');
+		})).rejects.toThrow('owner-only permissions');
 	});
 
-	test('uses one direct bounded PowerShell process for Bun ACL hardening', () => {
+	test('uses one direct bounded async PowerShell process for Bun ACL hardening', async () => {
 		const invocations = [];
-		secureWindowsPathsAcl(['backup.sqlite', 'restore-dir'], {
+		let timeoutDelay;
+		let clearedTimer;
+		await secureWindowsPathsAcl(['backup.sqlite', 'restore-dir'], {
 			runtime: 'bun',
 			environment: { SystemRoot: 'C:\\Windows' },
-			bunSpawnSync(command, options) {
+			bunSpawn(command, options) {
 				invocations.push({ command, options });
-				return { success: true };
+				return { exited: Promise.resolve(0), kill() {} };
 			},
+			setTimer(_callback, delay) { timeoutDelay = delay; return 17; },
+			clearTimer(timer) { clearedTimer = timer; },
 		});
 		expect(invocations).toHaveLength(1);
 		const [{ command, options }] = invocations;
@@ -226,20 +240,23 @@ describe('legacy claim repair preflight', () => {
 			},
 			stderr: 'ignore',
 			stdout: 'ignore',
-			timeout: 15_000,
 			windowsHide: false,
 		});
+		expect(timeoutDelay).toBe(15_000);
+		expect(clearedTimer).toBe(17);
 	});
 
-	test('prechecks every owner and verifies one protected current-SID DACL without changing ownership', () => {
+	test('prechecks every owner and verifies one protected current-SID DACL without changing ownership', async () => {
 		let script;
-		secureWindowsPathsAcl(['backup.sqlite'], {
+		await secureWindowsPathsAcl(['backup.sqlite'], {
 			runtime: 'bun',
 			environment: { SystemRoot: 'C:\\Windows' },
-			bunSpawnSync(command) {
+			bunSpawn(command) {
 				script = command.at(-1);
-				return { success: true };
+				return { exited: Promise.resolve(0), kill() {} };
 			},
+			setTimer() { return 18; },
+			clearTimer() {},
 		});
 		expect(script).toStartWith('$ErrorActionPreference = "Stop"');
 		expect(script).not.toMatch(/SetOwner|icacls|whoami|\/reset|\/setowner/i);
@@ -260,22 +277,35 @@ describe('legacy claim repair preflight', () => {
 		expect(script).toContain('$rules[0].FileSystemRights -eq [System.Security.AccessControl.FileSystemRights]::FullControl');
 	});
 
-	test('fails closed when the Bun PowerShell subprocess times out or exits unsuccessfully', () => {
-		for (const [result, message] of [
-			[{ success: false, exitedDueToTimeout: true }, 'subprocess timed out'],
-			[{ success: false, exitedDueToTimeout: false }, 'subprocess failed'],
-		]) {
-			expect(() => secureWindowsPathsAcl(['backup.sqlite'], {
+	test('fails closed after killing and awaiting a timed-out Bun PowerShell subprocess', async () => {
+		let killedWith;
+		let resolveExit;
+		const exited = new Promise(resolve => { resolveExit = resolve; });
+		await expect(secureWindowsPathsAcl(['backup.sqlite'], {
+			runtime: 'bun',
+			environment: { SystemRoot: 'C:\\Windows' },
+			bunSpawn() {
+				return {
+					exited,
+					kill(signal) { killedWith = signal; resolveExit(1); },
+				};
+			},
+			setTimer(callback) { callback(); return 19; },
+			clearTimer() {},
+		})).rejects.toThrow('subprocess timed out');
+		expect(killedWith).toBe('SIGKILL');
+		await expect(secureWindowsPathsAcl(['backup.sqlite'], {
 				runtime: 'bun',
 				environment: { SystemRoot: 'C:\\Windows' },
-				bunSpawnSync() { return result; },
-			})).toThrow(message);
-		}
+				bunSpawn() { return { exited: Promise.resolve(9), kill() {} }; },
+				setTimer() { return 20; },
+				clearTimer() {},
+			})).rejects.toThrow('subprocess failed');
 	});
 
-	test('retains the same direct bounded PowerShell script for Node', () => {
+	test('retains the same direct bounded PowerShell script for Node', async () => {
 		let invocation;
-		secureWindowsPathsAcl(['backup.sqlite'], {
+		await secureWindowsPathsAcl(['backup.sqlite'], {
 			runtime: 'node',
 			environment: { SystemRoot: 'C:\\Windows' },
 			execFile(command, args, options) { invocation = { command, args, options }; },
@@ -296,26 +326,33 @@ describe('legacy claim repair preflight', () => {
 		});
 	});
 
-	(process.platform === 'win32' ? test : test.skip)('terminates a timed-out ignored-stream Bun PowerShell child', () => {
-		const result = globalThis.Bun.spawnSync([
-			resolveWindowsPowerShellPath(process.env),
-			'-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 30',
-		], { stderr: 'ignore', stdout: 'ignore', timeout: 200, windowsHide: false });
+	(process.platform === 'win32' ? test : test.skip)('kills and awaits a timed-out real Bun PowerShell child', async () => {
+		let childPid;
+		await expect(secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
+			runtime: 'bun',
+			environment: process.env,
+			script: 'Start-Sleep -Seconds 30',
+			timeout: 200,
+			bunSpawn(command, options) {
+				const child = globalThis.Bun.spawn(command, options);
+				childPid = child.pid;
+				return child;
+			},
+		})).rejects.toThrow('subprocess timed out');
 		let childAlive = true;
-		try { process.kill(result.pid, 0); } catch { childAlive = false; }
-		if (childAlive) process.kill(result.pid, 'SIGKILL');
-		expect(result.exitedDueToTimeout).toBe(true);
+		try { process.kill(childPid, 0); } catch { childAlive = false; }
+		if (childAlive) process.kill(childPid, 'SIGKILL');
 		expect(childAlive).toBe(false);
 	});
 
-	(process.platform === 'win32' ? test : test.skip)('secures Unicode Windows file and directory paths', () => {
+	(process.platform === 'win32' ? test : test.skip)('secures Unicode Windows file and directory paths', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-unicode-acl-'));
 		tempDirs.push(root);
 		const directory = path.join(root, 'prïvate-测试');
 		const file = path.join(directory, 'bäckup-Δ.sqlite');
 		fs.mkdirSync(directory);
 		fs.writeFileSync(file, 'backup');
-		secureWindowsPathsAcl([directory, file]);
+		await secureWindowsPathsAcl([directory, file]);
 	});
 
 	test('restore-proof cleanup retries Windows file locks without replacing valid proof', () => {
@@ -331,15 +368,34 @@ describe('legacy claim repair preflight', () => {
 		expect(cleanupOptions).toMatchObject({ recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	});
 
-	test('hardens the restore-proof directory and copied snapshot before either is opened', () => {
+	test('awaits restore-proof hardening before copying or completing', async () => {
 		const calls = [];
+		const releases = [];
 		const fsApi = {
 			copyFileSync(source, destination, flag) { calls.push(['copy', source, destination, flag]); },
 		};
-		prepareRestoreProofSnapshot('backup.sqlite', 'private-restore', 'private-restore/kernel.sqlite', {
+		const prepared = prepareRestoreProofSnapshot('backup.sqlite', 'private-restore', 'private-restore/kernel.sqlite', {
 			fsApi,
-			hardenPath(filePath) { calls.push(['harden', filePath]); },
+			hardenPath(filePath) {
+				calls.push(['harden', filePath]);
+				return new Promise(resolve => releases.push(resolve));
+			},
 		});
+		await Promise.resolve();
+		expect(calls).toEqual([['harden', 'private-restore']]);
+		releases.shift()();
+		await Promise.resolve();
+		expect(calls).toEqual([
+			['harden', 'private-restore'],
+			['copy', 'backup.sqlite', 'private-restore/kernel.sqlite', fs.constants.COPYFILE_EXCL],
+			['harden', 'private-restore/kernel.sqlite'],
+		]);
+		let completed = false;
+		void prepared.then(() => { completed = true; });
+		await Promise.resolve();
+		expect(completed).toBe(false);
+		releases.shift()();
+		await prepared;
 		expect(calls).toEqual([
 			['harden', 'private-restore'],
 			['copy', 'backup.sqlite', 'private-restore/kernel.sqlite', fs.constants.COPYFILE_EXCL],
@@ -497,18 +553,247 @@ describe('legacy claim repair preflight', () => {
 });
 
 describe('legacy claim repair backup and apply', () => {
+	test('awaits backup hardening before verification and publication', async () => {
+		const hardeningStarted = deferred();
+		const releaseHardening = deferred();
+		let tempHardened = false;
+		let verified = false;
+		const fixture = await createFixture({
+			async hardenPath(filePath) {
+				if (!filePath.endsWith('.tmp')) return;
+				hardeningStarted.resolve();
+				await releaseHardening.promise;
+				tempHardened = true;
+			},
+			backupVerifier() {
+				expect(tempHardened).toBe(true);
+				verified = true;
+			},
+		});
+		const backupPath = path.join(fixture.root, 'awaited-backup.sqlite');
+		const backup = fixture.driver.backup(backupPath, {}, { noReplace: true });
+		await hardeningStarted.promise;
+		expect(verified).toBe(false);
+		expect(fs.existsSync(backupPath)).toBe(false);
+		releaseHardening.resolve();
+		await backup;
+		expect(verified).toBe(true);
+		expect(fs.existsSync(backupPath)).toBe(true);
+		fixture.driver.close();
+	});
+
+	test('isolates a deferred ACL fence from concurrent writes on the public driver connection', async () => {
+		const fixture = await createFixture();
+		await seedMixedClaims(fixture);
+		const backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		await createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
+		});
+		fixture.driver.close();
+		const aclEntered = deferred();
+		const releaseAcl = deferred();
+		const deferredHardener = async filePath => {
+			if (filePath.includes('.forge-recovery-')) {
+				aclEntered.resolve();
+				await releaseAcl.promise;
+			}
+		};
+		deferredHardener.batch = async filePaths => {
+			for (const filePath of filePaths) await deferredHardener(filePath);
+		};
+		const driver = createBuiltinSQLiteDriver({ databasePath: fixture.databasePath, hardenPath: deferredHardener });
+		const applying = driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config);
+		await Promise.race([
+			aclEntered.promise,
+			new Promise((_, reject) => setTimeout(() => reject(new Error('ACL fence was not awaited')), 15_000)),
+		]);
+		let writeCompleted = false;
+		const publicWrite = driver.exec(
+			"UPDATE kernel_issues SET title = 'concurrent-write' WHERE id = 'durable-open';",
+			fixture.config,
+		).then(
+			() => { writeCompleted = true; return null; },
+			error => error,
+		);
+		const writeError = await publicWrite;
+		expect(writeCompleted).toBe(false);
+		expect(writeError).toMatchObject({ code: 'SQLITE_BUSY' });
+		releaseAcl.resolve();
+		await applying;
+		await driver.exec("UPDATE kernel_issues SET title = 'concurrent-write' WHERE id = 'durable-open';", fixture.config);
+		const [{ title }] = await driver.queryAll("SELECT title FROM kernel_issues WHERE id = 'durable-open';", fixture.config);
+		expect(title).toBe('concurrent-write');
+		driver.close();
+	}, 30_000);
+
+	test('rolls back rows and receipt and removes recovery after an awaited ACL fence fault', async () => {
+		const fixture = await createFixture();
+		await seedMixedClaims(fixture);
+		const backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		await createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
+		});
+		fixture.driver.close();
+		let recoveryPath;
+		const trackingHardener = async filePath => {
+			if (filePath.includes('.forge-recovery-')) recoveryPath = filePath;
+		};
+		trackingHardener.batch = async filePaths => {
+			for (const filePath of filePaths) await trackingHardener(filePath);
+		};
+		const driver = createBuiltinSQLiteDriver({
+			databasePath: fixture.databasePath,
+			hardenPath: trackingHardener,
+			claimRepairFaultInjector(phase) {
+				if (phase === 'after-backup-fence') throw new Error('fault after awaited ACL');
+			},
+		});
+		await expect(driver.applyLegacyClaimRepair({
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		}, fixture.config)).rejects.toThrow('fault after awaited ACL');
+		const states = await driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
+		expect(states.every(row => row.state === 'active')).toBe(true);
+		const receipts = await driver.queryAll("SELECT id FROM kernel_events WHERE event_type = 'claim.repair';", fixture.config);
+		expect(receipts).toHaveLength(0);
+		expect(typeof recoveryPath).toBe('string');
+		expect(fs.existsSync(recoveryPath)).toBe(false);
+		driver.close();
+	}, 30_000);
+
+	test('serializes concurrent private apply connections and replays one durable receipt', async () => {
+		const fixture = await createFixture();
+		await seedMixedClaims(fixture);
+		const backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		await createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
+		});
+		fixture.driver.close();
+		const aclEntered = deferred();
+		const releaseAcl = deferred();
+		const firstHardener = async filePath => {
+			if (filePath.includes('.forge-recovery-')) {
+				aclEntered.resolve();
+				await releaseAcl.promise;
+			}
+		};
+		firstHardener.batch = async filePaths => {
+			for (const filePath of filePaths) await firstHardener(filePath);
+		};
+		const secondHardener = async () => {};
+		secondHardener.batch = async () => {};
+		const applyQueue = new Map();
+		const firstDriver = createBuiltinSQLiteDriver({
+			databasePath: fixture.databasePath,
+			hardenPath: firstHardener,
+			claimRepairApplyQueue: applyQueue,
+		});
+		const secondDriver = createBuiltinSQLiteDriver({
+			databasePath: fixture.databasePath,
+			hardenPath: secondHardener,
+			claimRepairApplyQueue: applyQueue,
+		});
+		const input = {
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		};
+		const first = firstDriver.applyLegacyClaimRepair(input, fixture.config);
+		await aclEntered.promise;
+		let secondSettled = false;
+		const second = secondDriver.applyLegacyClaimRepair(input, fixture.config)
+			.finally(() => { secondSettled = true; });
+		await new Promise(resolve => setTimeout(resolve, 50));
+		expect(secondSettled).toBe(false);
+		expect(applyQueue.size).toBe(1);
+		releaseAcl.resolve();
+		const results = await Promise.all([first, second]);
+		expect(results.map(result => result.replayed).sort()).toEqual([false, true]);
+		const receipts = await firstDriver.queryAll("SELECT id FROM kernel_events WHERE event_type = 'claim.repair';", fixture.config);
+		expect(receipts).toHaveLength(1);
+		expect(applyQueue.size).toBe(0);
+		firstDriver.close();
+		secondDriver.close();
+	}, 40_000);
+
+	test('releases and removes the apply queue key after a rejected operation', async () => {
+		const fixture = await createFixture();
+		await seedMixedClaims(fixture);
+		const backupPath = path.join(fixture.root, 'claims-before.sqlite');
+		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
+		await createVerifiedClaimRepairBackup({
+			sourceDriver: fixture.driver,
+			backupPath,
+			observedAt: OBSERVED_AT,
+			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
+			hardenPath,
+		});
+		fixture.driver.close();
+		const noOpHardener = async () => {};
+		noOpHardener.batch = async () => {};
+		const applyQueue = new Map();
+		const firstDriver = createBuiltinSQLiteDriver({
+			databasePath: fixture.databasePath,
+			hardenPath: noOpHardener,
+			claimRepairApplyQueue: applyQueue,
+		});
+		const secondDriver = createBuiltinSQLiteDriver({
+			databasePath: fixture.databasePath,
+			hardenPath: noOpHardener,
+			claimRepairApplyQueue: applyQueue,
+		});
+		const input = {
+			observedAt: OBSERVED_AT,
+			approvedDigest: preflight.digest,
+			backupPath,
+			actor: 'approved-operator',
+		};
+		const [rejected, applied] = await Promise.allSettled([
+			firstDriver.applyLegacyClaimRepair({ ...input, backupPath: undefined }, fixture.config),
+			secondDriver.applyLegacyClaimRepair(input, fixture.config),
+		]);
+		expect(rejected).toMatchObject({ status: 'rejected', reason: { code: 'CLAIM_REPAIR_BACKUP_PROOF_REQUIRED' } });
+		expect(applied).toMatchObject({ status: 'fulfilled', value: { replayed: false } });
+		expect(applyQueue.size).toBe(0);
+		firstDriver.close();
+		secondDriver.close();
+	}, 40_000);
+
 	test('proves a separate SQLite backup can be restored to the exact approved snapshot', async () => {
 		const fixture = await createFixture();
 		await seedMixedClaims(fixture);
 		const backupPath = path.join(fixture.root, 'backups', 'claims-before.sqlite');
 		const hardenedPaths = [];
-		const trackingHardener = filePath => {
+		const trackingHardener = async filePath => {
 			hardenedPaths.push(filePath);
-			hardenPath(filePath);
+			await hardenPath(filePath);
 		};
-		trackingHardener.batch = filePaths => {
+		trackingHardener.batch = async filePaths => {
 			hardenedPaths.push(...filePaths);
-			hardenBackupPermissionsBatch(filePaths);
+			await hardenBackupPermissionsBatch(filePaths);
 		};
 
 		const proof = await createVerifiedClaimRepairBackup({
