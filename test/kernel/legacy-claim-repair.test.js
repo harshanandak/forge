@@ -392,6 +392,11 @@ describe('legacy claim repair preflight', () => {
 			]);
 			expect(ownerInvocation.command.at(-1)).toContain('AccessControlSections]::Owner');
 			expect(ownerInvocation.command.at(-1)).not.toMatch(/SetOwner|SetAccessControl|SetAccessRule/);
+			expect(ownerInvocation.options).toMatchObject({
+				stderr: 'ignore',
+				stdout: 'ignore',
+				windowsHide: false,
+			});
 			expect(ownerInvocation.options.env).toEqual({
 				FORGE_PRIVATE_ACL_EXPECTED_SID: sid,
 				FORGE_PRIVATE_ACL_TARGETS: '["backup.sqlite","restore-dir"]',
@@ -575,11 +580,11 @@ describe('legacy claim repair preflight', () => {
 		expect(invocation.options).toMatchObject({ timeout: 15_000, windowsHide: true });
 	});
 
-	(process.platform === 'win32' ? test : test.skip)('terminates a timed-out native Bun PowerShell child', () => {
+	(process.platform === 'win32' ? test : test.skip)('terminates a timed-out ignored-stream Bun PowerShell child', () => {
 		const result = globalThis.Bun.spawnSync([
 			resolveWindowsPowerShellPath(process.env),
 			'-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 30',
-		], { stderr: 'pipe', stdout: 'pipe', timeout: 200 });
+		], { stderr: 'ignore', stdout: 'ignore', timeout: 200, windowsHide: false });
 		let childAlive = true;
 		try { process.kill(result.pid, 0); } catch { childAlive = false; }
 		if (childAlive) process.kill(result.pid, 'SIGKILL');
