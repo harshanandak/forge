@@ -7,6 +7,8 @@ const {
 } = require('../../lib/kernel/migrations');
 const { getKernelSchema } = require('../../lib/kernel/schema');
 
+const PR_WATCH_ROLLBACK_SQL = "INSERT INTO kernel_pr_watch_migration_gate (singleton, state, snapshot_hash, conflict_code, updated_at) VALUES (1, 'quarantined', NULL, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ON CONFLICT(singleton) DO UPDATE SET state = 'quarantined', conflict_code = NULL, updated_at = excluded.updated_at;";
+
 describe('kernel migration plans', () => {
 	test('generates deterministic apply and rollback SQL for the schema', () => {
 		const plan = buildKernelMigrationPlan();
@@ -23,7 +25,8 @@ describe('kernel migration plans', () => {
 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_outbox (\n  id TEXT NOT NULL PRIMARY KEY,\n  event_id TEXT NOT NULL REFERENCES kernel_events(id),\n  target TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT \'pending\',\n  attempts INTEGER NOT NULL DEFAULT 0,\n  next_attempt_at TEXT,\n  created_at TEXT NOT NULL\n);');
 		// Rollback runs migrations in reverse. Evidence remains retained while fresh writes
 		// are disabled before the monitor writer is demoted.
-		expect(plan.rollback[0]).toBe('UPDATE memory_usage_writer_state SET enabled = 0 WHERE singleton = 1;');
+		expect(plan.rollback[0]).toBe(PR_WATCH_ROLLBACK_SQL);
+		expect(plan.rollback).toContain('UPDATE memory_usage_writer_state SET enabled = 0 WHERE singleton = 1;');
 		expect(plan.rollback).toContain('DROP TABLE IF EXISTS kernel_pr;');
 		expect(plan.rollback).toContain('DROP INDEX IF EXISTS idx_kernel_memories_source_agent;');
 		expect(plan.rollback).toContain('DROP TABLE IF EXISTS kernel_memories;');
@@ -45,6 +48,7 @@ describe('kernel migration plans', () => {
 			'009_kernel_pr_linkage',
 			'010_memory_monitor_durability',
 			'011_memory_usage_evidence',
+			'012_kernel_pr_watch_ownership',
 		]);
 	});
 

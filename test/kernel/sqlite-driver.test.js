@@ -18,6 +18,13 @@ afterEach(() => {
 });
 
 describe('Kernel SQLite runtime driver selection', () => {
+	test('derives watch-owner enumeration SQL limit from its overflow cap', () => {
+		const source = fs.readFileSync(path.resolve(__dirname, '../../lib/kernel/sqlite-driver.js'), 'utf8');
+
+		expect(source).toContain('`SELECT * FROM ${WATCH_OWNER_TABLE} ORDER BY repo, pr LIMIT ?`');
+		expect(source).toContain('[WATCH_OWNER_ENUMERATION_LIMIT + 1]');
+	});
+
 	test('selects the first builtin SQLite runtime without native package dependencies', () => {
 		const { selectBuiltinSQLiteRuntime } = require('../../lib/kernel/sqlite-driver');
 		const calls = [];

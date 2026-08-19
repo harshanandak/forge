@@ -133,6 +133,7 @@ describe('Kernel broker — migration ledger', () => {
 			'009_kernel_pr_linkage',
 			'010_memory_monitor_durability',
 			'011_memory_usage_evidence',
+			'012_kernel_pr_watch_ownership',
 		]);
 
 		const after = await driver.queryAll('PRAGMA table_info(kernel_issues);', config);
@@ -180,7 +181,11 @@ describe('Kernel broker — migration ledger', () => {
 		await makeBroker(priorPlan).initialize();
 
 		const upgraded = await makeBroker().initialize();
-		expect(upgraded.migrationsNewlyApplied).toEqual(['010_memory_monitor_durability', '011_memory_usage_evidence']);
+		expect(upgraded.migrationsNewlyApplied).toEqual([
+			'010_memory_monitor_durability',
+			'011_memory_usage_evidence',
+			'012_kernel_pr_watch_ownership',
+		]);
 		const tableNames = [
 			'memory_monitor_writer_state',
 			'memory_monitor_events',
