@@ -125,4 +125,16 @@ describe('forge shepherd watch <pr>', () => {
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/Usage: forge shepherd watch/);
   });
+
+  test('rejects malformed detached-watcher repository and generation arguments', async () => {
+    const badRepository = await shepherd.handleWatch(['watch', '42', '--repo', 'not-a-repository'], '/repo', {});
+    expect(badRepository).toMatchObject({ success: false });
+    expect(badRepository.error).toMatch(/canonical owner\/name/);
+
+    const badGeneration = await shepherd.handleWatch([
+      'watch', '42', '--started-at', '2026-08-19', '--repo', 'upstream/forge',
+    ], '/repo', {});
+    expect(badGeneration).toMatchObject({ success: false });
+    expect(badGeneration.error).toMatch(/canonical ISO instant/);
+  });
 });
