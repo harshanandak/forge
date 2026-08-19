@@ -199,11 +199,36 @@ describe('watchLoop', () => {
       maxPasses: 1,
     });
 
-    expect(order).toEqual(['generation-claimed', 'write-pid', 'terminal-cleanup-failed']);
+    expect(order).toEqual([
+      'generation-claimed', 'write-pid',
+      'terminal-cleanup-failed', 'terminal-cleanup-failed', 'terminal-cleanup-failed',
+    ]);
     expect(res).toMatchObject({
       started: true, stopped: true, cleanupPersisted: false,
       reason: 'terminal-cleanup-persistence-failed',
     });
+  });
+
+  test('retries terminal cleanup proof before releasing watcher authority', async () => {
+    let cleanupAttempts = 0;
+    let pidRemoved = false;
+    const terminal = { type: T.PR_CLOSED, key: 'closed', data: {} };
+    const res = await watchLoop({
+      dir,
+      runMonitorPass: async () => ({ events: [terminal] }),
+      watcherRunning: () => false,
+      writePid: () => {},
+      beforeClaim: () => true,
+      onTerminal: () => ++cleanupAttempts >= 3,
+      removePid: () => { pidRemoved = true; return true; },
+      cleanupAttempts: 3,
+      emit: () => {},
+      maxPasses: 1,
+    });
+
+    expect(cleanupAttempts).toBe(3);
+    expect(pidRemoved).toBe(true);
+    expect(res).toMatchObject({ stopped: true, cleanupPersisted: true });
   });
 
   test('contains a throwing terminal cleanup hook and reports retained proof', async () => {
