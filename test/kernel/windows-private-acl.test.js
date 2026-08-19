@@ -86,12 +86,12 @@ function fakeDependencies(states, events) {
 			return format === 2 ? states[targetPath].raw : states[targetPath].iid;
 		},
 		SetSecurityDescriptor(targetPath, _pathFormat, descriptor, format) {
-			events.push(['set', targetPath, format, this.SecurityMask]);
-			expect(this.SecurityMask).toBe(4 | 0x80000000);
+			events.push(['set', targetPath, format, this.SecurityMask, descriptor.Owner]);
+			expect(this.SecurityMask).toBe(1 | 4 | 0x80000000);
 			const ace = descriptor.DiscretionaryAcl.entries[0];
 			states[targetPath] = {
 				iid: descriptor,
-				raw: descriptorBytes({ aceFlags: ace.AceFlags }),
+				raw: descriptorBytes({ aceFlags: ace.AceFlags, ownerSid: String(descriptor.Owner) }),
 			};
 		},
 	};
@@ -152,42 +152,52 @@ describe('Windows private ACL cscript verifier', () => {
 		expect(() => inspectIidDescriptor(iid, OWNER_SID, 0, enumeratorFactory)).not.toThrow();
 	});
 
-	test('prechecks every owner before DACL-only mutation and immediately rechecks each target', () => {
+	test('prechecks every target and tolerates pre-set DACL churn before owner-and-DACL mutation', () => {
 		const states = {
-			'C:\\one': { iid: { Control: 0x8004, DiscretionaryAcl: {}, Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes() },
+			'C:\\one': { iid: { Control: 0x8004, DiscretionaryAcl: {}, Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
 			'C:\\two': { iid: { Control: 0x8004, DiscretionaryAcl: {}, Owner: OWNER_SID }, isDirectory: true, raw: descriptorBytes() },
 		};
 		const events = [];
+		const dependencies = fakeDependencies(states, events);
+		const get = dependencies.utility.GetSecurityDescriptor;
+		let firstRawReads = 0;
+		dependencies.utility.GetSecurityDescriptor = function (targetPath, pathFormat, format) {
+			const value = get.call(this, targetPath, pathFormat, format);
+			if (targetPath === 'C:\\one' && format === 2 && ++firstRawReads === 2) {
+				return descriptorBytes({ aceMask: 0x00120089, ownerSid: FOREIGN_SID });
+			}
+			return value;
+		};
 		const originalVBArray = globalThis.VBArray;
 		globalThis.VBArray = function (value) { this.toArray = () => value; };
 		try {
-			expect(runWithDependencies(fakeDependencies(states, events))).toBe(true);
+			expect(runWithDependencies(dependencies)).toBe(true);
 		} finally {
 			globalThis.VBArray = originalVBArray;
 		}
 		const sets = events.filter(([operation]) => operation === 'set');
 		expect(sets).toEqual([
-			['set', 'C:\\one', 1, 4 | 0x80000000],
-			['set', 'C:\\two', 1, 4 | 0x80000000],
+			['set', 'C:\\one', 1, 1 | 4 | 0x80000000, OWNER_SID],
+			['set', 'C:\\two', 1, 1 | 4 | 0x80000000, OWNER_SID],
 		]);
+		expect(inspectDescriptor(states['C:\\one'].raw, OWNER_SID, 0)).toEqual({ aceFlags: 0, ownerSid: OWNER_SID });
 		const firstSet = events.findIndex(([operation]) => operation === 'set');
 		expect(events.slice(0, firstSet).filter(([operation]) => operation === 'get')).toHaveLength(6);
 		expect(events[firstSet - 2]).toEqual(['get', 'C:\\one', 2, 5]);
 		expect(events[firstSet - 1]).toEqual(['get', 'C:\\one', 1, 5]);
 	});
 
-	test('a non-owner precheck or owner race causes zero DACL mutation', () => {
+	test('an invalid later precheck or descriptor race causes zero DACL mutation', () => {
 		const originalVBArray = globalThis.VBArray;
 		globalThis.VBArray = function (value) { this.toArray = () => value; };
 		try {
 			const nonOwnerStates = {
-				'C:\\one': { iid: { Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes() },
-				'C:\\two': { iid: { Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
+				'C:\\one': { iid: { Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
+				'C:\\two': { iid: { Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes().slice(0, 24) },
 			};
 			const nonOwnerEvents = [];
 			const nonOwnerError = captureError(() => runWithDependencies(fakeDependencies(nonOwnerStates, nonOwnerEvents)));
-			expect(nonOwnerError.message).toContain('precheck owner mismatch');
-			expect(nonOwnerError.forgeExitCode).toBe(24);
+			expect(nonOwnerError.forgeExitCode).toBe(22);
 			expect(nonOwnerEvents.some(([operation]) => operation === 'set')).toBe(false);
 
 			const racedStates = {
@@ -205,12 +215,38 @@ describe('Windows private ACL cscript verifier', () => {
 			expect(raceError.message).toContain('owner changed before mutation');
 			expect(raceError.forgeExitCode).toBe(30);
 			expect(racedEvents.some(([operation]) => operation === 'set')).toBe(false);
+
+			const iidStates = {
+				'C:\\one': { iid: { Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes() },
+			};
+			const iidEvents = [];
+			const iidDependencies = fakeDependencies(iidStates, iidEvents);
+			let iidReads = 0;
+			const getIid = iidDependencies.utility.GetSecurityDescriptor;
+			iidDependencies.utility.GetSecurityDescriptor = function (targetPath, pathFormat, format) {
+				const value = getIid.call(this, targetPath, pathFormat, format);
+				if (format === 1 && ++iidReads === 2) return { ...value, Owner: FOREIGN_SID };
+				return value;
+			};
+			expect(captureError(() => runWithDependencies(iidDependencies)).forgeExitCode).toBe(30);
+			expect(iidEvents.some(([operation]) => operation === 'set')).toBe(false);
+
+			const typeStates = {
+				'C:\\one': { iid: { Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes() },
+			};
+			const typeEvents = [];
+			const typeDependencies = fakeDependencies(typeStates, typeEvents);
+			let folderReads = 0;
+			typeDependencies.fso.FolderExists = () => ++folderReads > 1;
+			typeDependencies.fso.FileExists = () => folderReads === 1;
+			expect(captureError(() => runWithDependencies(typeDependencies)).forgeExitCode).toBe(30);
+			expect(typeEvents.some(([operation]) => operation === 'set')).toBe(false);
 		} finally {
 			globalThis.VBArray = originalVBArray;
 		}
 	});
 
-	test('maps each owner precheck failure to a distinct privacy-safe exit code', () => {
+	test('maps structural owner precheck failures to distinct privacy-safe exit codes', () => {
 		const originalVBArray = globalThis.VBArray;
 		globalThis.VBArray = function (value) { this.toArray = () => value; };
 		try {
@@ -226,11 +262,43 @@ describe('Windows private ACL cscript verifier', () => {
 			const iidError = captureError(() => runWithDependencies(fakeDependencies(iidStates, [])));
 			expect(iidError.forgeExitCode).toBe(23);
 
-			const ownerStates = {
+		} finally {
+			globalThis.VBArray = originalVBArray;
+		}
+	});
+
+	test('maps set and post-verification failures to their fixed stages', () => {
+		const originalVBArray = globalThis.VBArray;
+		globalThis.VBArray = function (value) { this.toArray = () => value; };
+		try {
+			const setStates = {
 				'C:\\one': { iid: { Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
 			};
-			const ownerError = captureError(() => runWithDependencies(fakeDependencies(ownerStates, [])));
-			expect(ownerError.forgeExitCode).toBe(24);
+			const setDependencies = fakeDependencies(setStates, []);
+			setDependencies.utility.SetSecurityDescriptor = function () { throw new Error('set failed'); };
+			expect(captureError(() => runWithDependencies(setDependencies)).forgeExitCode).toBe(31);
+
+			const rawStates = {
+				'C:\\one': { iid: { Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
+			};
+			const rawDependencies = fakeDependencies(rawStates, []);
+			const setRaw = rawDependencies.utility.SetSecurityDescriptor;
+			rawDependencies.utility.SetSecurityDescriptor = function (...args) {
+				setRaw.apply(this, args);
+				rawStates['C:\\one'].raw = descriptorBytes({ ownerSid: OWNER_SID, trusteeSid: FOREIGN_SID });
+			};
+			expect(captureError(() => runWithDependencies(rawDependencies)).forgeExitCode).toBe(32);
+
+			const iidStates = {
+				'C:\\one': { iid: { Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
+			};
+			const iidDependencies = fakeDependencies(iidStates, []);
+			const setIid = iidDependencies.utility.SetSecurityDescriptor;
+			iidDependencies.utility.SetSecurityDescriptor = function (...args) {
+				setIid.apply(this, args);
+				iidStates['C:\\one'].iid.DiscretionaryAcl.AceCount = 2;
+			};
+			expect(captureError(() => runWithDependencies(iidDependencies)).forgeExitCode).toBe(33);
 		} finally {
 			globalThis.VBArray = originalVBArray;
 		}
