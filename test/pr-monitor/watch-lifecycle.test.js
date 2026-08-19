@@ -70,6 +70,27 @@ describe('startPrWatcherDetached', () => {
     expect(calls[0].args.slice(-2)).toEqual(['--started-at', res.startedAt]);
   });
 
+  test('uses the upstream repository for both the PID preflight and child command', () => {
+    let journalArgs;
+    let childArgs;
+    const res = startPrWatcherDetached({
+      prNumber: 42,
+      cwd: '/fork',
+      gitCommonDir: '/repo/.git',
+      repository: 'Upstream/Forge',
+      resolveSlug: () => { throw new Error('checkout slug must not be used'); },
+      journal: {
+        journalDir: (args) => { journalArgs = args; return '/repo/.forge/pr-monitor/upstream-forge-42'; },
+        watcherRunning: () => false,
+      },
+      spawn: (_bin, args) => { childArgs = args; return fakeChild(999); },
+    });
+
+    expect(res.started).toBe(true);
+    expect(journalArgs.repo).toBe('upstream/forge');
+    expect(childArgs.slice(-2)).toEqual(['--repo', 'Upstream/Forge']);
+  });
+
   test('is a no-op when a live watcher already owns the PR (spawn not called)', () => {
     let spawned = false;
     let journalArgs;

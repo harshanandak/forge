@@ -212,6 +212,28 @@ describe('shepherd command handler', () => {
     expect(ghCalls[1]).toContain('url');
   });
 
+  test('defaultBuildContext reuses the watcher repository without consulting the fork checkout', async () => {
+    const ghCalls = [];
+    const gh = (_cmd, args) => {
+      ghCalls.push(args.join(' '));
+      if (args.includes('repo')) throw new Error('checkout identity must not be consulted');
+      return JSON.stringify({
+        baseRefName: 'master', baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40),
+        url: 'https://github.example/upstream/widget/pull/42',
+      });
+    };
+
+    const ctx = await shepherdCmd.defaultBuildContext({
+      pr: '42', gh, git: () => 'origin\n', repository: 'upstream/widget',
+    });
+
+    expect(ctx.owner).toBe('upstream');
+    expect(ctx.repo).toBe('widget');
+    expect(ghCalls).toEqual([
+      'pr view 42 --repo upstream/widget --json baseRefName,baseRefOid,headRefOid,url',
+    ]);
+  });
+
   test('defaultBuildContext fails closed without an exact provider base commit', async () => {
     const gh = (_cmd, args) => {
       if (args.includes('pr') && args.includes('view')) {
