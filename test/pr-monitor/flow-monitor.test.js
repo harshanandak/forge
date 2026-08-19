@@ -972,7 +972,7 @@ describe('Flow-backed PR monitor authority', () => {
       .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
   });
 
-  test('rejects a getEvent row whose envelope hash is self-consistent but content is tampered', async () => {
+  test('rejects a getEvent row whose content_hash agrees with the envelope claim but the envelope content hash is invalid', async () => {
     const store = durableStore();
     const { markerId, markerSequence, template } = await seedExternalPlanTail(store);
     const marker = structuredClone(template);
