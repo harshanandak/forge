@@ -289,6 +289,28 @@ describe('legacy claim repair preflight', () => {
 		expect(JSON.stringify(invocations)).not.toContain('secret-path-sentinel');
 	});
 
+	test('normalizes relative public backup targets before cscript hardening', async () => {
+		const invocations = [];
+		await secureWindowsPathsAcl(['backup.sqlite', '.\\backup.sqlite'], {
+			runtime: 'bun',
+			environment: { SystemRoot: 'C:\\Windows' },
+			bunSpawn(command, options) {
+				invocations.push({ command, options });
+				return {
+					exited: Promise.resolve(0),
+					kill() {},
+					stdout: command[0].endsWith('whoami.exe')
+						? new Blob(['"runner","S-1-5-21-1-2-3-4"\r\n']).stream()
+						: undefined,
+				};
+			},
+		});
+		expect(invocations[1].options.env).toMatchObject({
+			FORGE_PRIVATE_ACL_COUNT: '1',
+			FORGE_PRIVATE_ACL_TARGET_0: path.win32.resolve('backup.sqlite'),
+		});
+	});
+
 	test('fails closed after killing and awaiting timed-out or failed Bun children', async () => {
 		let killedWith;
 		let resolveExit;
@@ -313,7 +335,7 @@ describe('legacy claim repair preflight', () => {
 			bunSpawn() { return { exited: Promise.resolve(9), kill() {}, stdout: new Blob(['']).stream() }; },
 			setTimer() { return 20; },
 			clearTimer() {},
-		})).rejects.toThrow('subprocess failed');
+		})).rejects.toThrow('subprocess failed (exit 9)');
 	});
 
 	test('uses the same direct whoami and cscript contract for Node', async () => {

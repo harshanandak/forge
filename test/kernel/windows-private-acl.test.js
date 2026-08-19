@@ -69,6 +69,15 @@ function enumeratorFactory(dacl) {
 	};
 }
 
+function captureError(action) {
+	try {
+		action();
+	} catch (error) {
+		return error;
+	}
+	throw new Error('expected action to throw');
+}
+
 function fakeDependencies(states, events) {
 	const utility = {
 		SecurityMask: 0,
@@ -176,7 +185,9 @@ describe('Windows private ACL cscript verifier', () => {
 				'C:\\two': { iid: { Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
 			};
 			const nonOwnerEvents = [];
-			expect(() => runWithDependencies(fakeDependencies(nonOwnerStates, nonOwnerEvents))).toThrow('precheck owner mismatch');
+			const nonOwnerError = captureError(() => runWithDependencies(fakeDependencies(nonOwnerStates, nonOwnerEvents)));
+			expect(nonOwnerError.message).toContain('precheck owner mismatch');
+			expect(nonOwnerError.forgeExitCode).toBe(22);
 			expect(nonOwnerEvents.some(([operation]) => operation === 'set')).toBe(false);
 
 			const racedStates = {
@@ -190,7 +201,9 @@ describe('Windows private ACL cscript verifier', () => {
 				if (format === 2 && ++rawReads === 2) racedStates[targetPath].raw = descriptorBytes({ ownerSid: FOREIGN_SID });
 				return get.call(this, targetPath, pathFormat, format);
 			};
-			expect(() => runWithDependencies(dependencies)).toThrow('owner changed before mutation');
+			const raceError = captureError(() => runWithDependencies(dependencies));
+			expect(raceError.message).toContain('owner changed before mutation');
+			expect(raceError.forgeExitCode).toBe(30);
 			expect(racedEvents.some(([operation]) => operation === 'set')).toBe(false);
 		} finally {
 			globalThis.VBArray = originalVBArray;
