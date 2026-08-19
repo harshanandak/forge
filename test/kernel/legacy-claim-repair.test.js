@@ -237,6 +237,7 @@ describe('legacy claim repair preflight', () => {
 			env: {
 				FORGE_PRIVATE_ACL_TARGETS: '["backup.sqlite","restore-dir"]',
 				SystemRoot: 'C:\\Windows',
+				WINDIR: 'C:\\Windows',
 			},
 			stderr: 'ignore',
 			stdout: 'ignore',
@@ -244,6 +245,48 @@ describe('legacy claim repair preflight', () => {
 		});
 		expect(timeoutDelay).toBe(15_000);
 		expect(clearedTimer).toBe(17);
+	});
+
+	test('allowlists only existing local Windows runtime directories for PowerShell startup', async () => {
+		let childEnvironment;
+		const environment = {
+			SystemRoot: 'C:\\Windows',
+			TEMP: 'C:\\Temp',
+			TMP: 'relative-temp',
+			USERPROFILE: 'D:\\Users\\runner',
+			LOCALAPPDATA: 'C:\\missing',
+			PATH: 'secret-path-sentinel',
+			PATHEXT: 'secret-pathext-sentinel',
+			COMSPEC: 'secret-comspec-sentinel',
+			PSModulePath: 'C:\\hostile-modules',
+			APPDATA: 'C:\\secret-appdata',
+			ProgramData: 'C:\\secret-program-data',
+			FORGE_API_TOKEN: 'secret-token-sentinel',
+		};
+		await secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
+			runtime: 'bun',
+			environment,
+			fsApi: {
+				statSync(directory) {
+					if (['C:\\Temp', 'D:\\Users\\runner'].includes(directory)) return { isDirectory: () => true };
+					throw new Error('missing');
+				},
+			},
+			bunSpawn(_command, options) {
+				childEnvironment = options.env;
+				return { exited: Promise.resolve(0), kill() {} };
+			},
+			setTimer() { return 21; },
+			clearTimer() {},
+		});
+		expect(childEnvironment).toEqual({
+			FORGE_PRIVATE_ACL_TARGETS: '["C:\\\\private\\\\backup.sqlite"]',
+			SystemRoot: 'C:\\Windows',
+			WINDIR: 'C:\\Windows',
+			TEMP: 'C:\\Temp',
+			USERPROFILE: 'D:\\Users\\runner',
+		});
+		expect(JSON.stringify(childEnvironment)).not.toMatch(/sentinel|PSModulePath|TOKEN|APPDATA|ProgramData|PATH|PATHEXT|COMSPEC/);
 	});
 
 	test('prechecks every owner and verifies one protected current-SID DACL without changing ownership', async () => {
@@ -319,6 +362,7 @@ describe('legacy claim repair preflight', () => {
 			env: {
 				FORGE_PRIVATE_ACL_TARGETS: '["backup.sqlite"]',
 				SystemRoot: 'C:\\Windows',
+				WINDIR: 'C:\\Windows',
 			},
 			stdio: 'pipe',
 			timeout: 15_000,
