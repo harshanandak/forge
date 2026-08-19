@@ -1265,6 +1265,21 @@ describe('Flow-backed PR monitor authority', () => {
     }, async () => {}))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
   });
 
+  test('rejects a durable row hash that disagrees with its validated envelope before provider observation', async () => {
+    const store = durableStore();
+    await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
+    const readEventTail = store.readEventTail;
+    store.readEventTail = async (...args) => {
+      const tail = await readEventTail(...args);
+      tail.events[0].content_hash = '0'.repeat(64);
+      return tail;
+    };
+
+    await expect(runFlowMonitorPass(context(store, async () => {
+      throw new Error('inconsistent durable row must not poll the provider');
+    }, async () => {}))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+  });
+
   test('rejects malformed compact snapshot evidence as incomplete history', async () => {
     const store = durableStore();
     await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
