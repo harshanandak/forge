@@ -94,6 +94,17 @@ describe("process lifecycle state machine", () => {
     expect(terminal.state.exitCode).toBe(17);
   });
 
+  test("an observed exit with unknown code remains incomplete after reap", () => {
+    const lifecycle = startRunning();
+    const exited = lifecycle.dispatch(event("exit", "exit", { observedExit: true }));
+    expect(exited.effects).toEqual([{ type: "ACKNOWLEDGE_TERMINATION", code: null, signal: null }]);
+    lifecycle.dispatch(event("ack", "termination-acknowledged"));
+    const terminal = lifecycle.dispatch(event("reap", "reap", { childReaped: true }));
+    expect(terminal.state).toMatchObject({
+      phase: "TERMINAL", status: "INCOMPLETE", exitCode: null, signal: null,
+    });
+  });
+
   test("cancel request/acknowledgement requires child reaping", () => {
     const lifecycle = startRunning();
     expect(lifecycle.dispatch(event("cancel", "cancel-requested")).effects)

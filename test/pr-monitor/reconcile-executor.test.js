@@ -211,7 +211,7 @@ describe('execute — watcher lifecycle', () => {
 		]);
 	});
 
-	test('retains an observed natural exit without fabricating a SIGKILL', async () => {
+	test('reaps an observed natural exit without fabricating a SIGKILL', async () => {
 		let writes = 0;
 		let persisted = [];
 		const checkpoints = [];
@@ -231,10 +231,13 @@ describe('execute — watcher lifecycle', () => {
 				kill: () => { throw new Error('a dead watcher must not be killed'); },
 				onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
 			},
-		)).rejects.toMatchObject({ code: 'WATCHER_CLEANUP_FAILED' });
-		expect(checkpoints).toEqual([]);
-		expect(persisted).toHaveLength(1);
-		expect(persisted[0]).toMatchObject({ pid: 1234, pr: 42, repo: 'forge' });
+		)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+		expect(persisted).toEqual([]);
+		expect(checkpoints.map(checkpoint => checkpoint.state.phase)).toEqual([
+			'EXITED', 'TERMINATION_ACKNOWLEDGED', 'TERMINAL',
+		]);
+		expect(checkpoints[0].events.at(-1)).toMatchObject({ type: 'exit', observedExit: true });
+		expect(checkpoints[0].events.at(-1)).not.toHaveProperty('signal');
 	});
 
 	test('terminates every watcher spawned earlier in a batch when a later checkpoint fails', async () => {

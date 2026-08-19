@@ -218,6 +218,7 @@ function normalizeEvent(rawEvent) {
   if (event.exitCode !== undefined && (!Number.isSafeInteger(event.exitCode) || event.exitCode < 0)) fail("INVALID_EVENT", "exitCode must be a non-negative safe integer");
   if (event.code !== undefined && event.exitCode !== undefined && event.code !== event.exitCode) fail("INVALID_EVENT", "code and exitCode conflict");
   if (event.signal !== undefined && event.signal !== null && (typeof event.signal !== "string" || event.signal.length > 32)) fail("INVALID_EVENT", "signal is invalid");
+  if (event.observedExit !== undefined && event.observedExit !== true) fail("INVALID_EVENT", "observedExit must be true when present");
   if (event.amount !== undefined && (!Number.isSafeInteger(event.amount) || event.amount < 1)) fail("INVALID_EVENT", "event amount must be a positive safe integer");
   if (event.childReaped !== undefined && typeof event.childReaped !== "boolean") fail("INVALID_EVENT", "childReaped must be boolean");
   if (event.at !== undefined && (!Number.isSafeInteger(event.at) || event.at < 0)) fail("INVALID_EVENT", "event timestamp is invalid");
@@ -341,7 +342,8 @@ function reduceProcessLifecycle(rawState, rawEvent, rawOptions = {}) {
       break;
     case "exit":
       if (!["RUNNING", "CANCEL_REQUESTED", "ORPHANED"].includes(state.phase)) invalidPhase("RUNNING, CANCEL_REQUESTED, or ORPHANED phase");
-      if (event.code === undefined && event.exitCode === undefined && (event.signal === undefined || event.signal === null)) {
+      if (event.code === undefined && event.exitCode === undefined
+        && (event.signal === undefined || event.signal === null) && event.observedExit !== true) {
         fail("INVALID_EVENT", "exit requires an exitCode or signal");
       }
       next.exitCode = event.exitCode ?? event.code ?? null;
