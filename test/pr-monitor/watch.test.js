@@ -312,6 +312,22 @@ describe('watchLoop', () => {
     });
   });
 
+  test('rolls back generation authority when PID publication throws', async () => {
+    let rolledBack = 0;
+    await expect(watchLoop({
+      dir,
+      gather: async () => snap(),
+      watcherRunning: () => false,
+      writePid: () => { throw new Error('pid write failed'); },
+      beforeClaim: () => true,
+      onClaimFailed: () => { rolledBack += 1; return true; },
+      emit: () => {},
+      maxPasses: 1,
+    })).rejects.toThrow('pid write failed');
+
+    expect(rolledBack).toBe(1);
+  });
+
   test('retains generation authority when PID removal is unconfirmed', async () => {
     let released = false;
     const terminal = { type: T.PR_CLOSED, key: 'closed', data: {} };

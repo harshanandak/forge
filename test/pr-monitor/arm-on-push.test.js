@@ -5,6 +5,18 @@ const { describe, test, expect } = require('bun:test');
 const shepherd = require('../../lib/commands/shepherd');
 
 describe('forge shepherd watch --adopt', () => {
+  test('requests enough open PRs to avoid gh default pagination', () => {
+    let argv;
+    const prs = shepherd.defaultListOpenPrs('upstream/forge', (_cmd, args) => {
+      argv = args;
+      return '1\n31\n';
+    });
+
+    expect(prs).toEqual([1, 31]);
+    expect(argv).toContain('--limit');
+    expect(Number(argv[argv.indexOf('--limit') + 1])).toBeGreaterThanOrEqual(100);
+  });
+
   test('arms a detached watcher for every open PR', async () => {
     const calls = [];
     const res = await shepherd.handler(['watch', '--adopt'], {}, '/r', {

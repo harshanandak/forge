@@ -143,15 +143,17 @@ test('generation release fails closed when its journal root cannot be created', 
 test('an injected claim writer does not consult the production journal preflight', async () => {
 	const base = tmpRepo();
 	const blockedRoot = path.join(base, 'not-a-directory');
+	let spawnOptions;
 	fs.writeFileSync(blockedRoot, 'file');
 	const watchers = await executor.execute(
 		[{ type: 'startWatcher', pr: { repo: 'owner/forge', number: 42 } }],
 		{
 			projectRoot: blockedRoot, now: () => 1000, watchers: [],
-			writeClaim: () => true, spawnWatcher: () => ({ pid: 1234 }),
+			writeClaim: () => true, spawnWatcher: (options) => { spawnOptions = options; return { pid: 1234 }; },
 		},
 	);
 	expect(watchers[0]).toMatchObject({ repo: 'owner/forge', pr: 42, pid: 1234 });
+	expect(spawnOptions.repository).toBe('owner/forge');
 	fs.rmSync(base, { recursive: true, force: true });
 });
 
@@ -1512,10 +1514,31 @@ describe('finding 1 — a failed gh listing is a no-op, never a teardown', () =>
 				{ repo: 'forge', number: 7, head_sha: 'old-sha7', issue_id: 'ISSUE-7', worktree_id: 'WT-7' },
 			] },
 		});
-		expect(calls.some((args) => args.join(' ') === 'repo view --json owner,name')).toBe(true);
+		expect(calls.some((args) => args.join(' ') === 'repo view --json nameWithOwner,parent,owner,name')).toBe(true);
 		expect(desired.openPrs[0]).toMatchObject({
 			repo: 'harshanandak/forge', issueId: 'ISSUE-7', worktreeId: 'WT-7',
 		});
+	});
+
+	test('gatherDesired enumerates the upstream repository from a fork checkout', async () => {
+		const calls = [];
+		const desired = await executor.gatherDesired('/g', {
+			projectRoot: '/fork',
+			runGh: (args) => {
+				calls.push(args);
+				if (args[0] === 'repo') {
+					return JSON.stringify({
+						nameWithOwner: 'contributor/forge', parent: { nameWithOwner: 'upstream/forge' },
+					});
+				}
+				return JSON.stringify([{ number: 42, headRefName: 'feat/42', headRefOid: 'sha42' }]);
+			},
+		});
+
+		const listCall = calls.find((args) => args[0] === 'pr');
+		expect(listCall.slice(listCall.indexOf('--repo'), listCall.indexOf('--repo') + 2))
+			.toEqual(['--repo', 'upstream/forge']);
+		expect(desired.openPrs).toEqual([expect.objectContaining({ repo: 'upstream/forge', number: 42 })]);
 	});
 
 	test('gatherDesired fails closed when the GitHub repository identity is malformed or unreadable', async () => {
