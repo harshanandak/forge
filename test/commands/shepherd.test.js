@@ -40,7 +40,10 @@ describe('shepherd command handler', () => {
     });
     expect(shepherdCmd.terminalCleanupEvidence(base, {
       ...deps, watcherRunning: () => true,
-    })).toEqual({ complete: false });
+    })).toMatchObject({
+      complete: true,
+      leaseCleanup: { status: 'checkpointed', continuing_authority: false },
+    });
     expect(shepherdCmd.terminalCleanupEvidence(base, {
       ...deps, inspectLease: () => ({ status: 'valid', watchers: [{ repo: 'owner/forge', pr: 42 }] }),
     })).toEqual({ complete: false });
