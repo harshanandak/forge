@@ -127,14 +127,29 @@ describe('forge shepherd watch <pr>', () => {
   });
 
   test('rejects malformed detached-watcher repository and generation arguments', async () => {
+    const runnable = {
+      dir: '/journal',
+      gather: async () => ({ prState: 'OPEN' }),
+      context: { owner: 'upstream', repo: 'forge', pr: '42' },
+      signal: { aborted: false },
+      watchLoop: async () => ({ started: true, passes: 1, stopped: false }),
+    };
     const badRepository = await shepherd.handleWatch(['watch', '42', '--repo', 'not-a-repository'], '/repo', {});
     expect(badRepository).toMatchObject({ success: false });
     expect(badRepository.error).toMatch(/canonical owner\/name/);
+
+    const missingRepository = await shepherd.handleWatch(['watch', '42', '--repo'], '/repo', runnable);
+    expect(missingRepository).toMatchObject({ success: false });
+    expect(missingRepository.error).toMatch(/canonical owner\/name/);
 
     const badGeneration = await shepherd.handleWatch([
       'watch', '42', '--started-at', '2026-08-19', '--repo', 'upstream/forge',
     ], '/repo', {});
     expect(badGeneration).toMatchObject({ success: false });
     expect(badGeneration.error).toMatch(/canonical ISO instant/);
+
+    const missingGeneration = await shepherd.handleWatch(['watch', '42', '--started-at'], '/repo', runnable);
+    expect(missingGeneration).toMatchObject({ success: false });
+    expect(missingGeneration.error).toMatch(/canonical ISO instant/);
   });
 });
