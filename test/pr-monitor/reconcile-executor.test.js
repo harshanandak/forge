@@ -224,6 +224,25 @@ test('cleanup proof fails closed on reversed lifecycle time', () => {
 	fs.rmSync(base, { recursive: true, force: true });
 });
 
+test('failed claim publication preserves the prior cleanup proof', () => {
+	const base = tmpRepo();
+	const gitCommonDir = path.join(base, '.git');
+	const repo = 'owner/forge';
+	const pr = 42;
+	const prior = { repo, pr, startedAt: new Date(1000).toISOString() };
+	expect(executor.writeCleanupMarker(base, prior, 2000, gitCommonDir)).toBe(true);
+	const dir = monitorJournal.journalDir({ root: base, gitCommonDir, repo, pr });
+	fs.mkdirSync(path.join(dir, 'watch.startedat'));
+
+	expect(executor.writeClaimMarker(
+		base, repo, pr, new Date(3000).toISOString(), gitCommonDir,
+	)).toBe(false);
+	expect(executor.readCleanupMarker(base, repo, pr, gitCommonDir)).toMatchObject({
+		status: 'reaped', startedAt: prior.startedAt,
+	});
+	fs.rmSync(base, { recursive: true, force: true });
+});
+
 test('failed cleanup-proof invalidation prevents a new watcher generation', async () => {
 	let spawned = false;
 	await expect(executor.execute(
@@ -235,6 +254,34 @@ test('failed cleanup-proof invalidation prevents a new watcher generation', asyn
 		},
 	)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
 	expect(spawned).toBe(false);
+});
+
+test('pid-less watcher rollback failure retains a terminal retry owner', async () => {
+	let failure;
+	try {
+		await executor.execute(
+			[{ type: 'startWatcher', pr: { repo: 'owner/forge', number: 42 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
+				writeClaim: () => true,
+				spawnWatcher: () => ({ started: false, reason: 'already-running' }),
+				discardClaim: () => false,
+				removeClaim: () => false,
+			},
+		);
+	} catch (error) {
+		failure = error;
+	}
+	expect(failure).toMatchObject({ code: 'WATCHER_CLEANUP_FAILED' });
+	expect(failure.watchers[0].lifecycle.state.terminal).toBe(true);
+	const reaped = await executor.execute(
+		[{ type: 'stopWatcher', pr: { repo: 'owner/forge', number: 42 } }],
+		{
+			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
+			watchers: failure.watchers, removeClaim: () => true,
+		},
+	);
+	expect(reaped).toEqual([]);
 });
 
 test('last-open daemon retirement leaves proof that the bounded handoff accepts', async () => {
