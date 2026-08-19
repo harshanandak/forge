@@ -10,11 +10,15 @@ const { describe, expect, spyOn, test } = require('bun:test');
 const {
   aggregateShardReceipts,
   assertExactShardAssignment,
+  buildResourceLanePlan,
   buildShardTestArgs,
   buildShardSpecs,
+  classifyTestResource,
   getDefaultShardCount,
   listAllFullSuiteTests,
+  loadTestResourceMap,
   parseArgs,
+  runLaneSchedule,
   runFullSuiteInParallel,
   spawnShard,
 } = require('../../scripts/test-full-suite');
@@ -42,6 +46,47 @@ function fakeProcessTree() {
     unregisterChild: () => {},
     installSignalHandlers: () => () => {},
     cleanup: () => {},
+  };
+}
+
+function executionProbe() {
+  const active = new Set();
+  const maxActiveByLane = new Map();
+  const releases = new Map();
+  const started = [];
+  const waiters = [];
+
+  const notify = () => {
+    for (const waiter of waiters.splice(0)) {
+      if (started.length >= waiter.count) waiter.resolve();
+      else waiters.push(waiter);
+    }
+  };
+
+  return {
+    active,
+    maxActiveByLane,
+    release(id) {
+      const release = releases.get(id);
+      if (!release) throw new Error(`Task ${id} has not started`);
+      releases.delete(id);
+      release();
+    },
+    started,
+    waitForStarted(count) {
+      if (started.length >= count) return Promise.resolve();
+      return new Promise((resolve) => waiters.push({ count, resolve }));
+    },
+    async execute(task, lane) {
+      started.push(task.id);
+      active.add(task.id);
+      const laneActive = [...active].filter((id) => id.startsWith(lane.name[0])).length;
+      maxActiveByLane.set(lane.name, Math.max(maxActiveByLane.get(lane.name) || 0, laneActive));
+      notify();
+      await new Promise((resolve) => releases.set(task.id, resolve));
+      active.delete(task.id);
+      return task.id;
+    },
   };
 }
 
@@ -84,6 +129,170 @@ describe('scripts/test-full-suite.js', () => {
       'test/b.test.js',
       'test/c.test.js',
     ]);
+  });
+
+  test('classifies subprocess behavior through the repository smart-status and test-env helpers', () => {
+    expect(classifyTestResource('test/scripts/smart-status.basics.test.js')).toBe('subprocess');
+    expect(classifyTestResource('test-env/edge-cases/git-states.test.js')).toBe('subprocess');
+    expect(classifyTestResource('test-env/edge-cases/permission-errors.test.js')).toBe('subprocess');
+  });
+
+  test('follows two-hop CommonJS and ESM local imports, including cycles and index resolution', () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-classification-'));
+    const write = (name, source) => {
+      const target = path.join(fixtureRoot, name);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, source);
+      return name;
+    };
+
+    try {
+      const unit = write('unit.test.js', "import path from 'node:path';\nimport library from 'external-package';\nvoid path; void library;\n");
+      const bunSpawn = write('bun-spawn.test.js', "Bun.spawn(['node', '--version']);\n");
+      const markedSubprocess = write('marked-subprocess.test.js', "// forge-test-resource: subprocess\nexport const value = 1;\n");
+      const commonJs = write('common-js.test.js', "// forge-test-resource: unit\nrequire('./helpers/first');\n");
+      write('helpers/first.js', "module.exports = require('../cycle/second');\n");
+      write('cycle/second.cjs', "require('../helpers/first');\nrequire('../process');\n");
+      write('process.js', "const { spawnSync } = require('node:child_process');\nspawnSync('node', ['--version']);\n");
+      const esm = write('esm.test.mjs', "import helper from './esm/helper.mjs';\nvoid helper;\n");
+      write('esm/helper.mjs', "const lazy = import('../directory');\nexport default lazy;\n");
+      write('directory/index.cjs', "import { execFileSync } from 'node:child_process';\nexport { execFileSync };\n");
+      const exclusive = write('exclusive.test.js', "// forge-test-resource: exclusive\nconst { spawnSync } = require('node:child_process');\nspawnSync('npm', ['install']);\n");
+
+      expect(classifyTestResource(unit, { root: fixtureRoot })).toBe('unit');
+      expect(classifyTestResource(bunSpawn, { root: fixtureRoot })).toBe('subprocess');
+      expect(classifyTestResource(markedSubprocess, { root: fixtureRoot })).toBe('subprocess');
+      expect(classifyTestResource(commonJs, { root: fixtureRoot })).toBe('subprocess');
+      expect(classifyTestResource(esm, { root: fixtureRoot })).toBe('subprocess');
+      expect(classifyTestResource(exclusive, { root: fixtureRoot })).toBe('exclusive');
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('fails safe for missing, out-of-root, and dynamic local imports', () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-fail-safe-'));
+    const write = (name, source) => {
+      const target = path.join(fixtureRoot, name);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, source);
+      return name;
+    };
+
+    try {
+      const missing = write('missing.test.js', "require('./does-not-exist');\n");
+      const outside = write('outside.test.js', "require('../outside.js');\n");
+      const dynamic = write('dynamic.test.js', "const name = 'helper';\nimport(`./${name}.js`);\n");
+
+      expect(classifyTestResource(missing, { root: fixtureRoot })).toBe('subprocess');
+      expect(classifyTestResource(outside, { root: fixtureRoot })).toBe('subprocess');
+      expect(classifyTestResource(dynamic, { root: fixtureRoot })).toBe('subprocess');
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('reads a shared helper once while preserving exact-once test results', async () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-memo-'));
+    const reads = new Map();
+    const write = (name, source) => {
+      const target = path.join(fixtureRoot, name);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, source);
+    };
+
+    try {
+      write('a.test.js', "require('./shared');\n");
+      write('b.test.js', "require('./shared');\n");
+      write('shared.js', "require('node:child_process');\n");
+      const resources = await loadTestResourceMap([
+        'a.test.js',
+        'b.test.js',
+        'a.test.js',
+      ], {
+        readFile(target) {
+          const resolved = path.resolve(target);
+          reads.set(resolved, (reads.get(resolved) || 0) + 1);
+          return fs.readFileSync(resolved, 'utf8');
+        },
+        root: fixtureRoot,
+      });
+
+      expect(resources).toEqual(new Map([
+        ['a.test.js', 'subprocess'],
+        ['b.test.js', 'subprocess'],
+      ]));
+      expect([...reads.values()].every((count) => count === 1)).toBe(true);
+      expect(reads).toHaveLength(3);
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('buildResourceLanePlan assigns every discovered test exactly once at 4/2/1', () => {
+    const files = [
+      ...Array.from({ length: 7 }, (_, index) => `unit-${index}.test.js`),
+      ...Array.from({ length: 5 }, (_, index) => `process-${index}.test.js`),
+      'exclusive-0.test.js',
+      'exclusive-1.test.js',
+    ];
+    const classify = (file) => file.startsWith('unit-')
+      ? 'unit'
+      : (file.startsWith('process-') ? 'subprocess' : 'exclusive');
+
+    const lanes = buildResourceLanePlan(files, 4, new Map(), { classify });
+    const assigned = lanes.flatMap((lane) => lane.shards.flatMap((shard) => shard.files));
+
+    expect(lanes.map(({ name, concurrency, shards }) => ({
+      concurrency,
+      name,
+      shardCount: shards.length,
+    }))).toEqual([
+      { concurrency: 4, name: 'unit', shardCount: 4 },
+      { concurrency: 2, name: 'subprocess', shardCount: 2 },
+      { concurrency: 1, name: 'exclusive', shardCount: 2 },
+    ]);
+    expect(assigned).toHaveLength(files.length);
+    expect(new Set(assigned).size).toBe(files.length);
+    expect(assigned.slice().sort()).toEqual(files.slice().sort());
+    expect(lanes.find((lane) => lane.name === 'exclusive').shards.every((shard) => shard.files.length === 1)).toBe(true);
+  });
+
+  test('runLaneSchedule observes unit/process/exclusive caps without timers', async () => {
+    const probe = executionProbe();
+    const lanes = [
+      { name: 'unit', concurrency: 4, shards: ['u0', 'u1', 'u2', 'u3'].map((id) => ({ id })) },
+      { name: 'subprocess', concurrency: 2, shards: ['s0', 's1', 's2'].map((id) => ({ id })) },
+      { name: 'exclusive', concurrency: 1, shards: ['e0', 'e1'].map((id) => ({ id })) },
+    ];
+    const scheduled = runLaneSchedule(lanes, probe.execute);
+
+    await probe.waitForStarted(4);
+    expect(probe.started).toEqual(['u0', 'u1', 'u2', 'u3']);
+    for (const id of ['u0', 'u1', 'u2', 'u3']) probe.release(id);
+
+    await probe.waitForStarted(6);
+    expect(probe.started).toEqual(['u0', 'u1', 'u2', 'u3', 's0', 's1']);
+    probe.release('s0');
+    await probe.waitForStarted(7);
+    expect(probe.started.at(-1)).toBe('s2');
+    probe.release('s1');
+    probe.release('s2');
+
+    await probe.waitForStarted(8);
+    expect(probe.started.at(-1)).toBe('e0');
+    expect(probe.started).not.toContain('e1');
+    probe.release('e0');
+    await probe.waitForStarted(9);
+    expect(probe.started.at(-1)).toBe('e1');
+    probe.release('e1');
+
+    expect(await scheduled).toEqual(['u0', 'u1', 'u2', 'u3', 's0', 's1', 's2', 'e0', 'e1']);
+    expect(probe.maxActiveByLane).toEqual(new Map([
+      ['unit', 4],
+      ['subprocess', 2],
+      ['exclusive', 1],
+    ]));
   });
 
   test('passes absolute shard files to Bun children', async () => {
@@ -175,6 +384,28 @@ describe('scripts/test-full-suite.js', () => {
     expect(listAllFullSuiteTests()).toContain('scripts/release-asset.test.js');
   });
 
+  test('the discovered suite has complete exact resource-lane coverage', async () => {
+    const files = listAllFullSuiteTests();
+    const resourceMap = await loadTestResourceMap(files);
+    const lanes = buildResourceLanePlan(files, 4, new Map(), {
+      classify: (file) => resourceMap.get(file),
+    });
+    const assigned = lanes.flatMap((lane) => lane.shards.flatMap((shard) => shard.files));
+
+    expect(assigned).toHaveLength(files.length);
+    expect(new Set(assigned).size).toBe(files.length);
+    expect(assigned.slice().sort()).toEqual(files);
+    expect(lanes.find((lane) => lane.name === 'exclusive').shards.flatMap((shard) => shard.files)).toEqual([
+      'test-env/edge-cases/file-limits.test.js',
+      'test/hooks-session-start.test.js',
+      'test/integration/standalone-package-smoke.test.js',
+      'test/pr-monitor/flow-monitor.test.js',
+      'test/scripts/process-tree.test.js',
+    ]);
+    expect(lanes.find((lane) => lane.name === 'subprocess').shards.flatMap((shard) => shard.files))
+      .toContain('test/scripts/dep-guard.check-ripple.analyzer.test.js');
+  });
+
   test('runFullSuiteInParallel spawns one process per shard and succeeds when all shards pass', async () => {
     const calls = [];
     let pid = 9000;
@@ -188,6 +419,7 @@ describe('scripts/test-full-suite.js', () => {
       shards: 2,
     }, {
       allTests: ['test/a.test.js', 'packages/skills/test/a.test.js'],
+      classify: () => 'unit',
       durationMap: new Map([
         ['test/a.test.js', 2000],
         ['packages/skills/test/a.test.js', 1000],
@@ -216,12 +448,14 @@ describe('scripts/test-full-suite.js', () => {
       const statuses = await Promise.all([
         runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
           allTests: ['test/a.test.js'],
+          classify: () => 'unit',
           durationMap: new Map(),
           processTree: fakeProcessTree(),
           spawn,
         }),
         runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
           allTests: ['test/a.test.js'],
+          classify: () => 'unit',
           durationMap: new Map(),
           processTree: fakeProcessTree(),
           spawn,
@@ -255,6 +489,7 @@ describe('scripts/test-full-suite.js', () => {
 
     const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
       allTests: ['test/a.test.js'],
+      classify: () => 'unit',
       durationMap: new Map([['test/a.test.js', 1000]]),
       env: {
         KEEP_ME: 'yes',
@@ -335,6 +570,7 @@ describe('scripts/test-full-suite.js', () => {
 
     const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 2 }, {
       allTests: ['test/a.test.js', 'test/b.test.js'],
+      classify: () => 'unit',
       durationMap: new Map([
         ['test/a.test.js', 2000],
         ['test/b.test.js', 1000],
@@ -378,6 +614,7 @@ describe('scripts/test-full-suite.js', () => {
     try {
       expect(await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
         allTests: ['test/a.test.js'],
+        classify: () => 'unit',
         durationMap: new Map([['test/a.test.js', 1000]]),
         processTree,
         platform: 'linux',
@@ -413,6 +650,7 @@ describe('scripts/test-full-suite.js', () => {
       shards: 2,
     }, {
       allTests: ['test/a.test.js', 'test/b.test.js'],
+      classify: () => 'unit',
       durationMap: new Map([
         ['test/a.test.js', 2000],
         ['test/b.test.js', 1000],
@@ -429,6 +667,50 @@ describe('scripts/test-full-suite.js', () => {
     expect(retained).toBe(true);
   });
 
+  test('mixed resource lanes aggregate every receipt and clean up once', async () => {
+    const cleanupSignals = [];
+    const calls = [];
+    const errors = [];
+    let pid = 9350;
+    const resourceByFile = new Map([
+      ['test/unit.test.js', 'unit'],
+      ['test/process.test.js', 'subprocess'],
+      ['test/exclusive.test.js', 'exclusive'],
+    ]);
+    const processTree = {
+      ...fakeProcessTree(),
+      cleanup: (signal) => cleanupSignals.push(signal),
+    };
+    const spawn = (_command, args) => {
+      const file = args.at(-1).replace(/\\/g, '/');
+      calls.push(file);
+      return fakeShardChild(file.endsWith('/process.test.js') ? 1 : 0, pid++, args);
+    };
+    const error = spyOn(console, 'error').mockImplementation((message) => errors.push(message));
+
+    let status;
+    try {
+      status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 4 }, {
+        allTests: [...resourceByFile.keys()],
+        classify: (file) => resourceByFile.get(file),
+        durationMap: new Map(),
+        processTree,
+        spawn,
+      });
+    } finally {
+      error.mockRestore();
+    }
+
+    expect(status).toBe(1);
+    expect(calls.map((file) => path.basename(file))).toEqual([
+      'unit.test.js',
+      'process.test.js',
+      'exclusive.test.js',
+    ]);
+    expect(cleanupSignals).toEqual(['SIGTERM']);
+    expect(errors).toEqual(['Full suite non-zero shards: 1:subprocess:exit=1']);
+  });
+
   test('runFullSuiteInParallel reports a child process error as incomplete', async () => {
     let receiptPath;
     const spawn = (_command, args) => {
@@ -443,6 +725,7 @@ describe('scripts/test-full-suite.js', () => {
 
     const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
       allTests: ['test/a.test.js'],
+      classify: () => 'unit',
       processTree: fakeProcessTree(),
       durationMap: new Map([['test/a.test.js', 1000]]),
       spawn,
@@ -475,6 +758,7 @@ describe('scripts/test-full-suite.js', () => {
       const status = await Promise.race([
         runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 2 }, {
           allTests: ['test/a.test.js', 'test/b.test.js'],
+          classify: () => 'unit',
           durationMap: new Map(),
           processTree,
           spawn: () => {
@@ -524,6 +808,7 @@ describe('scripts/test-full-suite.js', () => {
     try {
       const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
         allTests: ['test/a.test.js'],
+        classify: () => 'unit',
         durationMap: new Map([['test/a.test.js', 1000]]),
         processTree,
         spawn: (_command, args) => {

@@ -1,5 +1,7 @@
 'use strict';
 
+// forge-test-resource: exclusive
+
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -30,6 +32,34 @@ afterEach(() => {
 });
 
 describe('scripts/process-tree.js', () => {
+  test('explicit manifest paths isolate a tree from inherited parent markers', () => {
+    const manifestPath = path.join(makeTempDir(), 'run.json');
+    const inheritedPath = path.join(makeTempDir(), 'parent.json');
+    fs.writeFileSync(inheritedPath, JSON.stringify({
+      version: MANIFEST_VERSION,
+      token: 'parent-token',
+      owner: { pid: 9001, identity: 'parent-start', startedAt: '2026-08-03T00:00:00.000Z' },
+      children: [],
+    }));
+
+    const tree = createProcessTree({
+      manifestPath,
+      token: 'local-token',
+      env: {
+        [MANIFEST_ENV]: inheritedPath,
+        [TOKEN_ENV]: 'parent-token',
+        [INSTANCE_ENV]: 'parent-instance',
+      },
+      platform: 'linux',
+      processApi: { pid: 9000 },
+      getProcessIdentity: () => 'local-start',
+    });
+
+    expect(tree.reserveChild({ kind: 'test', label: 'local' })).toBeTruthy();
+    expect(readProcessManifest(manifestPath).token).toBe('local-token');
+    expect(tree.envFor({})[MANIFEST_ENV]).toBe(manifestPath);
+  });
+
   test('writes a verified run manifest and registers a shard before cleanup', () => {
     const manifestPath = path.join(makeTempDir(), 'run.json');
     const kills = [];

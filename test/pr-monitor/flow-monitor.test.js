@@ -1,5 +1,7 @@
 'use strict';
 
+// forge-test-resource: exclusive
+
 const { describe, expect, test } = require('bun:test');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
