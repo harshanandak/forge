@@ -187,7 +187,7 @@ describe('Windows private ACL cscript verifier', () => {
 			const nonOwnerEvents = [];
 			const nonOwnerError = captureError(() => runWithDependencies(fakeDependencies(nonOwnerStates, nonOwnerEvents)));
 			expect(nonOwnerError.message).toContain('precheck owner mismatch');
-			expect(nonOwnerError.forgeExitCode).toBe(22);
+			expect(nonOwnerError.forgeExitCode).toBe(24);
 			expect(nonOwnerEvents.some(([operation]) => operation === 'set')).toBe(false);
 
 			const racedStates = {
@@ -205,6 +205,32 @@ describe('Windows private ACL cscript verifier', () => {
 			expect(raceError.message).toContain('owner changed before mutation');
 			expect(raceError.forgeExitCode).toBe(30);
 			expect(racedEvents.some(([operation]) => operation === 'set')).toBe(false);
+		} finally {
+			globalThis.VBArray = originalVBArray;
+		}
+	});
+
+	test('maps each owner precheck failure to a distinct privacy-safe exit code', () => {
+		const originalVBArray = globalThis.VBArray;
+		globalThis.VBArray = function (value) { this.toArray = () => value; };
+		try {
+			const rawStates = {
+				'C:\\one': { iid: { Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes().slice(0, 24) },
+			};
+			const rawError = captureError(() => runWithDependencies(fakeDependencies(rawStates, [])));
+			expect(rawError.forgeExitCode).toBe(22);
+
+			const iidStates = {
+				'C:\\one': { iid: {}, isDirectory: false, raw: descriptorBytes() },
+			};
+			const iidError = captureError(() => runWithDependencies(fakeDependencies(iidStates, [])));
+			expect(iidError.forgeExitCode).toBe(23);
+
+			const ownerStates = {
+				'C:\\one': { iid: { Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
+			};
+			const ownerError = captureError(() => runWithDependencies(fakeDependencies(ownerStates, [])));
+			expect(ownerError.forgeExitCode).toBe(24);
 		} finally {
 			globalThis.VBArray = originalVBArray;
 		}
