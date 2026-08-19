@@ -1,0 +1,137 @@
+'use strict';
+
+const { describe, expect, test } = require('bun:test');
+const {
+	execute,
+	gatherObserved,
+	convergeOnce,
+} = require('../../lib/pr-monitor/reconcile-executor');
+
+const NOW = '2026-08-19T00:00:00.000Z';
+const PR = { repo: 'acme/project', number: 7, branch: 'topic', headSha: 'abc' };
+const RECORD = {
+	version: 1, repo: PR.repo, pr: PR.number, generation: 'g1', phase: 'running',
+	controllerPid: null, watcherPid: 44, startedAt: NOW, updatedAt: NOW,
+	heartbeatAt: NOW, terminalReceiptId: null, blockReason: null,
+	legacyEvidenceHash: null,
+};
+
+describe('reconcile executor owner-row authority', () => {
+	test('reserves, spawns, and binds through owner APIs without writing lease watcher state', async () => {
+		const calls = [];
+		const authority = {
+			reserveStarting: async (_ctx, input) => {
+				calls.push(['reserve', input.controllerPid]);
+				return { ok: true, changed: true, record: { ...RECORD, phase: 'starting', controllerPid: input.controllerPid } };
+			},
+			bindRunning: async (_ctx, input) => {
+				calls.push(['bind', input.generation, input.pid]);
+				return { ok: true, changed: true, record: { ...RECORD, watcherPid: input.pid } };
+			},
+		};
+		const result = await execute([{ type: 'reserveWatcher', pr: PR }], {
+			authority,
+			controllerPid: 11,
+			spawnWatcher: input => {
+				calls.push(['spawn', input.repository, input.prNumber, input.reservation.record.generation]);
+				return { started: true, pid: 44, generation: input.reservation.record.generation };
+			},
+			projectRoot: '/repo',
+			gitCommonDir: '/repo/.git',
+		});
+		expect(calls).toEqual([
+			['reserve', 11],
+			['spawn', PR.repo, PR.number, 'g1'],
+			['bind', 'g1', 44],
+		]);
+		expect(result).toMatchObject({ ok: true, changed: true });
+	});
+
+	test('requests cooperative stop without signaling the persisted watcher PID', async () => {
+		let killed = false;
+		const calls = [];
+		await execute([{ type: 'requestStop', owner: RECORD }], {
+			authority: {
+				requestStop: async (_ctx, input) => {
+					calls.push(input);
+					return { ok: true, changed: true, record: { ...RECORD, phase: 'stop_requested' } };
+				},
+			},
+			kill: () => { killed = true; },
+		});
+		expect(killed).toBe(false);
+		expect(calls).toEqual([{ generation: 'g1', pid: 44 }]);
+	});
+
+	test('enumerates owner rows before checking PID liveness outside authority access', async () => {
+		const order = [];
+		const result = await gatherObserved('/repo/.git', null, {
+			broker: { listOpenPrs: async () => [] },
+			authority: {
+				enumerateOwners: async () => {
+					order.push('enumerate');
+					return { ok: true, records: [RECORD] };
+				},
+				readMigrationGate: async () => ({ ok: true, gate: { state: 'complete', snapshot_hash: 'a'.repeat(64) } }),
+			},
+			isAlive: pid => { order.push(`pid:${pid}`); return true; },
+			now: () => Date.parse(NOW),
+		});
+		expect(order).toEqual(['enumerate', 'pid:44']);
+		expect(result.ownerRows[0]).toMatchObject({ watcherAlive: true });
+		expect(result.migrationGate).toMatchObject({ state: 'complete' });
+	});
+
+	test('converges without reading or publishing lease watcher arrays', async () => {
+		let published = false;
+		const result = await convergeOnce('/repo', {
+			gitCommonDir: '/repo/.git',
+			lock: { watchers: [{ pr: 999, pid: 999 }] },
+			gatherDesired: async () => ({ openPrs: [], listingOk: true, repositoryOk: true }),
+			gatherObserved: async () => ({
+				ownerRows: [], ownerRowsOk: true,
+				migrationGate: { state: 'complete', snapshot_hash: 'a'.repeat(64) },
+				prRows: [],
+			}),
+			reconcile: () => ({ actions: [] }),
+			execute: async () => ({ ok: true, changed: false }),
+			updateWatchers: () => { published = true; },
+			authority: { enumerateOwners: async () => ({ ok: true, records: [] }) },
+		});
+		expect(published).toBe(false);
+		expect(result).toMatchObject({ desiredCount: 0, activeOwnerCount: 0, authorityOk: true });
+	});
+
+	test('reports failed action execution so an empty daemon cannot retire', async () => {
+		const result = await convergeOnce('/repo', {
+			gitCommonDir: '/repo/.git',
+			gatherDesired: async () => ({ openPrs: [], listingOk: true, repositoryOk: true }),
+			gatherObserved: async () => ({
+				ownerRows: [], ownerRowsOk: true,
+				migrationGate: { state: 'complete', snapshot_hash: 'a'.repeat(64) },
+				prRows: [],
+			}),
+			reconcile: () => ({ actions: [{ type: 'upsertPrRow', pr: PR }] }),
+			execute: async () => ({ ok: false, changed: false }),
+			authority: { enumerateOwners: async () => ({ ok: true, records: [] }) },
+		});
+		expect(result).toMatchObject({ executionOk: false, authorityOk: true, activeOwnerCount: 0 });
+	});
+
+	test('retries terminal completion until the durable receipt verifier succeeds', async () => {
+		let attempts = 0;
+		const pending = { ...RECORD, phase: 'terminal_pending', terminalReceiptId: 'receipt-7' };
+		const authority = {
+			completeTerminal: async (_identity, _input) => {
+				attempts += 1;
+				return attempts === 1
+					? { ok: false, changed: false, reason: 'receipt_unverified', record: pending }
+					: { ok: true, changed: true, reason: 'complete', record: { ...pending, phase: 'complete' } };
+			},
+		};
+		const action = { type: 'completeTerminal', owner: pending };
+		expect(await execute([action], { authority })).toMatchObject({ ok: false, changed: false });
+		expect(await execute([action], { authority })).toMatchObject({ ok: true, changed: true });
+		expect(attempts).toBe(2);
+	});
+});

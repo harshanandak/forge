@@ -27,7 +27,7 @@ describe('shepherd-lease', () => {
     expect(lease.STALE_MS).toBeGreaterThanOrEqual(90000);
   });
 
-  test('first acquire writes payload with pid/token/startedAt/heartbeatAt/watchers', () => {
+  test('first acquire writes daemon election fields only', () => {
     const res = lease.acquire(null, opts({ pid: 100, isAlive: alive, now: () => 1000 }));
     expect(res.ok).toBe(true);
     expect(typeof res.token).toBe('string');
@@ -36,7 +36,7 @@ describe('shepherd-lease', () => {
     expect(held.token).toBe(res.token);
     expect(typeof held.startedAt).toBe('string');
     expect(typeof held.heartbeatAt).toBe('string');
-    expect(held.watchers).toEqual([]);
+    expect(Object.keys(held).sort()).toEqual(['heartbeatAt', 'pid', 'startedAt', 'token']);
   });
 
   test('(1) live + fresh holder blocks a second acquire', () => {
@@ -52,6 +52,33 @@ describe('shepherd-lease', () => {
     expect(res.ok).toBe(true);
     expect(res.reclaimed).toBe(true);
     expect(readHolder().pid).toBe(200);
+  });
+
+  test('stale takeover preserves legacy watchers until migration consumes them', () => {
+    fs.mkdirSync(path.dirname(lease.lockFilePath(null, { gitCommonDir })), { recursive: true });
+    fs.writeFileSync(lease.lockFilePath(null, { gitCommonDir }), JSON.stringify({
+      pid: 100, startedAt: new Date(0).toISOString(), heartbeatAt: new Date(0).toISOString(), watchers: [7],
+    }));
+    const res = lease.acquire(null, opts({ pid: 200, isAlive: () => false, now: () => 1000 }));
+    expect(res).toMatchObject({ ok: true, reclaimed: true });
+    expect(readHolder().watchers).toEqual([7]);
+  });
+
+  test('malformed legacy lease is preserved while migration is quarantined', () => {
+    const file = lease.lockFilePath(null, { gitCommonDir });
+    const malformed = '{"pid":100,"watchers":[7]';
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, malformed);
+
+    const res = lease.acquire(null, opts({
+      pid: 200,
+      isAlive: () => false,
+      now: () => 1000,
+      preserveLegacy: true,
+    }));
+
+    expect(res).toMatchObject({ ok: false, legacyMigrationPending: true, held: null });
+    expect(fs.readFileSync(file, 'utf8')).toBe(malformed);
   });
 
   test('(3) wedged holder (heartbeat older than STALE_MS) is reclaimed', () => {
@@ -92,7 +119,7 @@ describe('shepherd-lease', () => {
       now: () => 1000,
       onBeforeTakeover: () => {
         fs.writeFileSync(lease.lockFilePath(null, { gitCommonDir }),
-          JSON.stringify({ pid: 999, token: 'competitor', startedAt: 'x', heartbeatAt: 'x', watchers: [] }));
+          JSON.stringify({ pid: 999, token: 'competitor', startedAt: 'x', heartbeatAt: 'x' }));
       },
     }));
     expect(res.ok).toBe(false);
@@ -110,9 +137,8 @@ describe('shepherd-lease', () => {
     // A revives and its heartbeat fires — but its token no longer owns the lock,
     // so the stamp is a no-op and B's lease is NOT overwritten.
     expect(lease.stamp(null, opts({ token: a.token, now: () => 9999 }))).toBe(false);
-    expect(lease.updateWatchers(null, [1, 2], opts({ token: a.token }))).toBe(false);
     expect(readHolder().token).toBe(b.token);
-    expect(readHolder().watchers).toEqual([]);
+    expect(Object.hasOwn(readHolder(), 'watchers')).toBe(false);
   });
 
   test('pid reuse cannot mutate a foreign lease (token authoritative over pid)', () => {
@@ -126,12 +152,10 @@ describe('shepherd-lease', () => {
     expect(readHolder().token).toBe(b.token);
   });
 
-  test('updateWatchers rewrites the watchers array only for the token owner', () => {
-    const held = lease.acquire(null, opts({ pid: 100, isAlive: alive, now: () => 1000 }));
-    expect(lease.updateWatchers(null, [7, 8], opts({ token: held.token }))).toBe(true);
-    expect(readHolder().watchers).toEqual([7, 8]);
-    expect(lease.updateWatchers(null, [9], opts({ token: 'other' }))).toBe(false);
-    expect(readHolder().watchers).toEqual([7, 8]);
+  test('exports no per-PR watcher mutation authority', () => {
+    lease.acquire(null, opts({ pid: 100, isAlive: alive, now: () => 1000 }));
+    expect(lease.updateWatchers).toBeUndefined();
+    expect(Object.hasOwn(readHolder(), 'watchers')).toBe(false);
   });
 
   test('heartbeat stamp refreshes heartbeatAt for the token owner and start/stop are safe', () => {

@@ -293,6 +293,14 @@ describe('forge test command', () => {
 		});
 
 		test.each([
+			['lib/commands/shepherd.js', [
+				'test/commands/shepherd.test.js',
+				'test/pr-monitor/arm-on-push.test.js',
+				'test/pr-monitor/shepherd-watch.test.js',
+				'test/pr-monitor/watch-owner-cutover.test.js',
+				'test/pr-monitor/watch-owner-launch-contention.test.js',
+				'test/pr-monitor/watch-owner-launch-gate.test.js',
+			]],
 			// Schema is shared by every kernel authority and must stay on the full-suite lane.
 			['lib/kernel/schema.js', []],
 			// Migrations have consumers across the kernel; an empty mapping deliberately
@@ -304,6 +312,36 @@ describe('forge test command', () => {
 			['lib/pr-monitor/watch-owner.js', [
 				'test/kernel/watch-owner-transaction.test.js',
 				'test/pr-monitor/watch-owner.test.js',
+			]],
+			['lib/pr-monitor/reconcile.js', [
+				'test/pr-monitor/reconcile-owner-authority.test.js',
+				'test/pr-monitor/reconcile.test.js',
+			]],
+			['lib/pr-monitor/reconcile-executor.js', [
+				'test/pr-monitor/auto-trigger-containment.test.js',
+				'test/pr-monitor/reconcile-daemon-owner-authority.test.js',
+				'test/pr-monitor/reconcile-executor-owner-authority.test.js',
+				'test/pr-monitor/reconcile-executor.test.js',
+				'test/pr-monitor/reconcile-migration-gate.test.js',
+				'test/pr-monitor/watch-owner-launch-contention.test.js',
+				'test/windows-hide-background-spawns.test.js',
+			]],
+			['lib/pr-monitor/watch.js', [
+				'test/pr-monitor/watch-owner-cutover.test.js',
+				'test/pr-monitor/watch.test.js',
+			]],
+			['lib/pr-monitor/watch-lifecycle.js', [
+				'test/pr-monitor/watch-lifecycle.test.js',
+				'test/pr-monitor/watch-owner-launch-contention.test.js',
+				'test/pr-monitor/watch-owner-launch-gate.test.js',
+			]],
+			['lib/pr-monitor/shepherd-lease.js', [
+				'test/pr-monitor/shepherd-lease-election-only.test.js',
+				'test/pr-monitor/shepherd-lease.test.js',
+			]],
+			['lib/pr-monitor/monitor.js', [
+				'test/pr-monitor/monitor-owner-signal.test.js',
+				'test/pr-monitor/monitor.test.js',
 			]],
 		])('maps %s to all direct owner-authority tests', (source, targets) => {
 			const existingPaths = targets.map(target => `/fake/root/${target}`);

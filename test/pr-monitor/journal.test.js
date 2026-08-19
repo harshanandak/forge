@@ -69,11 +69,16 @@ describe('journal', () => {
     expect(journal.readSnapshot(dir)).toBeNull();
   });
 
-  test('watcherRunning is false for a stale/own pid, so poll can fall back inline', () => {
-    journal.writePid(dir, process.pid);
-    expect(journal.watcherRunning(dir)).toBe(false); // our own pid is not a foreign watcher
-    journal.removePid(dir);
-    expect(journal.readPid(dir)).toBeNull();
+  test('exports no persisted-PID watcher lifecycle surface', () => {
+    for (const name of ['pidPath', 'writePid', 'readPid', 'removePid', 'watcherRunning']) {
+      expect(journal[name]).toBeUndefined();
+    }
+    const source = [
+      'journal.js',
+      'monitor.js',
+    ].map(file => fs.readFileSync(path.join(__dirname, '../../lib/pr-monitor', file), 'utf8')).join('\n');
+    expect(source).not.toMatch(/watch\.pid|function (?:writePid|readPid|removePid|watcherRunning)\b/);
+    expect(source).not.toContain('watcherRunning');
   });
 
   test('writeSnapshot/readSnapshot carry an appliedSeq cursor (0 for legacy)', () => {

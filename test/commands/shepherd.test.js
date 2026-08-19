@@ -85,7 +85,7 @@ describe('shepherd command handler', () => {
         });
       }
       if (args.includes('repo') && args.includes('view')) {
-        return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
+        return JSON.stringify({ nameWithOwner: 'fork/widget', parent: { nameWithOwner: 'acme/widget' } });
       }
       return '{}';
     };
@@ -98,6 +98,7 @@ describe('shepherd command handler', () => {
     expect(ctx.headSha).toBe('a'.repeat(40));
     expect(ctx.owner).toBe('acme');
     expect(ctx.repo).toBe('widget');
+    expect(ghCalls.some((c) => c.includes('--repo acme/widget'))).toBe(true);
     // It MUST consult the PR, not just `gh repo view` defaultBranchRef.
     expect(ghCalls.some((c) => c.includes('pr view') && c.includes('42'))).toBe(true);
   });
@@ -107,7 +108,7 @@ describe('shepherd command handler', () => {
       if (args.includes('pr') && args.includes('view')) {
         return JSON.stringify({ baseRefName: 'release/2.0', baseRefOid: 'not-a-commit' });
       }
-      return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
+      return JSON.stringify({ nameWithOwner: 'acme/widget', parent: null });
     };
 
     await expect(shepherdCmd.defaultBuildContext({ pr: '42', gh, git: () => 'origin\n' }))
@@ -119,7 +120,7 @@ describe('shepherd command handler', () => {
       if (args.includes('pr') && args.includes('view')) {
         return JSON.stringify({ baseRefName: 'master', baseRefOid: 'b'.repeat(40) });
       }
-      return JSON.stringify({ owner: { login: 'o' }, name: 'r' });
+      return JSON.stringify({ nameWithOwner: 'o/r', parent: null });
     };
     const git = () => 'origin\n';
 
@@ -315,7 +316,7 @@ describe('shepherd command handler', () => {
 
   test('forces an authoritative inline monitor pass even when a watcher is active', async () => {
     const head = 'a'.repeat(40);
-    let observedWatcherRunning;
+    let observedOwnerRunning;
     const evidence = await shepherdCmd.collectConvergenceEvidence({
       args: ['7'], pr: '7', projectRoot: process.cwd(),
       context: { pr: '7', owner: 'o', repo: 'r', headSha: head },
@@ -323,18 +324,17 @@ describe('shepherd command handler', () => {
       deps: {
         dir: 'journal-dir', gather: async () => ({}), store: {},
         monitorId: 'pr:o/r:7', ownerRunId: 'run-7', packetId: 'packet-7', subjectId: 'o/r#7',
-        watcherRunning: () => true,
         pollEvents: async input => {
-          observedWatcherRunning = input.watcherRunning(input.dir);
+          observedOwnerRunning = await input.isOwnerRunning();
           return {
             events: [], overflow: false, receiptIds: [], continuationPending: true,
-            ranPass: !observedWatcherRunning,
+            ranPass: !observedOwnerRunning,
           };
         },
       },
     });
 
-    expect(observedWatcherRunning).toBe(false);
+    expect(observedOwnerRunning).toBe(false);
     expect(evidence.exactHead).toBe(head);
     expect(evidence.continuationPending).toBe(true);
   });
@@ -470,6 +470,57 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
     }));
   });
 
+  test('default monitor adapter keeps every PR read on the resolved upstream repository', async () => {
+    const ghCalls = [];
+    const emptyConnection = { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] };
+    const gh = (cmd, args) => {
+      ghCalls.push({ cmd, args });
+      const joined = args.join(' ');
+      if (args[0] === 'pr' && args[1] === 'view' && joined.includes('--json commits')) {
+        return '2026-08-19T10:00:00.000Z';
+      }
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return JSON.stringify({
+          headRefOid: 'a'.repeat(40), state: 'OPEN', isDraft: false,
+          mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', statusCheckRollup: [],
+        });
+      }
+      if (args[0] === 'api' && joined.includes('protection/required_status_checks')) {
+        return JSON.stringify({ contexts: [] });
+      }
+      if (args[0] === 'api' && joined.includes('reviewThreads(')) {
+        return JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: emptyConnection } } } });
+      }
+      if (args[0] === 'api' && joined.includes('comments(')) {
+        return JSON.stringify({ data: { repository: { pullRequest: { comments: emptyConnection } } } });
+      }
+      if (args[0] === 'api' && joined.includes('reviews(')) {
+        return JSON.stringify({ data: { repository: { pullRequest: { reviews: emptyConnection } } } });
+      }
+      return '';
+    };
+    const git = (_cmd, args) => (args[0] === 'rev-list' ? '0\t0' : '');
+    const built = await shepherdCmd.buildMonitorContext('541', root, {
+      gh,
+      git,
+      buildContext: async () => ({
+        pr: '541', owner: 'upstream', repo: 'forge', base: 'master',
+        baseRef: 'origin/master', cwd: root, prState: 'OPEN',
+      }),
+      resolveGitCommonDir: () => path.join(root, '.git'),
+      buildKernelDeps: async () => { throw new Error('journal fallback'); },
+    });
+
+    await built.gather();
+
+    const prReads = ghCalls.filter(call => call.cmd === 'gh'
+      && call.args[0] === 'pr' && call.args[1] === 'view');
+    expect(prReads).toHaveLength(3);
+    for (const read of prReads) {
+      expect(read.args).toEqual(expect.arrayContaining(['--repo', 'upstream/forge']));
+    }
+  });
+
   test('live monitor context builds the public Memory authority with stable Flow identity', async () => {
     const store = { kind: 'monitor-store' };
     let closed = false;
@@ -588,7 +639,7 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
 
   test('runs an inline pass and returns NDJSON events since the cursor', async () => {
     const res = await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
-      dir, gather: async () => snap(), now, watcherRunning: () => false,
+      dir, gather: async () => snap(), now, isOwnerRunning: async () => false,
     });
     expect(res.success).toBe(true);
     expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
@@ -597,9 +648,106 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
     expect(parsed[0].seq).toBe(1);
   });
 
+  test.each([
+    ['tagged failure', async () => ({ ok: false, reason: 'authority_unavailable' })],
+    ['provider exception', async () => { throw new Error('authority unavailable'); }],
+  ])('does not run an inline events pass when watcher authority returns a %s', async (_case, readOwner) => {
+    let gathered = 0;
+    const res = await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
+      dir,
+      gather: async () => {
+        gathered += 1;
+        return snap();
+      },
+      repository: 'acme/forge',
+      ownerOptions: { driver: {} },
+      owner: { readOwner },
+    });
+
+    expect(res.success).toBe(true);
+    expect(gathered).toBe(0);
+  });
+
+  test.each([4242, null])('does not run an inline events pass for a blocked owner with watcher PID %s', async (watcherPid) => {
+    let gathered = 0;
+    const res = await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
+      dir,
+      gather: async () => {
+        gathered += 1;
+        return snap();
+      },
+      repository: 'acme/forge',
+      ownerOptions: { driver: {} },
+      owner: {
+        readOwner: async () => ({
+          ok: true,
+          record: { phase: 'blocked', watcherPid },
+        }),
+      },
+    });
+
+    expect(res.success).toBe(true);
+    expect(gathered).toBe(0);
+  });
+
+  test('runs an inline events pass for a proven absent owner', async () => {
+	const record = null;
+    let gathered = 0;
+    const res = await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
+      dir,
+      gather: async () => {
+        gathered += 1;
+        return snap();
+      },
+      repository: 'acme/forge',
+      ownerOptions: { driver: {} },
+      owner: { readOwner: async () => ({ ok: true, record }) },
+    });
+
+    expect(res.success).toBe(true);
+    expect(gathered).toBe(1);
+  });
+
+  test('owner-running probe normalizes a malformed success to boolean false', async () => {
+    let observed;
+    const res = await shepherdCmd.handleEvents(['events', '1'], root, {
+      dir,
+      gather: async () => snap(),
+      isOwnerRunning: async () => ({ ok: true, record: { phase: { invalid: true } } }),
+      pollEvents: async (input) => {
+        observed = await input.isOwnerRunning();
+        return { events: [], since: 0, overflow: false, receiptIds: [] };
+      },
+    });
+
+    expect(res.success).toBe(true);
+    expect(typeof observed).toBe('boolean');
+    expect(observed).toBe(false);
+  });
+
+  test.each([
+    ['literal true', true, true],
+    ['truthy envelope', { ok: true }, false],
+  ])('normalizes an injected owner-running probe from %s', async (_case, providerValue, expected) => {
+    let observed;
+    const res = await shepherdCmd.handleEvents(['events', '1'], root, {
+      dir,
+      gather: async () => snap(),
+      isOwnerRunning: async () => providerValue,
+      pollEvents: async (input) => {
+        observed = await input.isOwnerRunning();
+        return { events: [], since: 0, overflow: false, receiptIds: [] };
+      },
+    });
+
+    expect(res.success).toBe(true);
+    expect(observed).toBe(expected);
+    expect(typeof observed).toBe('boolean');
+  });
+
   test('a later poll with the advanced cursor returns nothing new', async () => {
-    await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, { dir, gather: async () => snap(), now, watcherRunning: () => false });
-    const res = await shepherdCmd.handleEvents(['events', '1', '--since', '1'], root, { dir, gather: async () => snap(), now, watcherRunning: () => false });
+    await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, { dir, gather: async () => snap(), now, isOwnerRunning: async () => false });
+    const res = await shepherdCmd.handleEvents(['events', '1', '--since', '1'], root, { dir, gather: async () => snap(), now, isOwnerRunning: async () => false });
     expect(res.events).toEqual([]);
   });
 
@@ -626,7 +774,7 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
 
   test('main handler routes the events subcommand', async () => {
     const res = await shepherdCmd.handler(['events', '1', '--since', '0'], {}, root, {
-      dir, gather: async () => snap(), now, watcherRunning: () => false,
+      dir, gather: async () => snap(), now, isOwnerRunning: async () => false,
     });
     expect(res.success).toBe(true);
     expect(res.events).toBeDefined();
@@ -643,11 +791,11 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
     });
     // Baseline pass (green) establishes the snapshot; no check.failed yet.
     await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
-      dir, gather: async () => green, now, watcherRunning: () => false, gatherPull,
+      dir, gather: async () => green, now, isOwnerRunning: async () => false, gatherPull,
     });
     // Transition to failed → check.failed emitted and enriched by the default hook.
     const res = await shepherdCmd.handleEvents(['events', '1', '--since', '1'], root, {
-      dir, gather: async () => failed, now, watcherRunning: () => false, gatherPull,
+      dir, gather: async () => failed, now, isOwnerRunning: async () => false, gatherPull,
     });
     const cf = res.events.find((e) => e.type === T.CHECK_FAILED);
     expect(cf).toBeDefined();
