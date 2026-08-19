@@ -51,6 +51,20 @@ describe('shepherd command handler', () => {
       ...deps, inspectLease: () => ({ status: 'absent', watchers: [] }),
     })).toEqual({ complete: false });
     expect(shepherdCmd.terminalCleanupEvidence(base, {
+      ...deps,
+      inspectLease: () => ({ status: 'absent', watchers: [] }),
+      readCleanup: () => ({ repo: 'owner/forge', pr: 42, status: 'reaped' }),
+    })).toMatchObject({
+      complete: true,
+      processCleanup: { status: 'reaped' },
+      leaseCleanup: { status: 'released', continuing_authority: false },
+    });
+    expect(shepherdCmd.terminalCleanupEvidence(base, {
+      ...deps,
+      inspectLease: () => ({ status: 'absent', watchers: [] }),
+      readCleanup: () => ({ repo: 'other/forge', pr: 42, status: 'reaped' }),
+    })).toEqual({ complete: false });
+    expect(shepherdCmd.terminalCleanupEvidence(base, {
       ...deps, inspectLease: () => null,
     })).toEqual({ complete: false });
     expect(shepherdCmd.terminalCleanupEvidence(base, {

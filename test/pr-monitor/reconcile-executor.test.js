@@ -8,6 +8,7 @@ const { spawn } = require('node:child_process');
 
 const executor = require('../../lib/pr-monitor/reconcile-executor');
 const shepherdLease = require('../../lib/pr-monitor/shepherd-lease');
+const shepherdCmd = require('../../lib/commands/shepherd');
 const FOREIGN_LEASE_CHILD_EXIT_TIMEOUT_MS = 5000;
 
 function tmpRepo() {
@@ -33,6 +34,152 @@ test('claim markers share one path across worktrees with the same common dir', (
 		},
 	)).toBe(true);
 	expect(kills).toEqual([1234]);
+	fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('a reaped watcher leaves durable per-PR cleanup proof after its lease is released', async () => {
+	const base = tmpRepo();
+	const gitCommonDir = path.join(base, '.git');
+	const context = {
+		projectRoot: base,
+		gitCommonDir,
+		now: () => 1000,
+		spawnWatcher: () => ({ pid: 1234 }),
+		watchers: [],
+		isAlive: () => true,
+		kill: () => {},
+		persistLifecycleCheckpoint: () => true,
+	};
+	const running = await executor.execute(
+		[{ type: 'startWatcher', pr: { repo: 'owner/forge', number: 42 } }], context,
+	);
+	const stopping = await executor.execute(
+		[{ type: 'stopWatcher', pr: { repo: 'owner/forge', number: 42 } }],
+		{ ...context, now: () => 2000, watchers: running },
+	);
+	const reaped = await executor.execute(
+		[{ type: 'stopWatcher', pr: { repo: 'owner/forge', number: 42 } }],
+		{ ...context, now: () => 3000, watchers: stopping, isAlive: () => false },
+	);
+
+	expect(reaped).toEqual([]);
+	expect(executor.readClaimMarker(base, 'owner/forge', 42, gitCommonDir)).toBeNull();
+	const cleanup = executor.readCleanupMarker(base, 'owner/forge', 42, gitCommonDir);
+	expect(cleanup).toMatchObject({
+		repo: 'owner/forge', pr: 42, status: 'reaped', startedAt: new Date(1000).toISOString(),
+	});
+	const lease = shepherdLease.acquire(base, { gitCommonDir });
+	expect(lease.ok).toBe(true);
+	shepherdLease.release(base, { gitCommonDir, token: lease.token });
+	expect(shepherdLease.inspect(base, { gitCommonDir }).status).toBe('absent');
+	expect(executor.readCleanupMarker(base, 'owner/forge', 42, gitCommonDir)).toEqual(cleanup);
+	executor.writeClaimMarker(base, 'owner/forge', 42, new Date(4000).toISOString(), gitCommonDir);
+	expect(executor.readCleanupMarker(base, 'owner/forge', 42, gitCommonDir)).toBeNull();
+	fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('cleanup proof fails closed on reversed lifecycle time', () => {
+	const base = tmpRepo();
+	const gitCommonDir = path.join(base, '.git');
+	expect(executor.writeCleanupMarker(base, {
+		repo: 'owner/forge', pr: 42, startedAt: new Date(4000).toISOString(),
+	}, 3000, gitCommonDir)).toBe(false);
+	expect(executor.readCleanupMarker(base, 'owner/forge', 42, gitCommonDir)).toBeNull();
+	fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('failed cleanup-proof invalidation prevents a new watcher generation', async () => {
+	let spawned = false;
+	await expect(executor.execute(
+		[{ type: 'startWatcher', pr: { repo: 'owner/forge', number: 42 } }],
+		{
+			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
+			writeClaim: () => false,
+			spawnWatcher: () => { spawned = true; return { pid: 1234 }; },
+		},
+	)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+	expect(spawned).toBe(false);
+});
+
+test('last-open daemon retirement leaves proof that the bounded handoff accepts', async () => {
+	const base = tmpRepo();
+	const gitCommonDir = path.join(base, '.git');
+	const context = {
+		projectRoot: base, gitCommonDir, now: () => 1000, watchers: [],
+		spawnWatcher: () => ({ pid: 1234 }), isAlive: () => true, kill: () => {},
+		persistLifecycleCheckpoint: () => true,
+	};
+	const running = await executor.execute(
+		[{ type: 'startWatcher', pr: { repo: 'owner/forge', number: 42 } }], context,
+	);
+	const stopping = await executor.execute(
+		[{ type: 'stopWatcher', pr: { repo: 'owner/forge', number: 42 } }],
+		{ ...context, now: () => 2000, watchers: running },
+	);
+	await executor.runDaemon(base, {
+		gitCommonDir, once: true, startHeartbeat: () => ({}), stopHeartbeat: () => {},
+		convergeOnce: async () => ({
+			actions: [], desiredCount: 0,
+			watchers: await executor.execute(
+				[{ type: 'stopWatcher', pr: { repo: 'owner/forge', number: 42 } }],
+				{ ...context, now: () => 3000, watchers: stopping, isAlive: () => false },
+			),
+		}),
+	});
+
+	expect(shepherdLease.inspect(base, { gitCommonDir }).status).toBe('absent');
+	expect(shepherdCmd.terminalCleanupEvidence({
+		owner: 'owner', repo: 'forge', pr: 42, dir: path.join(base, 'journal'),
+		projectRoot: base, gitCommonDir,
+	}, { watcherRunning: () => false })).toMatchObject({
+		complete: true, leaseCleanup: { status: 'released', continuing_authority: false },
+	});
+	fs.rmSync(base, { recursive: true, force: true });
+});
+
+test('cleanup-proof persistence failure retains authority and prevents daemon retirement', async () => {
+	const base = tmpRepo();
+	const gitCommonDir = path.join(base, '.git');
+	const context = {
+		projectRoot: base, gitCommonDir, now: () => 1000, watchers: [],
+		spawnWatcher: () => ({ pid: 1234 }), isAlive: () => true, kill: () => {},
+		persistLifecycleCheckpoint: () => true,
+	};
+	const running = await executor.execute(
+		[{ type: 'startWatcher', pr: { repo: 'owner/forge', number: 42 } }], context,
+	);
+	const stopping = await executor.execute(
+		[{ type: 'stopWatcher', pr: { repo: 'owner/forge', number: 42 } }],
+		{ ...context, now: () => 2000, watchers: running },
+	);
+	let released = false;
+	let leaseToken = null;
+	await expect(executor.runDaemon(base, {
+		gitCommonDir, once: true, broker: {}, startHeartbeat: () => ({}), stopHeartbeat: () => {},
+		acquire: (...args) => {
+			const lease = shepherdLease.acquire(...args);
+			leaseToken = lease.token;
+			return lease;
+		},
+		release: () => { released = true; },
+		convergeOnce: async () => ({
+			actions: [], desiredCount: 0,
+			watchers: await executor.execute(
+				[{ type: 'stopWatcher', pr: { repo: 'owner/forge', number: 42 } }],
+				{
+					...context, now: () => 3000, watchers: stopping, isAlive: () => false,
+					writeCleanup: () => false,
+				},
+			),
+		}),
+	})).rejects.toMatchObject({ code: 'WATCHER_CLEANUP_FAILED' });
+	expect(released).toBe(false);
+	expect(executor.readClaimMarker(base, 'owner/forge', 42, gitCommonDir)).not.toBeNull();
+	expect(shepherdCmd.terminalCleanupEvidence({
+		owner: 'owner', repo: 'forge', pr: 42, dir: path.join(base, 'journal'),
+		projectRoot: base, gitCommonDir,
+	}, { watcherRunning: () => false })).toEqual({ complete: false });
+	shepherdLease.release(base, { gitCommonDir, token: leaseToken });
 	fs.rmSync(base, { recursive: true, force: true });
 });
 
@@ -332,7 +479,10 @@ describe('execute — watcher lifecycle', () => {
 
 		const reaped = await executor.execute(
 			[{ type: 'stopWatcher', pr: { number: 5 } }],
-			{ projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32002, watchers: retried, isAlive: () => false },
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32002,
+				watchers: retried, isAlive: () => false, writeCleanup: () => true,
+			},
 		);
 		expect(reaped).toEqual([]);
 	});
@@ -467,6 +617,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
 		const common = {
 			projectRoot: '/repo', readClaim: () => 't1',
 			kill: (pid, signal) => kills.push([pid, signal || 'SIGTERM']), broker: {},
+			writeCleanup: () => true,
 		};
 		let watchers = await executor.execute(action, {
 			...common, watchers: [{ ...baseEntry }], now: () => 1_000, isAlive: () => true,
