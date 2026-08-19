@@ -356,6 +356,26 @@ describe('execute — watcher lifecycle', () => {
 		});
 	});
 
+	test('a watcher already dead at first stop still advances to cancellation and reap', async () => {
+		const first = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
+				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
+				isAlive: () => false, removeClaim: () => {},
+			},
+		);
+		expect(first[0].lifecycle.state.phase).toBe('CANCEL_REQUESTED');
+		const reaped = await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2001,
+				watchers: first, isAlive: () => false, removeClaim: () => {},
+			},
+		);
+		expect(reaped).toEqual([]);
+	});
+
 	test('resumes a persisted termination acknowledgement by reaping the dead watcher', async () => {
 		const checkpoints = [];
 		const cancelling = await executor.execute(
