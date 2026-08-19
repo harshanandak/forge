@@ -696,7 +696,8 @@ describe('execute — watcher lifecycle', () => {
 			[{ type: 'stopWatcher', pr: { number: 5 } }],
 			{
 				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32002,
-				watchers: retried, isAlive: () => false, writeCleanup: () => true,
+				watchers: retried, isAlive: () => false,
+				writeCleanup: () => true, removeClaim: () => true,
 			},
 		);
 		expect(reaped).toEqual([]);
@@ -860,7 +861,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
 		const common = {
 			projectRoot: '/repo', readClaim: () => 't1',
 			kill: (pid, signal) => kills.push([pid, signal || 'SIGTERM']), broker: {},
-			writeCleanup: () => true,
+			writeCleanup: () => true, removeClaim: () => true,
 		};
 		let watchers = await executor.execute(action, {
 			...common, watchers: [{ ...baseEntry }], now: () => 1_000, isAlive: () => true,
