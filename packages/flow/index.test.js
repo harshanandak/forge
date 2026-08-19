@@ -61,6 +61,7 @@ describe("Flow contract boundary", () => {
       createProcessLifecycle: expect.any(Function),
       createProcessState: expect.any(Function),
       reduceMonitor: expect.any(Function),
+      reduceMonitorBatch: expect.any(Function),
       reduceBoundedLoop: expect.any(Function),
       reduceProcessLifecycle: expect.any(Function),
       EfficiencySupervisor: expect.any(Function),
