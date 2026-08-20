@@ -489,6 +489,7 @@ describe('scripts/test-full-suite.js', () => {
   });
   test('strips Git hook and Forge coordination variables before spawning shards', async () => {
     let spawnedEnv;
+    const nodeExecutable = path.resolve('fixture-node');
     const processTree = {
       reserveChild: () => ({ id: 'git-env' }),
       registerChild: () => true,
@@ -505,6 +506,7 @@ describe('scripts/test-full-suite.js', () => {
       allTests: ['test/a.test.js'],
       classify: () => 'unit',
       durationMap: new Map([['test/a.test.js', 1000]]),
+      nodeExecutable,
       env: {
         KEEP_ME: 'yes',
         GIT_DIR: '.git',
@@ -520,7 +522,10 @@ describe('scripts/test-full-suite.js', () => {
     });
 
     expect(status).toBe(0);
-    expect(spawnedEnv).toEqual({ KEEP_ME: 'yes' });
+    expect(spawnedEnv).toEqual({
+      FORGE_TEST_NODE_EXECUTABLE: nodeExecutable,
+      KEEP_ME: 'yes',
+    });
   });
 
   test('spawnShard confines receipt deletion and output to the report directory', async () => {
