@@ -39,11 +39,16 @@ describe('Validate Command - Validation Orchestration', () => {
 		});
 
 		test('should handle ESLint errors', async () => {
-			const result = await runLint();
-			expect(typeof result.success).toBe('boolean');
-			if (!result.success) {
-				expect(result.errors > 0 || typeof result.message === 'string').toBe(true);
-			}
+			let invocations = 0;
+			const result = await runLint(() => {
+				invocations += 1;
+				const error = new Error('ESLint failed');
+				error.stdout = '2 problems (2 errors, 0 warnings)';
+				throw error;
+			});
+
+			expect(invocations).toBe(1);
+			expect(result).toMatchObject({ success: false, errors: 2, warnings: 0 });
 		});
 	});
 
