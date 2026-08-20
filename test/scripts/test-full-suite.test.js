@@ -139,6 +139,10 @@ describe('scripts/test-full-suite.js', () => {
     expect(classifyTestResource('test-env/edge-cases/permission-errors.test.js')).toBe('subprocess');
   });
 
+  test('serializes the Git-heavy sync authority suite', () => {
+    expect(classifyTestResource('test/sync-agent-skills-authority.test.js')).toBe('exclusive');
+  });
+
   test('follows two-hop CommonJS and ESM local imports, including cycles and index resolution', () => {
     const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-classification-'));
     const write = (name, source) => {
@@ -446,6 +450,7 @@ describe('scripts/test-full-suite.js', () => {
       'test/patch-intent.test.js',
       'test/pr-monitor/flow-monitor.test.js',
       'test/scripts/process-tree.test.js',
+      'test/sync-agent-skills-authority.test.js',
       'test/test-dashboard.test.js',
     ]);
     expect(lanes.find((lane) => lane.name === 'subprocess').shards.flatMap((shard) => shard.files))
