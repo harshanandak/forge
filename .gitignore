@@ -99,6 +99,10 @@ docs/planning/
 # written by the per-turn recall hook). Machine- and session-specific — never source.
 .forge/memory-recall/
 
+# Managed by `forge` config commands, not by hand — the protected-state gate
+# blocks direct commits, so a tracked copy can only ever be stale.
+.forge/config.yaml
+
 # Protected-state audit log (capped append-only record of blocked protected-path
 # edits, written by the pre-commit check). Machine-local — never source.
 .forge/protected-state-audit.jsonl
