@@ -191,11 +191,16 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.runFullSuite).toBe(false);
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toEqual([
+      'test/check-forge-token.test.js',
+      'test/cleanup/dropped-agent-config.test.js',
       'test/cleanup/dropped-agent-docs.test.js',
+      'test/coverage-config.test.js',
       'test/doc-assertions.test.js',
       'test/docs-consistency.test.js',
       'test/embedded-assets-drift.test.js',
+      'test/eval/eval-history.test.js',
       'test/forge-commands.test.js',
+      'test/freshness-token.test.js',
       'test/lefthook-check.test.js',
       'test/runtime-health.test.js',
       'test/scripts/preflight.test.js',
