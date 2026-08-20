@@ -10,9 +10,16 @@ const {
   createDurationMap,
   getShardPlan,
   getUnitTestRoots,
+  normalizePath,
   readNewestProfile,
   walkTests,
 } = require('./test-ci-shard');
+const {
+  buildProfile,
+  parseJUnitFiles,
+  parseJUnitTestcases,
+  walk: walkProfileFiles,
+} = require('./test-profile');
 const { createProcessTree, signalExitCode } = require('./process-tree');
 const { stripGitHookEnv } = require('./test');
 
@@ -398,17 +405,18 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
   }
 
   const lanes = [];
-  const addShardedLane = (name, cap) => {
+  const addShardedLane = (name, shardCap, concurrencyCap = shardCap) => {
     if (buckets[name].length === 0) return;
-    const concurrency = Math.min(cap, shardTotal, buckets[name].length);
+    const shardCount = Math.min(shardCap, shardTotal, buckets[name].length);
     lanes.push({
-      concurrency,
+      concurrency: Math.min(concurrencyCap, shardCount),
       name,
-      shards: buildShardSpecs(buckets[name], concurrency, durationMap),
+      shards: buildShardSpecs(buckets[name], shardCount, durationMap),
     });
   };
   addShardedLane('unit', 4);
-  addShardedLane('subprocess', 2);
+  const hasSubprocessTimings = buckets.subprocess.every((file) => durationMap.has(normalizePath(file)));
+  addShardedLane('subprocess', 2, hasSubprocessTimings ? 2 : 1);
   if (buckets.exclusive.length > 0) {
     lanes.push({
       concurrency: 1,
@@ -497,6 +505,42 @@ function parseShardReceipt(output) {
   const passed = tests - failed - errors - skipped;
   if (tests === 0 || passed < 0) return null;
   return { assertions, errors, failed, passed, skipped, tests };
+}
+
+function extractFailedTestCases(output, limit = 20) {
+  const failures = [];
+  for (const { attrs, body } of parseJUnitTestcases(output)) {
+    const type = body.match(/<(failure|error)\b/)?.[1];
+    if (!type) continue;
+    failures.push({
+      file: attrs.file || attrs.classname || 'unknown',
+      line: attrs.line || '',
+      name: attrs.name || 'unknown',
+      type,
+    });
+    if (failures.length >= limit) break;
+  }
+  return failures;
+}
+
+function writeDurationProfile({ allTests, outputPath, runReportDir }) {
+  const files = walkProfileFiles(runReportDir, '.xml');
+  if (files.length === 0) return false;
+  const metrics = parseJUnitFiles(files);
+  const measured = new Set(metrics.allFileDurations.map((entry) => normalizePath(entry.file)));
+  if (!allTests.every((file) => measured.has(normalizePath(file)))) return false;
+
+  const profile = buildProfile({ integrationSkipped: false, label: 'local-full' }, metrics);
+  const target = path.resolve(outputPath);
+  const temporary = `${target}.tmp-${process.pid}`;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(profile, null, 2));
+    fs.renameSync(temporary, target);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+  return true;
 }
 
 function aggregateShardReceipts(receipts, expectedCount) {
@@ -699,10 +743,25 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const nonzeroShards = results.filter((result) => result.code !== 0);
     if (nonzeroShards.length > 0) {
       console.error(`Full suite non-zero shards: ${nonzeroShards.map((result) => `${result.index}:${result.resource}:exit=${result.code}`).join(', ')}`);
+      const failedTests = nonzeroShards.flatMap((result) => extractFailedTestCases(result.output));
+      if (failedTests.length > 0) {
+        console.error(`Full suite failing tests: ${failedTests.map((failure) => `${failure.file}${failure.line ? `:${failure.line}` : ''} (${failure.name})`).join(', ')}`);
+      }
     }
     const aggregate = aggregateShardReceipts(results, shardSpecs.length);
     const exitCode = signal ? signalExitCode(signal) : aggregate.exitCode;
     if (signal) aggregate.status = 'INCOMPLETE';
+    if (aggregate.status !== 'INCOMPLETE') {
+      try {
+        (deps.writeDurationProfile || writeDurationProfile)({
+          allTests,
+          outputPath: deps.profileOutputPath || path.join(reportDir, 'local-full.profile.json'),
+          runReportDir,
+        });
+      } catch (error) {
+        console.warn(`Full suite profile was not updated: ${error.message}`);
+      }
+    }
     if (aggregate.status === 'PASS' && exitCode === 0) {
       fs.rmSync(runReportDir, { force: true, recursive: true });
     }
@@ -738,6 +797,7 @@ module.exports = {
   buildShardTestArgs,
   buildShardSpecs,
   classifyTestResource,
+  extractFailedTestCases,
   getDefaultShardCount,
   listAllFullSuiteTests,
   loadTestResourceMap,
@@ -747,4 +807,5 @@ module.exports = {
   runFullSuiteInParallel,
   spawnShard,
   walkAllTests,
+  writeDurationProfile,
 };

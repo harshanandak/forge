@@ -14,6 +14,7 @@ const {
   buildShardTestArgs,
   buildShardSpecs,
   classifyTestResource,
+  extractFailedTestCases,
   getDefaultShardCount,
   listAllFullSuiteTests,
   loadTestResourceMap,
@@ -21,6 +22,7 @@ const {
   runLaneSchedule,
   runFullSuiteInParallel,
   spawnShard,
+  writeDurationProfile,
 } = require('../../scripts/test-full-suite');
 const passingShardReceipt = '<testsuites tests="1" assertions="1" failures="0" skipped="0"></testsuites>';
 const unitLabelPrefix = 'unit-full-suite';
@@ -229,7 +231,7 @@ describe('scripts/test-full-suite.js', () => {
     }
   });
 
-  test('buildResourceLanePlan assigns every discovered test exactly once at 4/2/1', () => {
+  test('buildResourceLanePlan serializes cold subprocess shards until timings cover the lane', () => {
     const files = [
       ...Array.from({ length: 7 }, (_, index) => `unit-${index}.test.js`),
       ...Array.from({ length: 5 }, (_, index) => `process-${index}.test.js`),
@@ -240,22 +242,33 @@ describe('scripts/test-full-suite.js', () => {
       ? 'unit'
       : (file.startsWith('process-') ? 'subprocess' : 'exclusive');
 
-    const lanes = buildResourceLanePlan(files, 4, new Map(), { classify });
-    const assigned = lanes.flatMap((lane) => lane.shards.flatMap((shard) => shard.files));
+    const coldLanes = buildResourceLanePlan(files, 4, new Map(), { classify });
+    const assigned = coldLanes.flatMap((lane) => lane.shards.flatMap((shard) => shard.files));
 
-    expect(lanes.map(({ name, concurrency, shards }) => ({
+    expect(coldLanes.map(({ name, concurrency, shards }) => ({
       concurrency,
       name,
       shardCount: shards.length,
     }))).toEqual([
       { concurrency: 4, name: 'unit', shardCount: 4 },
-      { concurrency: 2, name: 'subprocess', shardCount: 2 },
+      { concurrency: 1, name: 'subprocess', shardCount: 2 },
       { concurrency: 1, name: 'exclusive', shardCount: 2 },
     ]);
     expect(assigned).toHaveLength(files.length);
     expect(new Set(assigned).size).toBe(files.length);
     expect(assigned.slice().sort()).toEqual(files.slice().sort());
-    expect(lanes.find((lane) => lane.name === 'exclusive').shards.every((shard) => shard.files.length === 1)).toBe(true);
+    expect(coldLanes.find((lane) => lane.name === 'exclusive').shards.every((shard) => shard.files.length === 1)).toBe(true);
+
+    const completeDurations = new Map(files.map((file, index) => [file, index + 1]));
+    const warmLanes = buildResourceLanePlan(files, 4, completeDurations, { classify });
+    expect(warmLanes.find((lane) => lane.name === 'subprocess')).toMatchObject({
+      concurrency: 2,
+      name: 'subprocess',
+    });
+
+    completeDurations.delete('process-4.test.js');
+    expect(buildResourceLanePlan(files, 4, completeDurations, { classify })
+      .find((lane) => lane.name === 'subprocess').concurrency).toBe(1);
   });
 
   test('runLaneSchedule observes unit/process/exclusive caps without timers', async () => {
@@ -943,5 +956,67 @@ describe('scripts/test-full-suite.js', () => {
     expect(aggregateShardReceipts([
       { code: 0, index: 0, output: ' ' + String.fromCharCode(10) + '<?xml version="1.0" encoding="UTF-8"?>' + String.fromCharCode(10) + passingShardReceipt + String.fromCharCode(10) },
     ], 1).status).toBe('PASS');
+  });
+
+  test('extractFailedTestCases does not attach a later failure to a self-closing testcase', () => {
+    const receipt = `<testsuites tests="2" assertions="8" failures="1" skipped="0">
+      <testsuite name="migration" file="test/kernel/migrate-events-interactions.test.js">
+        <testcase name="maps every event + interaction" file="test/kernel/migrate-events-interactions.test.js" assertions="7" />
+      </testsuite>
+      <testsuite name="commitlint" file="test/scripts/commitlint.test.js">
+        <testcase name="accepts &quot;style: fix formatting&quot;" file="test/scripts/commitlint.test.js" line="131" assertions="1"><failure type="AssertionError" /></testcase>
+      </testsuite>
+    </testsuites>`;
+
+    expect(extractFailedTestCases(receipt)).toEqual([{
+      file: 'test/scripts/commitlint.test.js',
+      line: '131',
+      name: 'accepts &quot;style: fix formatting&quot;',
+      type: 'failure',
+    }]);
+  });
+
+  test('writeDurationProfile persists only complete loadable timing coverage', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-profile-'));
+    const runDir = path.join(root, 'run');
+    const outputPath = path.join(root, 'local-full.profile.json');
+    fs.mkdirSync(runDir);
+    try {
+      fs.writeFileSync(path.join(runDir, 'shard.xml'), `<testsuites tests="1" assertions="1" failures="0" skipped="0">
+        <testsuite name="a"><testcase name="a" file="test/a.test.js" time="1.25" /></testsuite>
+      </testsuites>`);
+
+      expect(writeDurationProfile({
+        allTests: ['test/a.test.js'],
+        outputPath,
+        runReportDir: runDir,
+      })).toBe(true);
+      expect(JSON.parse(fs.readFileSync(outputPath, 'utf8')).allFileDurations).toEqual([
+        { durationMs: 1250, file: 'test/a.test.js' },
+      ]);
+
+      fs.rmSync(outputPath);
+      expect(writeDurationProfile({
+        allTests: ['test/a.test.js', 'test/missing.test.js'],
+        outputPath,
+        runReportDir: runDir,
+      })).toBe(false);
+      expect(fs.existsSync(outputPath)).toBe(false);
+
+      fs.writeFileSync(path.join(runDir, 'shard.xml'), '<not-junit />');
+      expect(writeDurationProfile({
+        allTests: ['test/a.test.js'],
+        outputPath,
+        runReportDir: runDir,
+      })).toBe(false);
+      expect(fs.existsSync(outputPath)).toBe(false);
+    } finally {
+      fs.rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  test('the manual profile command writes a discoverable profile filename', () => {
+    const profileCommand = require('../../package.json').scripts['test:profile'];
+    expect(profileCommand).toContain('--output test-results/test-profile.profile.json');
   });
 });

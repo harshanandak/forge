@@ -159,6 +159,17 @@ function finalizeSignalMetrics(metrics, fileDurations) {
   };
 }
 
+function parseJUnitTestcases(content) {
+  if (typeof content !== 'string') return [];
+  return Array.from(
+    content.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g),
+    (match) => ({
+      attrs: parseAttributes(match[1] || ''),
+      body: match[2] || '',
+    }),
+  );
+}
+
 function parseJUnitFiles(files) {
   const fileDurations = new Map();
   const timedOutFiles = new Set();
@@ -177,9 +188,7 @@ function parseJUnitFiles(files) {
       suiteDurationMs += Math.round(Number.parseFloat(attrs.time || '0') * 1000);
     }
 
-    for (const caseMatch of content.matchAll(/<testcase\b([^>]*)>([\s\S]*?)<\/testcase>|<testcase\b([^>]*)\/>/g)) {
-      const attrs = parseAttributes(caseMatch[1] || caseMatch[3] || '');
-      const body = caseMatch[2] || '';
+    for (const { attrs, body } of parseJUnitTestcases(content)) {
       const durationMs = Math.round(Number.parseFloat(attrs.time || '0') * 1000);
       const fallbackFile = path.basename(file);
       const testcase = classifyTestcase({
@@ -273,6 +282,7 @@ module.exports = {
   parseArgs,
   parseAttributes,
   parseJUnitFiles,
+  parseJUnitTestcases,
   selectPrimaryBucket,
   walk,
 };
