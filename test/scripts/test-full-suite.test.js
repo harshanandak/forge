@@ -415,6 +415,7 @@ describe('scripts/test-full-suite.js', () => {
       'test/patch-intent.test.js',
       'test/pr-monitor/flow-monitor.test.js',
       'test/scripts/process-tree.test.js',
+      'test/test-dashboard.test.js',
     ]);
     expect(lanes.find((lane) => lane.name === 'subprocess').shards.flatMap((shard) => shard.files))
       .toContain('test/scripts/dep-guard.check-ripple.analyzer.test.js');
