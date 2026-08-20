@@ -303,7 +303,7 @@ function createTestResourceClassifier(options = {}) {
     const cacheKey = `${fromFile}\0${specifier}`;
     if (resolutionCache.has(cacheKey)) return resolutionCache.get(cacheKey);
     const base = path.resolve(path.dirname(fromFile), specifier);
-    if (!isWithinRoot(root, base)) {
+    if (!isWithinRoot(realRoot, base)) {
       resolutionCache.set(cacheKey, null);
       return null;
     }

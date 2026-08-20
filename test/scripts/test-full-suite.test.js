@@ -231,6 +231,37 @@ describe('scripts/test-full-suite.js', () => {
     }
   });
 
+  test('resolves transitive imports through a canonicalized root alias', async () => {
+    const fixtureParent = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-realpath-'));
+    const physicalRoot = path.join(fixtureParent, 'physical');
+    const rootAlias = path.join(fixtureParent, 'logical');
+    const reads = [];
+
+    try {
+      fs.mkdirSync(physicalRoot);
+      const canonicalRoot = fs.realpathSync(physicalRoot);
+      fs.symlinkSync(physicalRoot, rootAlias, process.platform === 'win32' ? 'junction' : 'dir');
+      fs.writeFileSync(path.join(physicalRoot, 'entry.test.js'), "require('./shared');\n");
+      fs.writeFileSync(path.join(physicalRoot, 'shared.js'), "require('node:child_process');\n");
+
+      const resources = await loadTestResourceMap(['entry.test.js'], {
+        readFile(target) {
+          reads.push(fs.realpathSync(target));
+          return fs.readFileSync(target, 'utf8');
+        },
+        root: rootAlias,
+      });
+
+      expect(resources.get('entry.test.js')).toBe('subprocess');
+      expect(reads).toEqual([
+        path.join(canonicalRoot, 'entry.test.js'),
+        path.join(canonicalRoot, 'shared.js'),
+      ]);
+    } finally {
+      fs.rmSync(fixtureParent, { recursive: true, force: true });
+    }
+  });
+
   test('buildResourceLanePlan serializes cold subprocess shards until timings cover the lane', () => {
     const files = [
       ...Array.from({ length: 7 }, (_, index) => `unit-${index}.test.js`),
