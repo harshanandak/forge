@@ -405,6 +405,10 @@ async function loadTestResourceMap(allTests, options = {}) {
 
 function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), options = {}) {
   const classify = options.classify || ((file) => classifyTestResource(file, options));
+  const subprocessShardTotal = Number.isInteger(options.subprocessShardTotal)
+    && options.subprocessShardTotal > 0
+    ? options.subprocessShardTotal
+    : shardTotal;
   const buckets = {
     exclusive: [],
     subprocess: [],
@@ -429,8 +433,15 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
     });
   };
   addShardedLane('unit', 4);
-  const hasSubprocessTimings = buckets.subprocess.every((file) => durationMap.has(normalizePath(file)));
-  addShardedLane('subprocess', 2, hasSubprocessTimings ? 2 : 1);
+  if (buckets.subprocess.length > 0) {
+    const shardCount = Math.min(subprocessShardTotal, buckets.subprocess.length);
+    lanes.push({
+      concurrency: Math.min(3, shardCount),
+      name: 'subprocess',
+      // Extra shards improve tail balancing without increasing the worker budget.
+      shards: buildShardSpecs(buckets.subprocess, shardCount, durationMap),
+    });
+  }
   if (buckets.exclusive.length > 0) {
     lanes.push({
       concurrency: 1,
@@ -726,6 +737,9 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const shardTotal = Number.isInteger(args.shards) && args.shards > 0
       ? args.shards
       : getDefaultShardCount(deps.cpuCount);
+    const subprocessShardTotal = Number.isInteger(args.shards) && args.shards > 0
+      ? shardTotal
+      : Math.max(6, shardTotal);
     const profile = deps.profile || readNewestProfile(reportDir);
     const durationMap = deps.durationMap || createDurationMap(profile);
     const resourceMap = deps.classify
@@ -737,6 +751,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
       });
     const lanePlan = buildResourceLanePlan(allTests, shardTotal, durationMap, {
       classify: deps.classify || ((file) => resourceMap.get(file)),
+      subprocessShardTotal,
     });
     const shardSpecs = lanePlan.flatMap((lane) => lane.shards);
 

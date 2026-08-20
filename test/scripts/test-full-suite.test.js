@@ -276,10 +276,10 @@ describe('scripts/test-full-suite.js', () => {
     }
   });
 
-  test('buildResourceLanePlan serializes cold subprocess shards until timings cover the lane', () => {
+  test('buildResourceLanePlan keeps a four-worker shared budget with balanced subprocess shards', () => {
     const files = [
       ...Array.from({ length: 7 }, (_, index) => `unit-${index}.test.js`),
-      ...Array.from({ length: 5 }, (_, index) => `process-${index}.test.js`),
+      ...Array.from({ length: 8 }, (_, index) => `process-${index}.test.js`),
       'exclusive-0.test.js',
       'exclusive-1.test.js',
     ];
@@ -287,7 +287,10 @@ describe('scripts/test-full-suite.js', () => {
       ? 'unit'
       : (file.startsWith('process-') ? 'subprocess' : 'exclusive');
 
-    const coldLanes = buildResourceLanePlan(files, 4, new Map(), { classify });
+    const coldLanes = buildResourceLanePlan(files, 4, new Map(), {
+      classify,
+      subprocessShardTotal: 6,
+    });
     const assigned = coldLanes.flatMap((lane) => lane.shards.flatMap((shard) => shard.files));
 
     expect(coldLanes.map(({ name, concurrency, shards }) => ({
@@ -296,7 +299,7 @@ describe('scripts/test-full-suite.js', () => {
       shardCount: shards.length,
     }))).toEqual([
       { concurrency: 4, name: 'unit', shardCount: 4 },
-      { concurrency: 1, name: 'subprocess', shardCount: 2 },
+      { concurrency: 3, name: 'subprocess', shardCount: 6 },
       { concurrency: 1, name: 'exclusive', shardCount: 2 },
     ]);
     expect(assigned).toHaveLength(files.length);
@@ -305,55 +308,79 @@ describe('scripts/test-full-suite.js', () => {
     expect(coldLanes.find((lane) => lane.name === 'exclusive').shards.every((shard) => shard.files.length === 1)).toBe(true);
 
     const completeDurations = new Map(files.map((file, index) => [file, index + 1]));
-    const warmLanes = buildResourceLanePlan(files, 4, completeDurations, { classify });
+    const warmLanes = buildResourceLanePlan(files, 4, completeDurations, {
+      classify,
+      subprocessShardTotal: 6,
+    });
     expect(warmLanes.find((lane) => lane.name === 'subprocess')).toMatchObject({
-      concurrency: 2,
+      concurrency: 3,
       name: 'subprocess',
     });
+    expect(warmLanes.find((lane) => lane.name === 'subprocess').shards).toHaveLength(6);
 
-    completeDurations.delete('process-4.test.js');
-    expect(buildResourceLanePlan(files, 4, completeDurations, { classify })
-      .find((lane) => lane.name === 'subprocess').concurrency).toBe(1);
+    completeDurations.delete('process-7.test.js');
+    expect(buildResourceLanePlan(files, 4, completeDurations, {
+      classify,
+      subprocessShardTotal: 6,
+    })
+      .find((lane) => lane.name === 'subprocess').concurrency).toBe(3);
+
+    const explicitlyCapped = buildResourceLanePlan(files, 1, completeDurations, { classify });
+    expect(explicitlyCapped.find((lane) => lane.name === 'unit').shards).toHaveLength(1);
+    expect(explicitlyCapped.find((lane) => lane.name === 'subprocess')).toMatchObject({
+      concurrency: 1,
+      shards: [expect.any(Object)],
+    });
   });
 
   test('runLaneSchedule observes unit/process/exclusive caps without timers', async () => {
     const probe = executionProbe();
     const lanes = [
       { name: 'unit', concurrency: 4, shards: ['u0', 'u1', 'u2', 'u3'].map((id) => ({ id })) },
-      { name: 'subprocess', concurrency: 2, shards: ['s0', 's1', 's2'].map((id) => ({ id })) },
+      { name: 'subprocess', concurrency: 3, shards: ['s0', 's1', 's2', 's3', 's4', 's5'].map((id) => ({ id })) },
       { name: 'exclusive', concurrency: 1, shards: ['e0', 'e1'].map((id) => ({ id })) },
     ];
     const scheduled = runLaneSchedule(lanes, probe.execute);
 
-    await probe.waitForStarted(3);
-    expect(probe.started).toEqual(['u0', 's0', 's1']);
-    probe.release('s0');
     await probe.waitForStarted(4);
-    expect(probe.started.at(-1)).toBe('s2');
+    expect(probe.started).toEqual(['u0', 's0', 's1', 's2']);
+    expect(probe.active.size).toBe(4);
+    probe.release('s0');
+    await probe.waitForStarted(5);
+    expect(probe.started.at(-1)).toBe('s3');
     probe.release('s1');
+    await probe.waitForStarted(6);
+    expect(probe.started.at(-1)).toBe('s4');
     probe.release('s2');
+    await probe.waitForStarted(7);
+    expect(probe.started.at(-1)).toBe('s5');
+    probe.release('s3');
+    probe.release('s4');
+    probe.release('s5');
     expect(probe.started).not.toContain('e0');
 
     for (const [index, id] of ['u0', 'u1', 'u2', 'u3'].entries()) {
       probe.release(id);
       if (index < 3) {
-        await probe.waitForStarted(5 + index);
+        await probe.waitForStarted(8 + index);
         expect(probe.started.at(-1)).toBe(`u${index + 1}`);
       }
     }
 
-    await probe.waitForStarted(8);
+    await probe.waitForStarted(11);
     expect(probe.started.at(-1)).toBe('e0');
     expect(probe.started).not.toContain('e1');
     probe.release('e0');
-    await probe.waitForStarted(9);
+    await probe.waitForStarted(12);
     expect(probe.started.at(-1)).toBe('e1');
     probe.release('e1');
 
-    expect(await scheduled).toEqual(['u0', 'u1', 'u2', 'u3', 's0', 's1', 's2', 'e0', 'e1']);
+    expect(await scheduled).toEqual([
+      'u0', 'u1', 'u2', 'u3', 's0', 's1', 's2', 's3', 's4', 's5', 'e0', 'e1',
+    ]);
     expect(probe.maxActiveByLane).toEqual(new Map([
       ['unit', 1],
-      ['subprocess', 2],
+      ['subprocess', 3],
       ['exclusive', 1],
     ]));
   });
