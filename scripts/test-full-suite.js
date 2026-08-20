@@ -32,6 +32,20 @@ const RESOURCE_LANE_RANK = new Map([
   ['exclusive', 2],
 ]);
 const JS_FAMILY_EXTENSIONS = ['.js', '.cjs', '.mjs', '.jsx', '.ts', '.cts', '.mts', '.tsx'];
+const FORGE_COORDINATION_ENV = new Set([
+  'FORGE_ACTOR',
+  'FORGE_SESSION_ID',
+  'FORGE_WORKTREE_ID',
+  'FORGE_LEASE_TTL_MS',
+]);
+
+function stripFullSuiteChildEnv(env) {
+  const childEnv = stripGitHookEnv(env);
+  for (const key of Object.keys(childEnv)) {
+    if (FORGE_COORDINATION_ENV.has(key.toUpperCase())) delete childEnv[key];
+  }
+  return childEnv;
+}
 
 function parseArgs(argv) {
   const args = {
@@ -715,7 +729,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     for (const lane of lanePlan) {
       console.log(`Resource lane ${lane.name}: files=${lane.shards.reduce((total, shard) => total + shard.files.length, 0)} shards=${lane.shards.length} concurrency=${lane.concurrency}`);
     }
-    const childEnv = stripGitHookEnv(
+    const childEnv = stripFullSuiteChildEnv(
       typeof processTree.envFor === 'function' ? processTree.envFor(env) : env,
     );
     let results;

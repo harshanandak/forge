@@ -139,11 +139,6 @@ describe('scripts/test-full-suite.js', () => {
     expect(classifyTestResource('test-env/edge-cases/permission-errors.test.js')).toBe('subprocess');
   });
 
-  test('isolates issue-service suites that exercise process-global broker state', () => {
-    expect(classifyTestResource('test/forge-issues-sync.test.js')).toBe('exclusive');
-    expect(classifyTestResource('test/forge-issues.test.js')).toBe('exclusive');
-  });
-
   test('follows two-hop CommonJS and ESM local imports, including cycles and index resolution', () => {
     const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-classification-'));
     const write = (name, source) => {
@@ -415,8 +410,6 @@ describe('scripts/test-full-suite.js', () => {
     expect(assigned.slice().sort()).toEqual(files);
     expect(lanes.find((lane) => lane.name === 'exclusive').shards.flatMap((shard) => shard.files)).toEqual([
       'test-env/edge-cases/file-limits.test.js',
-      'test/forge-issues-sync.test.js',
-      'test/forge-issues.test.js',
       'test/hooks-session-start.test.js',
       'test/integration/standalone-package-smoke.test.js',
       'test/patch-intent.test.js',
@@ -494,7 +487,7 @@ describe('scripts/test-full-suite.js', () => {
       }
     }
   });
-  test('strips Git hook environment variables before spawning shards', async () => {
+  test('strips Git hook and Forge coordination variables before spawning shards', async () => {
     let spawnedEnv;
     const processTree = {
       reserveChild: () => ({ id: 'git-env' }),
@@ -517,6 +510,10 @@ describe('scripts/test-full-suite.js', () => {
         GIT_DIR: '.git',
         GIT_WORK_TREE: 'C:/stale-worktree',
         GIT_INDEX_FILE: 'C:/stale-index',
+        Forge_Actor: 'lease-owner',
+        forge_session_id: 'session-owner',
+        Forge_Worktree_Id: 'worktree-owner',
+        forge_lease_ttl_ms: '60000',
       },
       processTree,
       spawn,

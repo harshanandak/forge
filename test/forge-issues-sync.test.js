@@ -1,7 +1,5 @@
 'use strict';
 
-// forge-test-resource: exclusive
-
 const { describe, expect, test } = require('bun:test');
 
 const { createGitHubProjectionPlan } = require('../lib/issue-sync/project-github');
