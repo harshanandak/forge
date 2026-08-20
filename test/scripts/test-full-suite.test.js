@@ -139,7 +139,8 @@ describe('scripts/test-full-suite.js', () => {
     expect(classifyTestResource('test-env/edge-cases/permission-errors.test.js')).toBe('subprocess');
   });
 
-  test('serializes the Git-heavy sync authority suite', () => {
+  test('serializes process-heavy reliability suites', () => {
+    expect(classifyTestResource('test/scripts/commitlint.test.js')).toBe('exclusive');
     expect(classifyTestResource('test/sync-agent-skills-authority.test.js')).toBe('exclusive');
   });
 
@@ -449,6 +450,7 @@ describe('scripts/test-full-suite.js', () => {
       'test/integration/standalone-package-smoke.test.js',
       'test/patch-intent.test.js',
       'test/pr-monitor/flow-monitor.test.js',
+      'test/scripts/commitlint.test.js',
       'test/scripts/process-tree.test.js',
       'test/sync-agent-skills-authority.test.js',
       'test/test-dashboard.test.js',

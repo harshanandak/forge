@@ -1,3 +1,4 @@
+// forge-test-resource: exclusive
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
