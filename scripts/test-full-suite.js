@@ -450,14 +450,13 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
   return lanes;
 }
 
-async function runLaneSchedule(lanes, execute) {
-  const results = [];
-  for (const lane of lanes) {
+async function runLaneSchedule(lanes, execute, cancel = () => {}) {
+  const runLane = async (lane, concurrency = lane.concurrency, schedule = { stopped: false }) => {
     const laneResults = new Array(lane.shards.length);
     let nextIndex = 0;
     let stopped = false;
     const worker = async () => {
-      while (!stopped) {
+      while (!stopped && !schedule.stopped) {
         const index = nextIndex;
         nextIndex += 1;
         if (index >= lane.shards.length) return;
@@ -465,18 +464,44 @@ async function runLaneSchedule(lanes, execute) {
           laneResults[index] = await execute(lane.shards[index], lane);
         } catch (error) {
           stopped = true;
+          if (!schedule.stopped) {
+            schedule.stopped = true;
+            cancel(error);
+          }
           throw error;
         }
       }
     };
     const workers = Array.from(
-      { length: Math.min(lane.concurrency, lane.shards.length) },
+      { length: Math.min(concurrency, lane.shards.length) },
       () => worker(),
     );
-    await Promise.all(workers);
-    results.push(...laneResults);
+    const settled = await Promise.allSettled(workers);
+    const failure = settled.find((result) => result.status === 'rejected');
+    if (failure) throw failure.reason;
+    return laneResults;
+  };
+
+  const resultsByLane = new Map();
+  const sharedLanes = lanes.filter((lane) => lane.name !== 'exclusive');
+  const overlapsSubprocess = sharedLanes.some((lane) => lane.name === 'subprocess');
+  const sharedSchedule = { stopped: false };
+  const settledSharedLanes = await Promise.allSettled(sharedLanes.map(async (lane) => {
+    // One unit worker fills otherwise-idle CPU without recreating broad process pressure.
+    const concurrency = overlapsSubprocess && lane.name === 'unit' ? 1 : lane.concurrency;
+    resultsByLane.set(lane, await runLane(lane, concurrency, sharedSchedule));
+  }));
+  const sharedFailure = settledSharedLanes.find((result) => result.status === 'rejected');
+  if (sharedFailure) throw sharedFailure.reason;
+
+  for (const lane of lanes.filter((candidate) => candidate.name === 'exclusive')) {
+    resultsByLane.set(lane, await runLane(lane));
   }
-  return results;
+  return lanes.flatMap((lane) => {
+    const laneResults = resultsByLane.get(lane);
+    if (!laneResults) throw new Error(`Missing results for resource lane ${lane.name}`);
+    return laneResults;
+  });
 }
 
 function buildShardTestArgs({ junitPath, files, root = rootDir }) {
@@ -691,6 +716,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
   const processTree = deps.processTree || createProcessTree({ env, platform });
   let signal = null;
   let completed = false;
+  let scheduleCancelled = false;
   const removeSignalHandlers = processTree.installSignalHandlers((received) => {
     signal = received;
   });
@@ -752,7 +778,11 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
           processTree,
         }),
         resource: lane.name,
-      }));
+      }), () => {
+        if (scheduleCancelled) return;
+        scheduleCancelled = true;
+        processTree.cleanup('SIGKILL');
+      });
     } catch (error) {
       console.error('Full suite shard execution failed:', error);
       const exitCode = signal ? signalExitCode(signal) : 1;
@@ -792,7 +822,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     return exitCode;
   } finally {
     removeSignalHandlers();
-    processTree.cleanup(signal || !completed ? 'SIGKILL' : 'SIGTERM');
+    if (!scheduleCancelled) processTree.cleanup(signal || !completed ? 'SIGKILL' : 'SIGTERM');
   }
 }
 

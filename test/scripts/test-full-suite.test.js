@@ -68,11 +68,17 @@ function executionProbe() {
   return {
     active,
     maxActiveByLane,
+    reject(id, error) {
+      const release = releases.get(id);
+      if (!release) throw new Error(`Task ${id} has not started`);
+      releases.delete(id);
+      release.reject(error);
+    },
     release(id) {
       const release = releases.get(id);
       if (!release) throw new Error(`Task ${id} has not started`);
       releases.delete(id);
-      release();
+      release.resolve();
     },
     started,
     waitForStarted(count) {
@@ -85,9 +91,12 @@ function executionProbe() {
       const laneActive = [...active].filter((id) => id.startsWith(lane.name[0])).length;
       maxActiveByLane.set(lane.name, Math.max(maxActiveByLane.get(lane.name) || 0, laneActive));
       notify();
-      await new Promise((resolve) => releases.set(task.id, resolve));
-      active.delete(task.id);
-      return task.id;
+      try {
+        await new Promise((resolve, reject) => releases.set(task.id, { reject, resolve }));
+        return task.id;
+      } finally {
+        active.delete(task.id);
+      }
     },
   };
 }
@@ -316,17 +325,22 @@ describe('scripts/test-full-suite.js', () => {
     ];
     const scheduled = runLaneSchedule(lanes, probe.execute);
 
-    await probe.waitForStarted(4);
-    expect(probe.started).toEqual(['u0', 'u1', 'u2', 'u3']);
-    for (const id of ['u0', 'u1', 'u2', 'u3']) probe.release(id);
-
-    await probe.waitForStarted(6);
-    expect(probe.started).toEqual(['u0', 'u1', 'u2', 'u3', 's0', 's1']);
+    await probe.waitForStarted(3);
+    expect(probe.started).toEqual(['u0', 's0', 's1']);
     probe.release('s0');
-    await probe.waitForStarted(7);
+    await probe.waitForStarted(4);
     expect(probe.started.at(-1)).toBe('s2');
     probe.release('s1');
     probe.release('s2');
+    expect(probe.started).not.toContain('e0');
+
+    for (const [index, id] of ['u0', 'u1', 'u2', 'u3'].entries()) {
+      probe.release(id);
+      if (index < 3) {
+        await probe.waitForStarted(5 + index);
+        expect(probe.started.at(-1)).toBe(`u${index + 1}`);
+      }
+    }
 
     await probe.waitForStarted(8);
     expect(probe.started.at(-1)).toBe('e0');
@@ -338,10 +352,30 @@ describe('scripts/test-full-suite.js', () => {
 
     expect(await scheduled).toEqual(['u0', 'u1', 'u2', 'u3', 's0', 's1', 's2', 'e0', 'e1']);
     expect(probe.maxActiveByLane).toEqual(new Map([
-      ['unit', 4],
+      ['unit', 1],
       ['subprocess', 2],
       ['exclusive', 1],
     ]));
+  });
+
+  test('runLaneSchedule settles in-flight shared work before propagating a failure', async () => {
+    const probe = executionProbe();
+    const scheduled = runLaneSchedule([
+      { name: 'unit', concurrency: 4, shards: ['u0', 'u1'].map((id) => ({ id })) },
+      { name: 'subprocess', concurrency: 2, shards: ['s0', 's1', 's2'].map((id) => ({ id })) },
+      { name: 'exclusive', concurrency: 1, shards: [{ id: 'e0' }] },
+    ], probe.execute);
+
+    await probe.waitForStarted(3);
+    expect(probe.started).toEqual(['u0', 's0', 's1']);
+    probe.reject('s0', new Error('subprocess failed'));
+    await Promise.resolve();
+    probe.release('u0');
+    probe.release('s1');
+
+    await expect(scheduled).rejects.toThrow('subprocess failed');
+    expect(probe.started).toEqual(['u0', 's0', 's1']);
+    expect(probe.active.size).toBe(0);
   });
 
   test('passes absolute shard files to Bun children', async () => {
@@ -801,6 +835,7 @@ describe('scripts/test-full-suite.js', () => {
 
   test('runFullSuiteInParallel preserves a captured signal when a shard errors and a sibling hangs', async () => {
     const cleanupSignals = [];
+    const children = [];
     const logs = [];
     let childIndex = 0;
     let timeout;
@@ -812,7 +847,10 @@ describe('scripts/test-full-suite.js', () => {
         handler('SIGTERM');
         return () => {};
       },
-      cleanup: (signal) => cleanupSignals.push(signal),
+      cleanup: (signal) => {
+        cleanupSignals.push(signal);
+        for (const child of children) child.emit('close', 1);
+      },
     };
     const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
 
@@ -834,6 +872,7 @@ describe('scripts/test-full-suite.js', () => {
               });
             }
             childIndex += 1;
+            children.push(child);
             return child;
           },
         }),
