@@ -139,6 +139,11 @@ describe('scripts/test-full-suite.js', () => {
     expect(classifyTestResource('test-env/edge-cases/permission-errors.test.js')).toBe('subprocess');
   });
 
+  test('isolates issue-service suites that exercise process-global broker state', () => {
+    expect(classifyTestResource('test/forge-issues-sync.test.js')).toBe('exclusive');
+    expect(classifyTestResource('test/forge-issues.test.js')).toBe('exclusive');
+  });
+
   test('follows two-hop CommonJS and ESM local imports, including cycles and index resolution', () => {
     const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-classification-'));
     const write = (name, source) => {
@@ -410,6 +415,8 @@ describe('scripts/test-full-suite.js', () => {
     expect(assigned.slice().sort()).toEqual(files);
     expect(lanes.find((lane) => lane.name === 'exclusive').shards.flatMap((shard) => shard.files)).toEqual([
       'test-env/edge-cases/file-limits.test.js',
+      'test/forge-issues-sync.test.js',
+      'test/forge-issues.test.js',
       'test/hooks-session-start.test.js',
       'test/integration/standalone-package-smoke.test.js',
       'test/patch-intent.test.js',
