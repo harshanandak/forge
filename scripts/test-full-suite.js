@@ -773,15 +773,15 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const childEnv = stripFullSuiteChildEnv(
       typeof processTree.envFor === 'function' ? processTree.envFor(env) : env,
     );
-    const nodeExecutable = deps.nodeExecutable ?? (
-      process.versions.bun ? globalThis.Bun?.which?.('node') : process.execPath
-    );
-    if (typeof nodeExecutable !== 'string' || !path.isAbsolute(nodeExecutable)) {
-      throw new Error('Full suite requires an absolute Node executable');
-    }
-    childEnv.FORGE_TEST_NODE_EXECUTABLE = nodeExecutable;
     let results;
     try {
+      const nodeExecutable = deps.nodeExecutable ?? (
+        process.versions.bun ? globalThis.Bun?.which?.('node') : process.execPath
+      );
+      if (typeof nodeExecutable !== 'string' || !path.isAbsolute(nodeExecutable)) {
+        throw new Error('Full suite requires an absolute Node executable');
+      }
+      childEnv.FORGE_TEST_NODE_EXECUTABLE = nodeExecutable;
       results = await runLaneSchedule(lanePlan, async (shard, lane) => ({
         ...await spawnShard(shard, {
           bunCommand: deps.bunCommand,

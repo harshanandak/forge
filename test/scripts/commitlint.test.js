@@ -76,6 +76,26 @@ describe('scripts/commitlint.js', () => {
       const result = runWithNoArgs();
       expect(result.stderr).toContain('No commit message file provided');
     });
+
+    test('treats a signaled commitlint child as a failure', () => {
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'commitlint-signal-'));
+      const preload = path.join(fixture, 'patch-child-process.js');
+      const message = path.join(fixture, 'COMMIT_EDITMSG');
+      fs.writeFileSync(preload, [
+        "const childProcess = require('node:child_process');",
+        "childProcess.spawnSync = () => ({ status: null, signal: 'SIGTERM' });",
+      ].join('\n'));
+      fs.writeFileSync(message, 'fix: interrupted validation');
+      try {
+        const result = spawnSync(process.execPath, ['--require', preload, SCRIPT, message], {
+          cwd: PROJECT_ROOT,
+          encoding: 'utf-8',
+        });
+        expect(result.status).not.toBe(0);
+      } finally {
+        fs.rmSync(fixture, { force: true, recursive: true });
+      }
+    });
   });
 
   describe('valid commit messages (happy path)', () => {

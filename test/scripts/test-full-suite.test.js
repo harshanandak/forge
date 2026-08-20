@@ -972,6 +972,36 @@ describe('scripts/test-full-suite.js', () => {
     expect(logs).toContain('Full suite exit: 1');
   });
 
+  test('missing Node executable follows the incomplete aggregate path without spawning', async () => {
+    const logs = [];
+    const errors = [];
+    let spawned = false;
+    const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
+    const error = spyOn(console, 'error').mockImplementation((...messages) => errors.push(messages));
+    try {
+      const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
+        allTests: ['test/a.test.js'],
+        classify: () => 'unit',
+        durationMap: new Map(),
+        nodeExecutable: 'node',
+        processTree: fakeProcessTree(),
+        spawn: () => {
+          spawned = true;
+          throw new Error('spawn must not run');
+        },
+      });
+      expect(status).toBe(1);
+    } finally {
+      error.mockRestore();
+      log.mockRestore();
+    }
+
+    expect(spawned).toBe(false);
+    expect(errors[0][0]).toBe('Full suite shard execution failed:');
+    expect(logs).toContain('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+    expect(logs).toContain('Full suite exit: 1');
+  });
+
   test('zero discovery preserves captured signal exits while remaining incomplete', async () => {
     for (const [signal, expectedExit] of [['SIGINT', 130], ['SIGTERM', 143]]) {
       const logs = [];
