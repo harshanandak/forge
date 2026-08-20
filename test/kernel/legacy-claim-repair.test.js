@@ -8,6 +8,7 @@ const { PassThrough } = require('node:stream');
 const { afterEach, describe, expect, test } = require('bun:test');
 
 const { createLocalBroker } = require('../../lib/kernel/broker');
+const { extractEmbeddedAssets } = require('../../lib/package-root');
 const {
 	createBuiltinSQLiteDriver,
 	hardenBackupPermissions,
@@ -216,20 +217,32 @@ describe('legacy claim repair preflight', () => {
 		})).rejects.toThrow('owner-only permissions');
 	});
 
-	test('fails before reading the cscript asset in the standalone binary', async () => {
-		let readAsset = false;
-		let spawned = false;
-		await expect(secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
+	test('uses the extracted cscript asset in the standalone binary', async () => {
+		const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-compiled-acl-'));
+		tempDirs.push(packageRoot);
+		extractEmbeddedAssets(packageRoot, {
+			'lib/kernel/windows-private-acl.js': WINDOWS_PRIVATE_ACL_SCRIPT_PATH,
+		});
+		const invocations = [];
+		await secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
 			runtime: 'bun',
 			environment: { SystemRoot: 'C:\\Windows' },
 			isCompiledBinary: () => true,
-			fsApi: {
-				readFileSync() { readAsset = true; throw new Error('asset must not be read'); },
+			packageRoot,
+			bunSpawn(command) {
+				invocations.push(command);
+				return {
+					exited: Promise.resolve(0),
+					kill() {},
+					stdout: command[0].endsWith('whoami.exe')
+						? new Blob(['"runner","S-1-5-21-1-2-3-4"\r\n']).stream()
+						: undefined,
+				};
 			},
-			bunSpawn() { spawned = true; throw new Error('child must not spawn'); },
-		})).rejects.toThrow('bun scripts/legacy-claim-repair.js');
-		expect(readAsset).toBe(false);
-		expect(spawned).toBe(false);
+		});
+		const extractedScript = path.join(packageRoot, 'lib', 'kernel', 'windows-private-acl.js');
+		expect(fs.readFileSync(extractedScript)).toEqual(fs.readFileSync(WINDOWS_PRIVATE_ACL_SCRIPT_PATH));
+		expect(invocations[1]).toContain(extractedScript);
 	});
 
 	test('uses direct bounded whoami and cscript children with one shared Bun deadline', async () => {
