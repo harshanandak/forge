@@ -2377,6 +2377,35 @@ describe('watch owner successful-result postcondition validation', () => {
 		expect(result.ok).toBe(false);
 	});
 
+	test('rejects gate completions whose checkpoint timestamp did not advance', async () => {
+		await seedGate({ repo: 'acme/forge', pr: 963 });
+		await owner.bindMigrationSnapshot({ snapshotHash: HASH, updatedAt: NOW }, authorityOpts());
+		const result = await owner.completeMigrationGate({ snapshotHash: HASH, updatedAt: LATER }, authorityOpts({
+			...driver,
+			watchGateCompleteMigration: () => ({
+				ok: true, changed: true, reason: 'complete',
+				gate: { singleton: 1, state: 'complete', snapshot_hash: HASH, conflict_code: null, updated_at: NOW },
+			}),
+		}));
+		expect(result.gate).toBeNull();
+		expect(result.ok).toBe(false);
+	});
+
+	test('never exposes converted records from failed enumeration envelopes', async () => {
+		const validRow = {
+			repo: 'acme/forge', pr: 964, version: 1, generation: 'generation-964', phase: 'starting',
+			controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: NOW, updated_at: NOW,
+			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
+		};
+		const result = await owner.enumerateOwners(null, authorityOpts({
+			...driver,
+			watchOwnerList: () => ({ ok: false, changed: false, reason: 'authority_unavailable', rows: [validRow] }),
+		}));
+		expect(result).toEqual({
+			ok: false, changed: false, reason: 'authority_unavailable', records: [],
+		});
+	});
+
 	test('rejects read successes that claim corrupt or arbitrary reasons for null rows', async () => {
 		const ctx = { repo: 'acme/forge', pr: 960 };
 		const result = await owner.readOwner(ctx, authorityOpts({
