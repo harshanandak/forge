@@ -1820,7 +1820,7 @@ describe('watch owner successful-result postcondition validation', () => {
 					generation: prior.generation, controllerPid: CONTROLLER_PID, pid: WATCHER_PID, updatedAt: LATER,
 				}, opts);
 			},
-			expect: { changed: true, reason: 'bound' }, replay: true,
+			expect: { changed: true, reason: 'bound' }, replay: true, stampsNow: true,
 			assertSuccess(result, prior) {
 				expect(result.record.phase).toBe('running');
 				expect(result.record.controllerPid).toBeNull();
@@ -1840,7 +1840,7 @@ describe('watch owner successful-result postcondition validation', () => {
 					generation: prior.generation, pid: WATCHER_PID, updatedAt: NEXT,
 				}, opts);
 			},
-			expect: { changed: true, reason: 'heartbeat' }, forbidIdempotent: true,
+			expect: { changed: true, reason: 'heartbeat' }, forbidIdempotent: true, stampsNow: true,
 			assertSuccess(result, prior) {
 				expect(result.record.phase).toBe('running');
 				expect(result.record.watcherPid).toBe(WATCHER_PID);
@@ -1859,7 +1859,7 @@ describe('watch owner successful-result postcondition validation', () => {
 					generation: prior.generation, pid: WATCHER_PID, updatedAt: NEXT,
 				}, opts);
 			},
-			expect: { changed: true, reason: 'stop_requested' }, replay: true,
+			expect: { changed: true, reason: 'stop_requested' }, replay: true, stampsNow: true,
 			assertSuccess(result, prior) {
 				expect(result.record.phase).toBe('stop_requested');
 				expect(result.record.watcherPid).toBe(WATCHER_PID);
@@ -1878,7 +1878,7 @@ describe('watch owner successful-result postcondition validation', () => {
 					generation: prior.generation, pid: WATCHER_PID, terminalReceiptId: RECEIPT_ID, updatedAt: NEXT,
 				}, opts);
 			},
-			expect: { changed: true, reason: 'terminal_pending' }, replay: true,
+			expect: { changed: true, reason: 'terminal_pending' }, replay: true, stampsNow: true,
 			assertSuccess(result, prior) {
 				expect(result.record.phase).toBe('terminal_pending');
 				expect(result.record.terminalReceiptId).toBe(RECEIPT_ID);
@@ -1898,7 +1898,7 @@ describe('watch owner successful-result postcondition validation', () => {
 					generation: prior.generation, pid: WATCHER_PID, terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
 				}, opts);
 			},
-			expect: { changed: true, reason: 'complete' }, replay: true,
+			expect: { changed: true, reason: 'complete' }, replay: true, stampsNow: true,
 			assertSuccess(result, prior) {
 				expect(result.record.phase).toBe('complete');
 				expect(result.record.watcherPid).toBeNull();
@@ -2046,7 +2046,7 @@ describe('watch owner successful-result postcondition validation', () => {
 					terminalReceiptId: RECEIPT_ID, updatedAt: NEXT,
 				}, authorityOptsFor(opts, []));
 			},
-			expect: { changed: true, reason: 'complete' }, forbidIdempotent: true,
+			expect: { changed: true, reason: 'complete' }, forbidIdempotent: true, stampsNow: true,
 			assertSuccess(result) {
 				expect(result.record.phase).toBe('complete');
 				expect(result.record.blockReason).toBeNull();
@@ -2133,6 +2133,24 @@ describe('watch owner successful-result postcondition validation', () => {
 				};
 				const forged = await spec.act(forgeCtx, forgePrior, authorityOpts(forgingDriver));
 				expect(forged).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+			}
+
+			if (spec.stampsNow) {
+				const staleCtx = { repo: 'acme/forge', pr: 954 };
+				const stalePrior = await spec.seed(staleCtx);
+				const rewindingDriver = {
+					...driver,
+					[spec.driverMethod]: (input, config) => {
+						const result = driver[spec.driverMethod](input, config);
+						if (!result.ok || !result.row) return result;
+						const rewound = { ...result.row, updated_at: NOW };
+						if (rewound.heartbeat_at != null) rewound.heartbeat_at = NOW;
+						return { ...result, row: rewound };
+					},
+				};
+				void stalePrior;
+				const stale = await spec.act(staleCtx, stalePrior, authorityOpts(rewindingDriver));
+				expect(stale).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
 			}
 
 			const tamperCtx = { repo: 'acme/forge', pr: 952 };
