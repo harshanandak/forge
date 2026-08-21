@@ -2406,6 +2406,101 @@ describe('watch owner successful-result postcondition validation', () => {
 		});
 	});
 
+	test('rejects changed gate mutations whose checkpoint did not advance', async () => {
+		await seedGate({ repo: 'acme/forge', pr: 965 });
+		const stale = updated_at => ({
+			singleton: 1, snapshot_hash: HASH, conflict_code: null, updated_at,
+		});
+		const quarantined = await owner.publishMigrationQuarantine({ updatedAt: LATER }, authorityOpts({
+			...driver,
+			watchGatePublishQuarantine: () => ({
+				ok: true, changed: true, reason: 'quarantined', gate: stale(NOW),
+			}),
+		}));
+		expect(quarantined.ok).toBe(false);
+		const bound = await owner.bindMigrationSnapshot({ snapshotHash: HASH, updatedAt: LATER }, authorityOpts({
+			...driver,
+			watchGateBindSnapshot: () => ({
+				ok: true, changed: true, reason: 'bound', gate: { ...stale(NOW), state: 'quarantined' },
+			}),
+		}));
+		expect(bound.ok).toBe(false);
+		const conflicted = await owner.publishMigrationConflict({
+			snapshotHash: HASH, conflictCode: 'legacy_snapshot_changed', updatedAt: LATER,
+		}, authorityOpts({
+			...driver,
+			watchGatePublishConflict: () => ({
+				ok: true, changed: true, reason: 'conflict',
+				gate: { ...stale(NOW), state: 'conflict', conflict_code: 'legacy_snapshot_changed' },
+			}),
+		}));
+		expect(conflicted.ok).toBe(false);
+		const retried = await owner.retryMigrationConflict({
+			expectedSnapshotHash: HASH, expectedConflictCode: 'legacy_snapshot_changed',
+			replacementSnapshotHash: OTHER_HASH, updatedAt: LATER,
+		}, authorityOpts({
+			...driver,
+			watchGateRetryConflict: () => ({
+				ok: true, changed: true, reason: 'retry',
+				gate: { ...stale(NOW), state: 'quarantined', snapshot_hash: OTHER_HASH },
+			}),
+		}));
+		expect(retried.ok).toBe(false);
+	});
+
+	test('rejects heartbeats that change the captured phase', async () => {
+		const ctx = { repo: 'acme/forge', pr: 966 };
+		const prior = await seedLifecycle(ctx, 'stop_requested');
+		const result = await owner.heartbeat(ctx, {
+			generation: prior.generation, pid: WATCHER_PID, updatedAt: FINAL,
+		}, authorityOpts({
+			...driver,
+			watchOwnerHeartbeat: () => ({
+				ok: true, changed: true, reason: 'heartbeat',
+				row: toSnakeRow(prior.record) === null ? null : {
+					...toSnakeRow(prior.record), phase: 'running',
+					started_at: NOW, updated_at: FINAL, heartbeat_at: FINAL,
+				},
+			}),
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+	});
+
+	test('binds evidence snapshots to a single read of accessor-backed row fields', async () => {
+		const ctx = { repo: 'acme/forge', pr: 967 };
+		const startedReads = [];
+		let submitted;
+		const result = await owner.recordTerminal(ctx, {
+			generation: 'generation-967', pid: WATCHER_PID, terminalReceiptId: RECEIPT_ID, updatedAt: NEXT,
+		}, authorityOpts({
+			...driver,
+			watchOwnerRead: () => ({
+				ok: true, changed: false, reason: 'read',
+				get row() {
+					return {
+						repo: 'acme/forge', pr: 967, version: 1, generation: 'generation-967', phase: 'running',
+						controller_pid: null, watcher_pid: WATCHER_PID, heartbeat_at: NOW,
+						terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
+						get started_at() {
+							startedReads.push(startedReads.length === 0 ? NOW : FINAL);
+							return startedReads[startedReads.length - 1];
+						},
+						get updated_at() {
+							return startedReads[startedReads.length - 1] || NOW;
+						},
+					};
+				},
+			}),
+			watchOwnerRecordTerminal: input => {
+				submitted = input;
+				return injectedOwnerSuccess('watchOwnerRecordTerminal', input.expectedSnapshot, input);
+			},
+		}));
+		expect(result).toMatchObject({ ok: true, changed: true, reason: 'terminal_pending' });
+		expect(startedReads.every(stamp => stamp === startedReads[0])).toBe(true);
+		expect(submitted.expectedSnapshot.started_at).toBe(startedReads[0]);
+	});
+
 	test('rejects read successes that claim corrupt or arbitrary reasons for null rows', async () => {
 		const ctx = { repo: 'acme/forge', pr: 960 };
 		const result = await owner.readOwner(ctx, authorityOpts({
