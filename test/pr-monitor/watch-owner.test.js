@@ -2224,4 +2224,23 @@ describe('watch owner successful-result postcondition validation', () => {
 		}));
 		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
 	});
+
+	test('snapshots accessor-backed gate results before validating success', async () => {
+		let okReads = 0;
+		const flipping = {
+			get ok() {
+				okReads += 1;
+				return okReads > 1;
+			},
+			changed: true,
+			reason: 'quarantined',
+			gate: { singleton: 1, state: 'quarantined', snapshot_hash: null, conflict_code: null, updated_at: NOW },
+		};
+		const result = await owner.publishMigrationQuarantine({ updatedAt: NOW }, authorityOpts({
+			...driver,
+			watchGatePublishQuarantine: () => flipping,
+		}));
+		expect(okReads).toBe(1);
+		expect(result.ok).toBe(false);
+	});
 });
