@@ -346,6 +346,17 @@ describe('scripts/test-full-suite.js', () => {
       concurrency: 1,
       shards: [expect.any(Object)],
     });
+
+    const windowsLanes = buildResourceLanePlan(files, 4, new Map(), {
+      classify,
+      subprocessShardTotal: 6,
+      subprocessConcurrency: 1,
+    });
+    expect(windowsLanes.find((lane) => lane.name === 'subprocess')).toMatchObject({
+      concurrency: 1,
+      name: 'subprocess',
+    });
+    expect(windowsLanes.find((lane) => lane.name === 'subprocess').shards).toHaveLength(6);
   });
 
   test('runLaneSchedule observes unit/process/exclusive caps without timers', async () => {
@@ -533,6 +544,28 @@ describe('scripts/test-full-suite.js', () => {
     ]);
     expect(lanes.find((lane) => lane.name === 'subprocess').shards.flatMap((shard) => shard.files))
       .toContain('test/scripts/dep-guard.check-ripple.analyzer.test.js');
+  });
+
+  test('runFullSuiteInParallel serializes Windows subprocess shards without reducing shard count', async () => {
+    const logs = [];
+    const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
+    let pid = 8990;
+    try {
+      const status = await runFullSuiteInParallel({}, {
+        allTests: ['process-0.test.js', 'process-1.test.js', 'process-2.test.js'],
+        classify: () => 'subprocess',
+        cpuCount: 4,
+        durationMap: new Map(),
+        platform: 'win32',
+        processTree: fakeProcessTree(),
+        spawn: (_command, args) => fakeShardChild(0, pid++, args),
+      });
+      expect(status).toBe(0);
+    } finally {
+      log.mockRestore();
+    }
+
+    expect(logs).toContain('Resource lane subprocess: files=3 shards=3 concurrency=1');
   });
 
   test('runFullSuiteInParallel spawns one process per shard and succeeds when all shards pass', async () => {

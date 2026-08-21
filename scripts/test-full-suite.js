@@ -420,6 +420,10 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
     && options.subprocessShardTotal > 0
     ? options.subprocessShardTotal
     : shardTotal;
+  const subprocessConcurrency = Number.isInteger(options.subprocessConcurrency)
+    && options.subprocessConcurrency > 0
+    ? options.subprocessConcurrency
+    : 3;
   const buckets = {
     exclusive: [],
     subprocess: [],
@@ -447,7 +451,7 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
   if (buckets.subprocess.length > 0) {
     const shardCount = Math.min(subprocessShardTotal, buckets.subprocess.length);
     lanes.push({
-      concurrency: Math.min(3, shardCount),
+      concurrency: Math.min(subprocessConcurrency, shardCount),
       name: 'subprocess',
       // Extra shards improve tail balancing without increasing the worker budget.
       shards: buildShardSpecs(buckets.subprocess, shardCount, durationMap),
@@ -757,6 +761,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const subprocessShardTotal = Number.isInteger(args.shards) && args.shards > 0
       ? shardTotal
       : Math.max(6, shardTotal);
+    const subprocessConcurrency = platform === 'win32' ? 1 : 3;
     const profile = deps.profile || readNewestProfile(reportDir);
     const durationMap = deps.durationMap || createDurationMap(profile);
     const resourceMap = deps.classify
@@ -768,6 +773,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
       });
     const lanePlan = buildResourceLanePlan(allTests, shardTotal, durationMap, {
       classify: deps.classify || ((file) => resourceMap.get(file)),
+      subprocessConcurrency,
       subprocessShardTotal,
     });
     const shardSpecs = lanePlan.flatMap((lane) => lane.shards);
