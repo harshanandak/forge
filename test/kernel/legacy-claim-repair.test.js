@@ -308,6 +308,9 @@ describe('legacy claim repair preflight', () => {
 			'"attacker S-1-5-21-9-9-9","not-a-sid"\r\n',
 			'"runner","S-1-5-21-1-2-3-4","extra"\r\n',
 			'"runner","S-1-5-21-1-2-3-4"\r\n"second","S-1-5-21-9-9-9"\r\n',
+			'run"ner,"S-1-5-21-1-2-3-4"\r\n',
+			'"runner"x,"S-1-5-21-1-2-3-4"\r\n',
+			'"unterminated-runner',
 		]) {
 			const invocations = [];
 			await expect(secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {

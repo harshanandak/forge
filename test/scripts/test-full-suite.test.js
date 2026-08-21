@@ -585,6 +585,37 @@ describe('scripts/test-full-suite.js', () => {
     expect(calls[0]).toContain('30000');
   });
 
+  test('runFullSuiteInParallel derives the duration profile name and label from the label prefix', async () => {
+    const writtenProfiles = [];
+    const writeProfile = (options) => {
+      writtenProfiles.push(options);
+      return true;
+    };
+    const runOptions = () => ({
+      allTests: ['test/a.test.js'],
+      classify: () => 'unit',
+      durationMap: new Map([['test/a.test.js', 1000]]),
+      processTree: fakeProcessTree(),
+      spawn: (_command, args) => fakeShardChild(0, 9070, args),
+      writeDurationProfile: writeProfile,
+    });
+
+    const matrixStatus = await runFullSuiteInParallel({
+      labelPrefix: 'full-matrix-windows-latest-node22',
+      shards: 1,
+    }, runOptions());
+    const localStatus = await runFullSuiteInParallel({ shards: 1 }, runOptions());
+
+    expect(matrixStatus).toBe(0);
+    expect(localStatus).toBe(0);
+    expect(writtenProfiles).toHaveLength(2);
+    expect(writtenProfiles[0].outputPath.replace(/\\/g, '/'))
+      .toContain('test-results/full-matrix-windows-latest-node22.profile.json');
+    expect(writtenProfiles[0].label).toBe('full-matrix-windows-latest-node22');
+    expect(writtenProfiles[1].outputPath.replace(/\\/g, '/')).toContain('test-results/local-full.profile.json');
+    expect(writtenProfiles[1].label).toBe('local-full');
+  });
+
   test('concurrent full-suite invocations use disjoint receipt directories', async () => {
     const receiptPaths = [];
     let pid = 9020;

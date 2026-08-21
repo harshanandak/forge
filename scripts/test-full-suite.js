@@ -589,14 +589,14 @@ function extractFailedTestCases(output, limit = 20) {
   return failures;
 }
 
-function writeDurationProfile({ allTests, outputPath, runReportDir }) {
+function writeDurationProfile({ allTests, label, outputPath, runReportDir }) {
   const files = walkProfileFiles(runReportDir, '.xml');
   if (files.length === 0) return false;
   const metrics = parseJUnitFiles(files);
   const measured = new Set(metrics.allFileDurations.map((entry) => normalizePath(entry.file)));
   if (!allTests.every((file) => measured.has(normalizePath(file)))) return false;
 
-  const profile = buildProfile({ integrationSkipped: false, label: 'local-full' }, metrics);
+  const profile = buildProfile({ integrationSkipped: false, label: label || 'local-full' }, metrics);
   const target = path.resolve(outputPath);
   const temporary = `${target}.tmp-${process.pid}`;
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -836,10 +836,12 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const exitCode = signal ? signalExitCode(signal) : aggregate.exitCode;
     if (signal) aggregate.status = 'INCOMPLETE';
     if (aggregate.status !== 'INCOMPLETE') {
+      const labelPrefix = args.labelPrefix || 'local-full';
       try {
         (deps.writeDurationProfile || writeDurationProfile)({
           allTests,
-          outputPath: deps.profileOutputPath || path.join(reportDir, 'local-full.profile.json'),
+          label: labelPrefix,
+          outputPath: deps.profileOutputPath || path.join(reportDir, `${labelPrefix}.profile.json`),
           runReportDir,
         });
       } catch (error) {
