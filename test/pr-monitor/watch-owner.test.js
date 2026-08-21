@@ -2225,6 +2225,31 @@ describe('watch owner successful-result postcondition validation', () => {
 		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
 	});
 
+	test('snapshots evidence-read rows once before using them as evidence', async () => {
+		const ctx = { repo: 'acme/forge', pr: 958 };
+		const prior = await seedLifecycle(ctx, 'running');
+		let rowReads = 0;
+		const flippingRow = {
+			get row() {
+				rowReads += 1;
+				return rowReads === 1 ? toSnakeRow(prior.record) : null;
+			},
+		};
+		const result = await owner.recordTerminal(ctx, {
+			generation: prior.generation, pid: WATCHER_PID, terminalReceiptId: RECEIPT_ID, updatedAt: NEXT,
+		}, authorityOpts({
+			...driver,
+			watchOwnerRead: () => ({
+				ok: true, changed: false, reason: 'read', get row() {
+					return flippingRow.row;
+				},
+			}),
+			watchOwnerRecordTerminal: input => injectedOwnerSuccess('watchOwnerRecordTerminal', toSnakeRow(prior.record), input),
+		}));
+		expect(rowReads).toBe(1);
+		expect(result).toMatchObject({ ok: true, changed: true, reason: 'terminal_pending' });
+	});
+
 	test('snapshots accessor-backed gate results before validating success', async () => {
 		let okReads = 0;
 		const flipping = {

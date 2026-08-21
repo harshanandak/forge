@@ -1316,4 +1316,36 @@ describe('watch owner dedicated SQLite transaction', () => {
 		}, { driver });
 		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
 	});
+
+	test('rejects outbound foreign keys declared on the authority tables themselves', async () => {
+		await driver.exec('DROP TABLE kernel_pr_watch_owners;');
+		await driver.exec(`
+			CREATE TABLE kernel_pr_watch_parent (
+				id TEXT NOT NULL PRIMARY KEY
+			);
+			CREATE TABLE kernel_pr_watch_owners (
+				repo TEXT NOT NULL,
+				pr INTEGER NOT NULL,
+				version INTEGER NOT NULL,
+				generation TEXT NOT NULL,
+				phase TEXT NOT NULL,
+				controller_pid INTEGER,
+				watcher_pid INTEGER,
+				started_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				heartbeat_at TEXT,
+				terminal_receipt_id TEXT,
+				block_reason TEXT,
+				legacy_evidence_hash TEXT,
+				parent_id TEXT NOT NULL,
+				PRIMARY KEY (repo, pr),
+				FOREIGN KEY (parent_id) REFERENCES kernel_pr_watch_parent (id) ON DELETE CASCADE
+			);
+		`);
+		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 118 }, {
+			controllerPid: 7_118, startedAt: NOW,
+		}, { driver });
+		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
+	});
 });
