@@ -480,7 +480,10 @@ describe('scripts/test-full-suite.js', () => {
       const output = `${result.stdout || ''}\n${result.stderr || ''}`;
 
       expect(result.status).toBe(0);
-      expect(output).toContain('active checkout');
+      expect(fs.existsSync(junitPath)).toBe(true);
+      const receiptXml = fs.readFileSync(junitPath, 'utf8');
+      expect(receiptXml).toContain('active checkout');
+      expect(receiptXml).not.toContain('nested stale checkout');
       expect(output).not.toContain('nested stale checkout');
     } finally {
       fs.rmSync(fixtureRoot, { recursive: true, force: true });
