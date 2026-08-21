@@ -346,17 +346,6 @@ describe('scripts/test-full-suite.js', () => {
       concurrency: 1,
       shards: [expect.any(Object)],
     });
-
-    const windowsLanes = buildResourceLanePlan(files, 4, new Map(), {
-      classify,
-      subprocessShardTotal: 6,
-      subprocessConcurrency: 1,
-    });
-    expect(windowsLanes.find((lane) => lane.name === 'subprocess')).toMatchObject({
-      concurrency: 1,
-      name: 'subprocess',
-    });
-    expect(windowsLanes.find((lane) => lane.name === 'subprocess').shards).toHaveLength(6);
   });
 
   test('runLaneSchedule observes unit/process/exclusive caps without timers', async () => {
@@ -409,34 +398,6 @@ describe('scripts/test-full-suite.js', () => {
       ['subprocess', 3],
       ['exclusive', 1],
     ]));
-  });
-
-  test('runLaneSchedule can serialize shared lanes without starting subprocess work early', async () => {
-    const probe = executionProbe();
-    const scheduled = runLaneSchedule([
-      { name: 'unit', concurrency: 2, shards: [{ id: 'u0' }, { id: 'u1' }] },
-      { name: 'subprocess', concurrency: 2, shards: [{ id: 's0' }, { id: 's1' }] },
-      { name: 'exclusive', concurrency: 1, shards: [{ id: 'e0' }] },
-    ], probe.execute, () => {}, { serializeSharedLanes: true });
-
-    await probe.waitForStarted(2);
-    expect(probe.started).toEqual(['u0', 'u1']);
-    expect(probe.active.size).toBe(2);
-    probe.release('u0');
-    await Promise.resolve();
-    expect(probe.started).toEqual(['u0', 'u1']);
-    probe.release('u1');
-
-    await probe.waitForStarted(4);
-    expect(probe.started).toEqual(['u0', 'u1', 's0', 's1']);
-    expect(probe.active.size).toBe(2);
-    probe.release('s0');
-    probe.release('s1');
-
-    await probe.waitForStarted(5);
-    expect(probe.started).toEqual(['u0', 'u1', 's0', 's1', 'e0']);
-    probe.release('e0');
-    expect(await scheduled).toEqual(['u0', 'u1', 's0', 's1', 'e0']);
   });
 
   test('runLaneSchedule settles in-flight shared work before propagating a failure', async () => {
@@ -559,41 +520,37 @@ describe('scripts/test-full-suite.js', () => {
     expect(assigned).toHaveLength(files.length);
     expect(new Set(assigned).size).toBe(files.length);
     expect(assigned.slice().sort()).toEqual(files);
-    expect(lanes.find((lane) => lane.name === 'exclusive').shards.flatMap((shard) => shard.files)).toEqual([
+    const exclusiveFiles = [
       'test-env/edge-cases/file-limits.test.js',
+      'test/cli-lifecycle.test.js',
+      'test/forge-cli-registry.test.js',
+      'test/helpers/cli-subprocess.test.js',
       'test/hooks-session-start.test.js',
       'test/integration/standalone-package-smoke.test.js',
+      'test/migrate-dry-run.test.js',
+      'test/options-command.test.js',
       'test/patch-intent.test.js',
       'test/pr-monitor/flow-monitor.test.js',
       'test/scripts/commitlint.test.js',
       'test/scripts/process-tree.test.js',
       'test/sync-agent-skills-authority.test.js',
       'test/test-dashboard.test.js',
-    ]);
+    ];
+    const exclusiveLane = lanes.find((lane) => lane.name === 'exclusive');
+    expect(exclusiveLane.shards.flatMap((shard) => shard.files)).toEqual(exclusiveFiles);
+    expect(exclusiveLane.shards.every((shard) => shard.files.length === 1)).toBe(true);
+    for (const file of [
+      'test/cli-lifecycle.test.js',
+      'test/forge-cli-registry.test.js',
+      'test/helpers/cli-subprocess.test.js',
+      'test/migrate-dry-run.test.js',
+      'test/options-command.test.js',
+    ]) {
+      expect(resourceMap.get(file)).toBe('exclusive');
+      expect(exclusiveLane.shards.filter((shard) => shard.files[0] === file)).toHaveLength(1);
+    }
     expect(lanes.find((lane) => lane.name === 'subprocess').shards.flatMap((shard) => shard.files))
       .toContain('test/scripts/dep-guard.check-ripple.analyzer.test.js');
-  });
-
-  test('runFullSuiteInParallel serializes Windows subprocess shards without reducing shard count', async () => {
-    const logs = [];
-    const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
-    let pid = 8990;
-    try {
-      const status = await runFullSuiteInParallel({}, {
-        allTests: ['process-0.test.js', 'process-1.test.js', 'process-2.test.js'],
-        classify: () => 'subprocess',
-        cpuCount: 4,
-        durationMap: new Map(),
-        platform: 'win32',
-        processTree: fakeProcessTree(),
-        spawn: (_command, args) => fakeShardChild(0, pid++, args),
-      });
-      expect(status).toBe(0);
-    } finally {
-      log.mockRestore();
-    }
-
-    expect(logs).toContain('Resource lane subprocess: files=3 shards=3 concurrency=1');
   });
 
   test('runFullSuiteInParallel spawns one process per shard and succeeds when all shards pass', async () => {

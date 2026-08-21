@@ -420,10 +420,6 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
     && options.subprocessShardTotal > 0
     ? options.subprocessShardTotal
     : shardTotal;
-  const subprocessConcurrency = Number.isInteger(options.subprocessConcurrency)
-    && options.subprocessConcurrency > 0
-    ? options.subprocessConcurrency
-    : 3;
   const buckets = {
     exclusive: [],
     subprocess: [],
@@ -451,7 +447,7 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
   if (buckets.subprocess.length > 0) {
     const shardCount = Math.min(subprocessShardTotal, buckets.subprocess.length);
     lanes.push({
-      concurrency: Math.min(subprocessConcurrency, shardCount),
+      concurrency: Math.min(3, shardCount),
       name: 'subprocess',
       // Extra shards improve tail balancing without increasing the worker budget.
       shards: buildShardSpecs(buckets.subprocess, shardCount, durationMap),
@@ -476,7 +472,7 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
   return lanes;
 }
 
-async function runLaneSchedule(lanes, execute, cancel = () => {}, options = {}) {
+async function runLaneSchedule(lanes, execute, cancel = () => {}) {
   const runLane = async (lane, concurrency = lane.concurrency, schedule = { stopped: false }) => {
     const laneResults = new Array(lane.shards.length);
     let nextIndex = 0;
@@ -512,22 +508,13 @@ async function runLaneSchedule(lanes, execute, cancel = () => {}, options = {}) 
   const sharedLanes = lanes.filter((lane) => lane.name !== 'exclusive');
   const overlapsSubprocess = sharedLanes.some((lane) => lane.name === 'subprocess');
   const sharedSchedule = { stopped: false };
-  const runSharedLane = async (lane) => {
-    // In overlap mode, one unit worker fills otherwise-idle CPU without recreating broad process pressure.
-    const concurrency = !options.serializeSharedLanes
-      && overlapsSubprocess
-      && lane.name === 'unit'
-      ? 1
-      : lane.concurrency;
+  const settledSharedLanes = await Promise.allSettled(sharedLanes.map(async (lane) => {
+    // One unit worker fills otherwise-idle CPU without recreating broad process pressure.
+    const concurrency = overlapsSubprocess && lane.name === 'unit' ? 1 : lane.concurrency;
     resultsByLane.set(lane, await runLane(lane, concurrency, sharedSchedule));
-  };
-  if (options.serializeSharedLanes) {
-    for (const lane of sharedLanes) await runSharedLane(lane);
-  } else {
-    const settledSharedLanes = await Promise.allSettled(sharedLanes.map(runSharedLane));
-    const sharedFailure = settledSharedLanes.find((result) => result.status === 'rejected');
-    if (sharedFailure) throw sharedFailure.reason;
-  }
+  }));
+  const sharedFailure = settledSharedLanes.find((result) => result.status === 'rejected');
+  if (sharedFailure) throw sharedFailure.reason;
 
   for (const lane of lanes.filter((candidate) => candidate.name === 'exclusive')) {
     resultsByLane.set(lane, await runLane(lane));
@@ -770,7 +757,6 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const subprocessShardTotal = Number.isInteger(args.shards) && args.shards > 0
       ? shardTotal
       : Math.max(6, shardTotal);
-    const subprocessConcurrency = platform === 'win32' ? 1 : 3;
     const profile = deps.profile || readNewestProfile(reportDir);
     const durationMap = deps.durationMap || createDurationMap(profile);
     const resourceMap = deps.classify
@@ -782,7 +768,6 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
       });
     const lanePlan = buildResourceLanePlan(allTests, shardTotal, durationMap, {
       classify: deps.classify || ((file) => resourceMap.get(file)),
-      subprocessConcurrency,
       subprocessShardTotal,
     });
     const shardSpecs = lanePlan.flatMap((lane) => lane.shards);
@@ -830,7 +815,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
         if (scheduleCancelled) return;
         scheduleCancelled = true;
         processTree.cleanup('SIGKILL');
-      }, { serializeSharedLanes: platform === 'win32' });
+      });
     } catch (error) {
       console.error('Full suite shard execution failed:', error);
       const exitCode = signal ? signalExitCode(signal) : 1;
