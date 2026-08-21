@@ -1174,7 +1174,7 @@ describe('watch owner dedicated SQLite transaction', () => {
 		let injectionError;
 		database.query = sql => {
 			const statement = query(sql);
-			if (!String(sql).includes("type = 'trigger' AND lower(tbl_name) IN")) return statement;
+			if (!String(sql).includes("SELECT tbl_name AS tbl_name, sql FROM sqlite_master WHERE type = 'trigger'")) return statement;
 			return {
 				all(...args) {
 					const rows = statement.all(...args);
@@ -1372,6 +1372,24 @@ describe('watch owner dedicated SQLite transaction', () => {
 		`);
 		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 119 }, {
 			controllerPid: 7_119, startedAt: NOW,
+		}, { driver });
+		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
+	});
+
+	test('rejects cross-table triggers that write into authority tables', async () => {
+		await driver.exec(`
+			CREATE TABLE kernel_pr_watch_owner_events (
+				event TEXT NOT NULL PRIMARY KEY
+			);
+			CREATE TRIGGER purge_owners_on_event
+			AFTER INSERT ON kernel_pr_watch_owner_events
+			BEGIN
+				DELETE FROM kernel_pr_watch_owners;
+			END;
+		`);
+		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 120 }, {
+			controllerPid: 7_120, startedAt: NOW,
 		}, { driver });
 		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
 		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);

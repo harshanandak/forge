@@ -2315,4 +2315,27 @@ describe('watch owner successful-result postcondition validation', () => {
 		}));
 		expect(byteOverflow).toEqual({ ok: false, changed: false, reason: 'enumeration_overflow', records: [] });
 	});
+
+	test('snapshots enumeration rows once before enforcing bounds', async () => {
+		const validRow = pr => ({
+			repo: 'acme/forge', pr, version: 1, generation: `generation-${pr}`, phase: 'starting',
+			controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: NOW, updated_at: NOW,
+			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
+		});
+		let rowsReads = 0;
+		const result = await owner.enumerateOwners(null, authorityOpts({
+			...driver,
+			watchOwnerList: () => ({
+				ok: true,
+				changed: false,
+				reason: 'read',
+				get rows() {
+					rowsReads += 1;
+					return rowsReads === 1 ? [] : Array.from({ length: 4_097 }, (_, index) => validRow(index + 1));
+				},
+			}),
+		}));
+		expect(rowsReads).toBe(1);
+		expect(result).toEqual({ ok: true, changed: false, reason: 'read', records: [] });
+	});
 });
