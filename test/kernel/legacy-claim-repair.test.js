@@ -235,7 +235,7 @@ describe('legacy claim repair preflight', () => {
 					exited: Promise.resolve(0),
 					kill() {},
 					stdout: command[0].endsWith('whoami.exe')
-						? new Blob(['"runner","S-1-5-21-1-2-3-4"\r\n']).stream()
+						? new Blob(['"domain, ""runner""","S-1-5-21-1-2-3-4"\r\n']).stream()
 						: undefined,
 				};
 			},
@@ -300,6 +300,32 @@ describe('legacy claim repair preflight', () => {
 		expect(timerDelays).toEqual([14_995, 14_990]);
 		expect(clearedTimers).toEqual([1, 2]);
 		expect(JSON.stringify(invocations)).not.toContain('secret-path-sentinel');
+	});
+
+	test('rejects a SID-looking username when the whoami SID column is empty or malformed', async () => {
+		for (const whoamiOutput of [
+			'"attacker S-1-5-21-9-9-9",""\r\n',
+			'"attacker S-1-5-21-9-9-9","not-a-sid"\r\n',
+			'"runner","S-1-5-21-1-2-3-4","extra"\r\n',
+			'"runner","S-1-5-21-1-2-3-4"\r\n"second","S-1-5-21-9-9-9"\r\n',
+		]) {
+			const invocations = [];
+			await expect(secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
+				runtime: 'bun',
+				environment: { SystemRoot: 'C:\\Windows' },
+				bunSpawn(command) {
+					invocations.push(command);
+					return {
+						exited: Promise.resolve(0),
+						kill() {},
+						stdout: command[0].endsWith('whoami.exe')
+							? new Blob([whoamiOutput]).stream()
+							: undefined,
+					};
+				},
+			})).rejects.toThrow('could not resolve the current SID');
+			expect(invocations).toHaveLength(1);
+		}
 	});
 
 	test('normalizes relative public backup targets before cscript hardening', async () => {

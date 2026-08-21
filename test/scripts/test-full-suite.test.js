@@ -531,6 +531,7 @@ describe('scripts/test-full-suite.js', () => {
       'test/options-command.test.js',
       'test/patch-intent.test.js',
       'test/pr-monitor/flow-monitor.test.js',
+      'test/release-readiness.test.js',
       'test/scripts/commitlint.test.js',
       'test/scripts/process-tree.test.js',
       'test/sync-agent-skills-authority.test.js',
@@ -545,6 +546,7 @@ describe('scripts/test-full-suite.js', () => {
       'test/helpers/cli-subprocess.test.js',
       'test/migrate-dry-run.test.js',
       'test/options-command.test.js',
+      'test/release-readiness.test.js',
     ]) {
       expect(resourceMap.get(file)).toBe('exclusive');
       expect(exclusiveLane.shards.filter((shard) => shard.files[0] === file)).toHaveLength(1);
