@@ -2268,4 +2268,51 @@ describe('watch owner successful-result postcondition validation', () => {
 		expect(okReads).toBe(1);
 		expect(result.ok).toBe(false);
 	});
+
+	test('rejects idempotent import claims made without a captured prior row', async () => {
+		const ctx = { repo: 'acme/forge', pr: 959 };
+		await seedGate(ctx);
+		const result = await owner.importLegacyStarting(ctx, {
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
+			legacyPid: LEGACY_PID, controllerPid: CONTROLLER_PID,
+			providerEvidence: { state: 'OPEN' }, startedAt: LATER,
+		}, authorityOpts({
+			...driver,
+			watchOwnerImportLegacyStarting: () => ({
+				ok: true, changed: false, reason: 'idempotent',
+				row: {
+					repo: 'acme/forge', pr: 959, version: 1, generation: 'generation-959', phase: 'starting',
+					controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: LATER, updated_at: LATER,
+					heartbeat_at: null, terminal_receipt_id: null, block_reason: null,
+					legacy_evidence_hash: OTHER_HASH,
+				},
+			}),
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+	});
+
+	test('rejects enumeration results that exceed the public count and byte caps', async () => {
+		const validRow = pr => ({
+			repo: 'acme/forge', pr, version: 1, generation: `generation-${pr}`, phase: 'starting',
+			controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: NOW, updated_at: NOW,
+			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
+		});
+		const overflowRows = Array.from({ length: 4_097 }, (_, index) => validRow(index + 1));
+		const overflow = await owner.enumerateOwners(null, authorityOpts({
+			...driver,
+			watchOwnerList: () => ({ ok: true, changed: false, reason: 'read', rows: overflowRows }),
+		}));
+		expect(overflow).toEqual({ ok: false, changed: false, reason: 'enumeration_overflow', records: [] });
+
+		const hugeRow = { ...validRow(1), generation: 'g'.repeat(128) };
+		const rows = Array.from({ length: 40_000 }, () => hugeRow);
+		let bytes = 0;
+		for (const row of rows) bytes += Buffer.byteLength(JSON.stringify(row), 'utf8');
+		expect(bytes).toBeGreaterThan(4 * 1024 * 1024);
+		const byteOverflow = await owner.enumerateOwners(null, authorityOpts({
+			...driver,
+			watchOwnerList: () => ({ ok: true, changed: false, reason: 'read', rows }),
+		}));
+		expect(byteOverflow).toEqual({ ok: false, changed: false, reason: 'enumeration_overflow', records: [] });
+	});
 });
