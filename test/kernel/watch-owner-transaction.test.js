@@ -1392,4 +1392,22 @@ describe('watch owner dedicated SQLite transaction', () => {
 		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
 		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
 	});
+
+	test('rejects cross-table triggers that reference authority tables via quoted identifiers', async () => {
+		await driver.exec(`
+			CREATE TABLE kernel_pr_watch_owner_events (
+				event TEXT NOT NULL PRIMARY KEY
+			);
+			CREATE TRIGGER purge_owners_quoted_on_event
+			AFTER INSERT ON kernel_pr_watch_owner_events
+			BEGIN
+				DELETE FROM "kernel_pr_watch_owners";
+			END;
+		`);
+		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 121 }, {
+			controllerPid: 7_121, startedAt: NOW,
+		}, { driver });
+		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
+	});
 });

@@ -143,7 +143,7 @@ describe('watch owner SQLite authority', () => {
 		const readDriver = {
 			watchOwnerRead(input) {
 				capturedIdentity = input;
-				return { ok: true, changed: false, reason: 'not_found', row: null };
+				return { ok: true, changed: false, reason: 'absent', row: null };
 			},
 		};
 		let changingReads = 0;
@@ -155,7 +155,7 @@ describe('watch owner SQLite authority', () => {
 			pr: 41,
 		};
 		expect(await owner.readOwner(changing, { driver: readDriver })).toEqual({
-			ok: true, changed: false, reason: 'not_found', record: null,
+			ok: true, changed: false, reason: 'absent', record: null,
 		});
 		expect(changingReads).toBe(1);
 		expect(capturedIdentity).toEqual({ repo: 'acme/forge', pr: 41 });
@@ -2337,5 +2337,50 @@ describe('watch owner successful-result postcondition validation', () => {
 		}));
 		expect(rowsReads).toBe(1);
 		expect(result).toEqual({ ok: true, changed: false, reason: 'read', records: [] });
+	});
+
+	test('rejects read successes that claim corrupt or arbitrary reasons for null rows', async () => {
+		const ctx = { repo: 'acme/forge', pr: 960 };
+		const result = await owner.readOwner(ctx, authorityOpts({
+			...driver,
+			watchOwnerRead: () => ({ ok: true, changed: false, reason: 'weird', row: null }),
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+	});
+
+	test('rejects enumeration successes with non-read envelopes', async () => {
+		const validRow = {
+			repo: 'acme/forge', pr: 961, version: 1, generation: 'generation-961', phase: 'starting',
+			controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: NOW, updated_at: NOW,
+			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
+		};
+		const result = await owner.enumerateOwners(null, authorityOpts({
+			...driver,
+			watchOwnerList: () => ({
+				ok: true, changed: true, reason: 'acquired', rows: [validRow],
+			}),
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', records: [] });
+	});
+
+	test('caps proxy arrays whose length lies about their iteration contents', async () => {
+		const validRow = pr => ({
+			repo: 'acme/forge', pr, version: 1, generation: `generation-${pr}`, phase: 'starting',
+			controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: NOW, updated_at: NOW,
+			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
+		});
+		const tricky = Object.assign([], {
+			length: 0,
+			[Symbol.iterator]: function* () {
+				for (let pr = 1; pr <= 4_097; pr += 1) yield validRow(pr);
+			},
+		});
+		expect(Array.isArray(tricky)).toBe(true);
+		expect(tricky.length).toBe(0);
+		const result = await owner.enumerateOwners(null, authorityOpts({
+			...driver,
+			watchOwnerList: () => ({ ok: true, changed: false, reason: 'read', rows: tricky }),
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'enumeration_overflow', records: [] });
 	});
 });
