@@ -1286,4 +1286,19 @@ describe('watch owner dedicated SQLite transaction', () => {
 		expect(restorationAttempts).toBe(1);
 		expect(closes).toBe(1);
 	});
+	test('rejects inbound foreign-key cascades referencing watcher authority rows', async () => {
+		await driver.exec(`
+			CREATE TABLE kernel_pr_watch_owner_extras (
+				extra TEXT NOT NULL PRIMARY KEY,
+				repo TEXT NOT NULL,
+				pr INTEGER NOT NULL,
+				FOREIGN KEY (repo, pr) REFERENCES kernel_pr_watch_owners (repo, pr) ON DELETE CASCADE
+			);
+		`);
+		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 116 }, {
+			controllerPid: 7_116, startedAt: NOW,
+		}, { driver });
+		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
+	});
 });

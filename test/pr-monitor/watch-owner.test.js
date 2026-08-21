@@ -2209,4 +2209,19 @@ describe('watch owner successful-result postcondition validation', () => {
 		expect(result.ok).toBe(false);
 		expect(result.record).toBeNull();
 	});
+
+	test('rejects evidence snapshots built from envelopes that cannot be reads', async () => {
+		const ctx = { repo: 'acme/forge', pr: 957 };
+		const prior = await seedLifecycle(ctx, 'running');
+		const result = await owner.recordTerminal(ctx, {
+			generation: prior.generation, pid: WATCHER_PID, terminalReceiptId: RECEIPT_ID, updatedAt: NEXT,
+		}, authorityOpts({
+			...driver,
+			watchOwnerRead: () => ({ ok: true, changed: true, reason: 'read', row: toSnakeRow(prior.record) }),
+			watchOwnerRecordTerminal: () => {
+				throw new Error('mutation must not run on an invalid evidence read');
+			},
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+	});
 });
