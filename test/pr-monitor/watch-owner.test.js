@@ -2339,6 +2339,44 @@ describe('watch owner successful-result postcondition validation', () => {
 		expect(result).toEqual({ ok: true, changed: false, reason: 'read', records: [] });
 	});
 
+	test('converts enumeration records from the bounded copy, not the source iterable', async () => {
+		const validRow = pr => ({
+			repo: 'acme/forge', pr, version: 1, generation: `generation-${pr}`, phase: 'starting',
+			controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: NOW, updated_at: NOW,
+			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
+		});
+		const stateful = {
+			passes: 0,
+			[Symbol.iterator]() {
+				this.passes += 1;
+				const pass = this.passes;
+				return (function* () {
+					if (pass === 1) yield validRow(1);
+					else for (let pr = 2; pr <= 4_098; pr += 1) yield validRow(pr);
+				})();
+			},
+		};
+		const result = await owner.enumerateOwners(null, authorityOpts({
+			...driver,
+			watchOwnerList: () => ({ ok: true, changed: false, reason: 'read', rows: stateful }),
+		}));
+		expect(result).toMatchObject({ ok: true, changed: false, reason: 'read' });
+		expect(result.records).toHaveLength(1);
+	});
+
+	test('rejects gate-read successes with mutating envelopes', async () => {
+		await seedGate({ repo: 'acme/forge', pr: 962 });
+		const result = await owner.readMigrationGate({}, authorityOpts({
+			...driver,
+			watchGateRead: () => ({
+				ok: true, changed: true, reason: 'acquired',
+				gate: { singleton: 1, state: 'quarantined', snapshot_hash: HASH, conflict_code: null, updated_at: NOW },
+			}),
+		}));
+		expect(result.gate).toBeNull();
+		expect(result.ok).toBe(false);
+	});
+
 	test('rejects read successes that claim corrupt or arbitrary reasons for null rows', async () => {
 		const ctx = { repo: 'acme/forge', pr: 960 };
 		const result = await owner.readOwner(ctx, authorityOpts({
