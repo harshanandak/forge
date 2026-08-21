@@ -465,6 +465,43 @@ describe('watch owner SQLite authority', () => {
 		expect(reopened.record.generation).not.toBe(start.record.generation);
 	});
 
+	test('replays an exact terminal record without rechecking volatile receipt evidence', async () => {
+		const ctx = { repo: 'acme/forge', pr: 71 };
+		const base = { driver, now: NOW };
+		const start = await owner.reserveStarting(ctx, { controllerPid: 171, startedAt: NOW }, base);
+		await owner.bindRunning(ctx, {
+			generation: start.record.generation, controllerPid: 171, pid: 271, updatedAt: LATER,
+		}, base);
+		await owner.requestStop(ctx, {
+			generation: start.record.generation, pid: 271, updatedAt: LATER,
+		}, base);
+
+		let receiptChecks = 0;
+		const input = {
+			generation: start.record.generation, pid: 271,
+			terminalReceiptId: 'receipt-71', updatedAt: NEXT,
+		};
+		const recorded = await owner.recordTerminal(ctx, input, {
+			...base,
+			verifyTerminalReceipt: async () => { receiptChecks += 1; return true; },
+		});
+		const replay = await owner.recordTerminal(ctx, input, {
+			...base,
+			verifyTerminalReceipt: async () => { throw new Error('receipt evidence must not be rechecked'); },
+		});
+		const mismatched = await owner.recordTerminal(ctx, {
+			...input, terminalReceiptId: 'receipt-other',
+		}, {
+			...base,
+			verifyTerminalReceipt: async () => { receiptChecks += 1; return false; },
+		});
+
+		expect(recorded).toMatchObject({ ok: true, changed: true, reason: 'terminal_pending' });
+		expect(replay).toEqual({ ok: true, changed: false, reason: 'idempotent', record: recorded.record });
+		expect(mismatched).toMatchObject({ ok: false, changed: false, reason: 'receipt_unverified' });
+		expect(receiptChecks).toBe(2);
+	});
+
 	test('supports exact abort, release, and dead-process recovery without a generic clear', async () => {
 		const base = { driver, now: LATER };
 		const abortCtx = { repo: 'acme/forge', pr: 44 };
@@ -888,7 +925,7 @@ describe('watch owner SQLite authority', () => {
 		expect(imported.record.generation).toMatch(/^[0-9a-f-]{36}$/);
 		const replay = await owner.importLegacyStarting(ctx, input, options);
 		expect(replay).toEqual({ ok: true, changed: false, reason: 'idempotent', record: imported.record });
-		expect(callbackReads).toBe(4);
+		expect(callbackReads).toBe(2);
 
 		const recoveredStart = await owner.recoverDeadStarting(ctx, {
 			generation: imported.record.generation, controllerPid: 163,
@@ -924,6 +961,63 @@ describe('watch owner SQLite authority', () => {
 			providerEvidence: { state: 'OPEN' }, startedAt: NEXT,
 		}, { ...base, verifyProviderEvidence: async () => true });
 		expect(reopened).toMatchObject({ ok: true, record: { phase: 'starting', legacyEvidenceHash: OTHER_HASH } });
+	});
+
+	test('replays an exact legacy complete row without rechecking volatile evidence', async () => {
+		const base = { driver, now: NOW };
+		await owner.publishMigrationQuarantine({ updatedAt: NOW }, base);
+		await owner.bindMigrationSnapshot({ snapshotHash: HASH, updatedAt: NOW }, base);
+		const ctx = { repo: 'acme/forge', pr: 69 };
+		const input = {
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH, legacyPid: 269,
+			terminalReceiptId: 'receipt-69', startedAt: NOW,
+		};
+		let pidChecks = 0;
+		let receiptChecks = 0;
+		const options = {
+			...base,
+			isPidAlive: () => { pidChecks += 1; return false; },
+			verifyTerminalReceipt: async () => { receiptChecks += 1; return true; },
+		};
+
+		const imported = await owner.importLegacyComplete(ctx, input, options);
+		const replay = await owner.importLegacyComplete(ctx, input, {
+			...base,
+			isPidAlive: () => { throw new Error('PID evidence must not be rechecked'); },
+			verifyTerminalReceipt: async () => { throw new Error('receipt evidence must not be rechecked'); },
+		});
+
+		expect(imported).toMatchObject({ ok: true, changed: true, reason: 'imported' });
+		expect(replay).toEqual({ ok: true, changed: false, reason: 'idempotent', record: imported.record });
+		expect(pidChecks).toBe(1);
+		expect(receiptChecks).toBe(1);
+	});
+
+	test('fails closed when read or evidence snapshots return a valid row for another identity', async () => {
+		const wrongRow = {
+			repo: 'other/forge', pr: 70, version: 1, generation: 'generation-70', phase: 'running',
+			controller_pid: null, watcher_pid: 270, started_at: NOW, updated_at: NOW,
+			heartbeat_at: NOW, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
+		};
+		const read = await owner.readOwner({ repo: 'acme/forge', pr: 70 }, {
+			driver: { watchOwnerRead: () => ({ ok: true, changed: false, reason: 'read', row: wrongRow }) },
+		});
+		expect(read).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+
+		let evidenceChecks = 0;
+		let mutationCalls = 0;
+		const result = await owner.recordTerminal({ repo: 'acme/forge', pr: 70 }, {
+			generation: 'generation-70', pid: 270, terminalReceiptId: 'receipt-70', updatedAt: LATER,
+		}, {
+			driver: {
+				watchOwnerRead: () => ({ ok: true, changed: false, reason: 'read', row: wrongRow }),
+				watchOwnerRecordTerminal: () => { mutationCalls += 1; return { ok: true, changed: true, reason: 'recorded', row: null }; },
+			},
+			verifyTerminalReceipt: async () => { evidenceChecks += 1; return true; },
+		});
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+		expect(evidenceChecks).toBe(0);
+		expect(mutationCalls).toBe(0);
 	});
 
 	test('fails legacy starting import closed on gate, hash, PID, provider, conflict, and evidence races', async () => {
@@ -1047,6 +1141,50 @@ describe('watch owner SQLite authority', () => {
 				watchGateRead: () => ({ ok: true, changed: false, reason: 'read', gate: malformedGate }),
 			},
 		})).toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
+	});
+
+	test('binds successful gate mutation results to their requested transition context', async () => {
+		const cases = [
+			{
+				label: 'bind snapshot', method: 'watchGateBindSnapshot',
+				call: owner.bindMigrationSnapshot, input: { snapshotHash: HASH, updatedAt: NOW },
+				gate: { singleton: 1, state: 'quarantined', snapshot_hash: OTHER_HASH, conflict_code: null, updated_at: NOW },
+			},
+			{
+				label: 'publish conflict', method: 'watchGatePublishConflict',
+				call: owner.publishMigrationConflict,
+				input: { snapshotHash: HASH, conflictCode: 'legacy_owner_conflict', updatedAt: NOW },
+				gate: { singleton: 1, state: 'conflict', snapshot_hash: OTHER_HASH, conflict_code: 'legacy_snapshot_changed', updated_at: NOW },
+			},
+			{
+				label: 'retry conflict', method: 'watchGateRetryConflict',
+				call: owner.retryMigrationConflict,
+				input: {
+					expectedSnapshotHash: HASH, expectedConflictCode: 'legacy_owner_conflict',
+					replacementSnapshotHash: OTHER_HASH, updatedAt: NOW,
+				},
+				gate: { singleton: 1, state: 'quarantined', snapshot_hash: HASH, conflict_code: null, updated_at: NOW },
+			},
+			{
+				label: 'complete migration', method: 'watchGateCompleteMigration',
+				call: owner.completeMigrationGate, input: { snapshotHash: HASH, updatedAt: NOW },
+				gate: { singleton: 1, state: 'complete', snapshot_hash: OTHER_HASH, conflict_code: null, updated_at: NOW },
+			},
+		];
+
+		for (const scenario of cases) {
+			let calls = 0;
+			const result = await scenario.call(scenario.input, {
+				driver: {
+					[scenario.method]: () => {
+						calls += 1;
+						return { ok: true, changed: true, reason: 'spoofed', gate: scenario.gate };
+					},
+				},
+			});
+			expect(result, scenario.label).toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
+			expect(calls, scenario.label).toBe(1);
+		}
 	});
 
 	test('returns gate-shaped envelopes for every gate input validation failure', async () => {
@@ -1199,6 +1337,37 @@ describe('watch owner SQLite authority', () => {
 			ok: true, changed: true, reason: 'complete',
 			record: { phase: 'complete', watcherPid: null, terminalReceiptId: 'receipt-58' },
 		});
+	});
+
+	test('replays an exact blocked legacy row without rechecking volatile PID liveness', async () => {
+		const ctx = { repo: 'acme/forge', pr: 72 };
+		const base = { driver, now: NOW };
+		await owner.publishMigrationQuarantine({ updatedAt: NOW }, base);
+		await owner.bindMigrationSnapshot({ snapshotHash: HASH, updatedAt: NOW }, base);
+		const input = {
+			blockReason: 'legacy_live_pid', pid: 572, terminalReceiptId: 'legacy-receipt-72',
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH, startedAt: NOW,
+		};
+		let pidChecks = 0;
+		const blocked = await owner.markLegacyBlocked(ctx, input, {
+			...base,
+			isPidAlive: () => { pidChecks += 1; return true; },
+		});
+		const replay = await owner.markLegacyBlocked(ctx, input, {
+			...base,
+			isPidAlive: () => { throw new Error('PID evidence must not be rechecked'); },
+		});
+		const mismatched = await owner.markLegacyBlocked(ctx, {
+			...input, pid: 573,
+		}, {
+			...base,
+			isPidAlive: () => { pidChecks += 1; return false; },
+		});
+
+		expect(blocked).toMatchObject({ ok: true, changed: true, reason: 'blocked' });
+		expect(replay).toEqual({ ok: true, changed: false, reason: 'idempotent', record: blocked.record });
+		expect(mismatched).toMatchObject({ ok: false, changed: false, reason: 'pid_dead' });
+		expect(pidChecks).toBe(2);
 	});
 
 	test.each([
