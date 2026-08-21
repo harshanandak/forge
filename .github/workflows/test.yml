@@ -127,10 +127,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: bash test-env/automation/setup-fixtures.sh --force
-      - name: Run matrix unit tests
-        run: bun test --timeout 15000 test/ --reporter=junit --reporter-outfile test-results/full-matrix-${{ matrix.os }}-node${{ matrix.node-version }}.xml
-      - name: Build matrix test profile
-        run: node scripts/test-profile.js --input-dir test-results --output test-results/full-matrix-${{ matrix.os }}-node${{ matrix.node-version }}.profile.json --label full-matrix-${{ matrix.os }}-node${{ matrix.node-version }} --integration-skipped true
+      - name: Run matrix full suite
+        run: node scripts/test-full-suite.js --timeout 15000 --label-prefix full-matrix-${{ matrix.os }}-node${{ matrix.node-version }}
       - name: Upload matrix artifacts
         uses: actions/upload-artifact@v7
         if: always()

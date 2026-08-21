@@ -104,10 +104,25 @@ function executionProbe() {
 
 describe('scripts/test-full-suite.js', () => {
   test('parseArgs reads shard count and label prefix', () => {
-    expect(parseArgs(['--shards', '3', '--label-prefix', 'bench'])).toEqual({
+    expect(parseArgs(['--shards', '3', '--label-prefix', 'bench', '--timeout', '15000'])).toEqual({
       labelPrefix: 'bench',
       shards: 3,
+      timeoutMs: 15000,
     });
+  });
+
+  test('parseArgs rejects an invalid shard timeout', () => {
+    expect(() => parseArgs(['--timeout', '0'])).toThrow('--timeout must be a positive integer');
+    expect(() => parseArgs(['--timeout', 'not-a-number'])).toThrow('--timeout must be a positive integer');
+  });
+
+  test('buildShardTestArgs preserves an explicit shard timeout', () => {
+    const args = buildShardTestArgs({
+      files: ['test/example.test.js'],
+      junitPath: 'test-results/example.xml',
+      timeoutMs: 15000,
+    });
+    expect(args.slice(0, 3)).toEqual(['test', '--timeout', '15000']);
   });
 
   test('getDefaultShardCount clamps to a conservative local parallelism limit', () => {

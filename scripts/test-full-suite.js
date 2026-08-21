@@ -31,6 +31,7 @@ const RESOURCE_LANE_RANK = new Map([
   ['subprocess', 1],
   ['exclusive', 2],
 ]);
+const DEFAULT_SHARD_TIMEOUT_MS = 30000;
 const JS_FAMILY_EXTENSIONS = ['.js', '.cjs', '.mjs', '.jsx', '.ts', '.cts', '.mts', '.tsx'];
 const FORGE_COORDINATION_ENV = new Set([
   'FORGE_ACTOR',
@@ -51,6 +52,7 @@ function parseArgs(argv) {
   const args = {
     labelPrefix: 'local-full',
     shards: null,
+    timeoutMs: DEFAULT_SHARD_TIMEOUT_MS,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -59,9 +61,18 @@ function parseArgs(argv) {
 
     if (current === '--label-prefix') args.labelPrefix = next;
     if (current === '--shards') args.shards = Number.parseInt(next, 10);
+    if (current === '--timeout') args.timeoutMs = parseTimeoutMs(next);
   }
 
   return args;
+}
+
+function parseTimeoutMs(value) {
+  const timeoutMs = Number(value);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('--timeout must be a positive integer');
+  }
+  return timeoutMs;
 }
 
 function getDefaultShardCount(cpuCount = os.cpus().length) {
@@ -515,11 +526,16 @@ async function runLaneSchedule(lanes, execute, cancel = () => {}) {
   });
 }
 
-function buildShardTestArgs({ junitPath, files, root = rootDir }) {
+function buildShardTestArgs({
+  junitPath,
+  files,
+  root = rootDir,
+  timeoutMs = DEFAULT_SHARD_TIMEOUT_MS,
+}) {
   return [
     'test',
     '--timeout',
-    '30000',
+    String(parseTimeoutMs(timeoutMs)),
     '--reporter=junit',
     '--reporter-outfile',
     junitPath,
@@ -676,6 +692,7 @@ function spawnShard(shard, options = {}) {
       child = spawn(bunCommand, buildShardTestArgs({
         junitPath,
         files: shard.files,
+        timeoutMs: options.timeoutMs,
       }), {
         cwd: rootDir,
         env,
@@ -791,6 +808,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
           spawn: deps.spawn,
           platform,
           processTree,
+          timeoutMs: args.timeoutMs,
         }),
         resource: lane.name,
       }), () => {

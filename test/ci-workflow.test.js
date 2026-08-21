@@ -87,6 +87,15 @@ describe('CI Workflow Configuration', () => {
       expect(workflowContent.includes('node-version: [22, 24]')).toBe(true);
     });
 
+    test('full matrix uses the resource-aware suite runner', () => {
+      const start = workflowContent.indexOf('  full-matrix:');
+      const end = workflowContent.indexOf('  unit-shard:');
+      const fullMatrix = workflowContent.slice(start, end);
+
+      expect(fullMatrix).toContain('node scripts/test-full-suite.js --timeout 15000 --label-prefix full-matrix-${{ matrix.os }}-node${{ matrix.node-version }}');
+      expect(fullMatrix).not.toContain('bun test --timeout 15000 test/');
+    });
+
     test('changes classifier always demands the full matrix off pull requests', () => {
       expectSection('changes');
       expect(workflowContent.includes('os_sensitive: ${{ steps.filter.outputs.os_sensitive }}')).toBe(true);
