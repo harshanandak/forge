@@ -1324,7 +1324,7 @@ describe('watch owner dedicated SQLite transaction', () => {
 				id TEXT NOT NULL PRIMARY KEY
 			);
 			CREATE TABLE kernel_pr_watch_owners (
-				repo TEXT NOT NULL,
+				repo TEXT NOT NULL REFERENCES kernel_pr_watch_parent (id) ON DELETE CASCADE,
 				pr INTEGER NOT NULL,
 				version INTEGER NOT NULL,
 				generation TEXT NOT NULL,
@@ -1337,9 +1337,7 @@ describe('watch owner dedicated SQLite transaction', () => {
 				terminal_receipt_id TEXT,
 				block_reason TEXT,
 				legacy_evidence_hash TEXT,
-				parent_id TEXT NOT NULL,
-				PRIMARY KEY (repo, pr),
-				FOREIGN KEY (parent_id) REFERENCES kernel_pr_watch_parent (id) ON DELETE CASCADE
+				PRIMARY KEY (repo, pr)
 			);
 		`);
 		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 118 }, {
