@@ -90,6 +90,42 @@ describe('watch owner SQLite authority', () => {
 	let databasePath;
 	let driver;
 
+	beforeEach(async () => {
+		root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-owner-sqlite-'));
+		databasePath = path.join(root, 'forge', 'kernel.sqlite');
+		driver = createBuiltinSQLiteDriver({ databasePath });
+		await driver.exec(`
+			CREATE TABLE kernel_pr_watch_owners (
+				repo TEXT NOT NULL,
+				pr INTEGER NOT NULL,
+				version INTEGER NOT NULL,
+				generation TEXT NOT NULL,
+				phase TEXT NOT NULL,
+				controller_pid INTEGER,
+				watcher_pid INTEGER,
+				started_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				heartbeat_at TEXT,
+				terminal_receipt_id TEXT,
+				block_reason TEXT,
+				legacy_evidence_hash TEXT,
+				PRIMARY KEY (repo, pr)
+			);
+			CREATE TABLE kernel_pr_watch_migration_gate (
+				singleton INTEGER NOT NULL PRIMARY KEY,
+				state TEXT NOT NULL,
+				snapshot_hash TEXT,
+				conflict_code TEXT,
+				updated_at TEXT NOT NULL
+			);
+		`);
+	});
+
+	afterEach(() => {
+		driver?.close();
+		fs.rmSync(root, { recursive: true, force: true });
+	});
+
 	test('exports only the six exact migration-gate domain API names', () => {
 		expect(Object.keys(owner).filter(name => name.includes('Migration')).sort()).toEqual([
 			'bindMigrationSnapshot',
@@ -445,42 +481,6 @@ describe('watch owner SQLite authority', () => {
 			verifyTerminalReceipt: async () => true,
 		})).toMatchObject({ ok: true, changed: true, reason: 'terminal_pending' });
 		expect(calls).toEqual(['read', 'record']);
-	});
-
-	beforeEach(async () => {
-		root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-owner-sqlite-'));
-		databasePath = path.join(root, 'forge', 'kernel.sqlite');
-		driver = createBuiltinSQLiteDriver({ databasePath });
-		await driver.exec(`
-			CREATE TABLE kernel_pr_watch_owners (
-				repo TEXT NOT NULL,
-				pr INTEGER NOT NULL,
-				version INTEGER NOT NULL,
-				generation TEXT NOT NULL,
-				phase TEXT NOT NULL,
-				controller_pid INTEGER,
-				watcher_pid INTEGER,
-				started_at TEXT NOT NULL,
-				updated_at TEXT NOT NULL,
-				heartbeat_at TEXT,
-				terminal_receipt_id TEXT,
-				block_reason TEXT,
-				legacy_evidence_hash TEXT,
-				PRIMARY KEY (repo, pr)
-			);
-			CREATE TABLE kernel_pr_watch_migration_gate (
-				singleton INTEGER NOT NULL PRIMARY KEY,
-				state TEXT NOT NULL,
-				snapshot_hash TEXT,
-				conflict_code TEXT,
-				updated_at TEXT NOT NULL
-			);
-		`);
-	});
-
-	afterEach(() => {
-		driver?.close();
-		fs.rmSync(root, { recursive: true, force: true });
 	});
 
 	test('reserveStarting mints exactly one generation in the authoritative row', async () => {
@@ -2186,5 +2186,27 @@ describe('watch owner successful-result postcondition validation', () => {
 			watchOwnerRead: () => ({ ok: true, changed: false, reason: 'read', row: null }),
 		}));
 		expect(readWithoutRow).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+	});
+
+	test('snapshots accessor-backed driver results before validating success', async () => {
+		let okReads = 0;
+		const flipping = {
+			get ok() {
+				okReads += 1;
+				return okReads > 1;
+			},
+			changed: true,
+			reason: 'acquired',
+			row: null,
+		};
+		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 956 }, {
+			controllerPid: CONTROLLER_PID, startedAt: NOW,
+		}, authorityOpts({
+			...driver,
+			watchOwnerReserveStarting: () => flipping,
+		}));
+		expect(okReads).toBe(1);
+		expect(result.ok).toBe(false);
+		expect(result.record).toBeNull();
 	});
 });
