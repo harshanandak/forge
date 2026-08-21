@@ -476,7 +476,7 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
   return lanes;
 }
 
-async function runLaneSchedule(lanes, execute, cancel = () => {}) {
+async function runLaneSchedule(lanes, execute, cancel = () => {}, options = {}) {
   const runLane = async (lane, concurrency = lane.concurrency, schedule = { stopped: false }) => {
     const laneResults = new Array(lane.shards.length);
     let nextIndex = 0;
@@ -512,13 +512,22 @@ async function runLaneSchedule(lanes, execute, cancel = () => {}) {
   const sharedLanes = lanes.filter((lane) => lane.name !== 'exclusive');
   const overlapsSubprocess = sharedLanes.some((lane) => lane.name === 'subprocess');
   const sharedSchedule = { stopped: false };
-  const settledSharedLanes = await Promise.allSettled(sharedLanes.map(async (lane) => {
-    // One unit worker fills otherwise-idle CPU without recreating broad process pressure.
-    const concurrency = overlapsSubprocess && lane.name === 'unit' ? 1 : lane.concurrency;
+  const runSharedLane = async (lane) => {
+    // In overlap mode, one unit worker fills otherwise-idle CPU without recreating broad process pressure.
+    const concurrency = !options.serializeSharedLanes
+      && overlapsSubprocess
+      && lane.name === 'unit'
+      ? 1
+      : lane.concurrency;
     resultsByLane.set(lane, await runLane(lane, concurrency, sharedSchedule));
-  }));
-  const sharedFailure = settledSharedLanes.find((result) => result.status === 'rejected');
-  if (sharedFailure) throw sharedFailure.reason;
+  };
+  if (options.serializeSharedLanes) {
+    for (const lane of sharedLanes) await runSharedLane(lane);
+  } else {
+    const settledSharedLanes = await Promise.allSettled(sharedLanes.map(runSharedLane));
+    const sharedFailure = settledSharedLanes.find((result) => result.status === 'rejected');
+    if (sharedFailure) throw sharedFailure.reason;
+  }
 
   for (const lane of lanes.filter((candidate) => candidate.name === 'exclusive')) {
     resultsByLane.set(lane, await runLane(lane));
@@ -821,7 +830,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
         if (scheduleCancelled) return;
         scheduleCancelled = true;
         processTree.cleanup('SIGKILL');
-      });
+      }, { serializeSharedLanes: platform === 'win32' });
     } catch (error) {
       console.error('Full suite shard execution failed:', error);
       const exitCode = signal ? signalExitCode(signal) : 1;

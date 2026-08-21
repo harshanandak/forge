@@ -411,6 +411,34 @@ describe('scripts/test-full-suite.js', () => {
     ]));
   });
 
+  test('runLaneSchedule can serialize shared lanes without starting subprocess work early', async () => {
+    const probe = executionProbe();
+    const scheduled = runLaneSchedule([
+      { name: 'unit', concurrency: 2, shards: [{ id: 'u0' }, { id: 'u1' }] },
+      { name: 'subprocess', concurrency: 2, shards: [{ id: 's0' }, { id: 's1' }] },
+      { name: 'exclusive', concurrency: 1, shards: [{ id: 'e0' }] },
+    ], probe.execute, () => {}, { serializeSharedLanes: true });
+
+    await probe.waitForStarted(2);
+    expect(probe.started).toEqual(['u0', 'u1']);
+    expect(probe.active.size).toBe(2);
+    probe.release('u0');
+    await Promise.resolve();
+    expect(probe.started).toEqual(['u0', 'u1']);
+    probe.release('u1');
+
+    await probe.waitForStarted(4);
+    expect(probe.started).toEqual(['u0', 'u1', 's0', 's1']);
+    expect(probe.active.size).toBe(2);
+    probe.release('s0');
+    probe.release('s1');
+
+    await probe.waitForStarted(5);
+    expect(probe.started).toEqual(['u0', 'u1', 's0', 's1', 'e0']);
+    probe.release('e0');
+    expect(await scheduled).toEqual(['u0', 'u1', 's0', 's1', 'e0']);
+  });
+
   test('runLaneSchedule settles in-flight shared work before propagating a failure', async () => {
     const probe = executionProbe();
     const scheduled = runLaneSchedule([
