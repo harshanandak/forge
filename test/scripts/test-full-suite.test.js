@@ -619,6 +619,78 @@ describe('scripts/test-full-suite.js', () => {
     expect(writtenProfiles[1].label).toBe('local-full');
   });
 
+  test('explicit shard counts cap concurrent workers across shared resource lanes', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const spawn = (_command, args) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      const child = new EventEmitter();
+      child.pid = 9600 + active;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      const junitPath = args[args.indexOf('--reporter-outfile') + 1];
+      fs.writeFileSync(junitPath, passingShardReceipt);
+      process.nextTick(() => {
+        child.stdout.emit('data', '1 pass\nRan 1 test across 1 file.\n');
+        child.emit('close', 0);
+        active -= 1;
+      });
+      return child;
+    };
+    const runOptions = () => ({
+      allTests: ['test/a.test.js', 'test/b.test.js', 'test/spawn-a.test.js', 'test/spawn-b.test.js'],
+      classify: (file) => (file.indexOf('spawn') !== -1 ? 'subprocess' : 'unit'),
+      durationMap: new Map(),
+      cpuCount: 8,
+      processTree: fakeProcessTree(),
+      spawn,
+    });
+
+    const oneStatus = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, runOptions());
+    expect(oneStatus).toBe(0);
+    expect(maxActive).toBe(1);
+
+    maxActive = 0;
+    active = 0;
+    const twoStatus = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 2 }, runOptions());
+    expect(twoStatus).toBe(0);
+    expect(maxActive).toBe(2);
+  });
+
+  test('default scheduling keeps resource-aware overlap when no explicit shard count is given', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const spawn = (_command, args) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      const child = new EventEmitter();
+      child.pid = 9700 + active;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      const junitPath = args[args.indexOf('--reporter-outfile') + 1];
+      fs.writeFileSync(junitPath, passingShardReceipt);
+      process.nextTick(() => {
+        child.stdout.emit('data', '1 pass\nRan 1 test across 1 file.\n');
+        child.emit('close', 0);
+        active -= 1;
+      });
+      return child;
+    };
+
+    const status = await runFullSuiteInParallel({}, {
+      allTests: ['test/a.test.js', 'test/spawn-a.test.js'],
+      classify: (file) => (file.indexOf('spawn') !== -1 ? 'subprocess' : 'unit'),
+      durationMap: new Map(),
+      cpuCount: 1,
+      processTree: fakeProcessTree(),
+      spawn,
+    });
+
+    expect(status).toBe(0);
+    expect(maxActive).toBeGreaterThan(1);
+  });
+
   test('concurrent full-suite invocations use disjoint receipt directories', async () => {
     const receiptPaths = [];
     let pid = 9020;

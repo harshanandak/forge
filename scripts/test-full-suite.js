@@ -472,7 +472,7 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
   return lanes;
 }
 
-async function runLaneSchedule(lanes, execute, cancel = () => {}) {
+async function runLaneSchedule(lanes, execute, cancel = () => {}, options = {}) {
   const runLane = async (lane, concurrency = lane.concurrency, schedule = { stopped: false }) => {
     const laneResults = new Array(lane.shards.length);
     let nextIndex = 0;
@@ -508,13 +508,44 @@ async function runLaneSchedule(lanes, execute, cancel = () => {}) {
   const sharedLanes = lanes.filter((lane) => lane.name !== 'exclusive');
   const overlapsSubprocess = sharedLanes.some((lane) => lane.name === 'subprocess');
   const sharedSchedule = { stopped: false };
-  const settledSharedLanes = await Promise.allSettled(sharedLanes.map(async (lane) => {
+  // An explicit shard count is an operator-imposed cap on total concurrent
+  // children; reserve the budget for heavier subprocess workers first and
+  // defer leftover lanes until capacity frees instead of exceeding it.
+  const workerBudget = Number.isInteger(options.workerBudget) && options.workerBudget > 0
+    ? options.workerBudget
+    : null;
+  const grants = new Map();
+  if (workerBudget !== null) {
+    let reservedWorkers = 0;
+    const grantWorkers = (want) => {
+      const grant = Math.min(want, Math.max(0, workerBudget - reservedWorkers));
+      reservedWorkers += grant;
+      return grant;
+    };
+    for (const lane of [...sharedLanes].sort((a, b) => (a.name === 'subprocess' ? 0 : 1) - (b.name === 'subprocess' ? 0 : 1))) {
+      const base = overlapsSubprocess && lane.name === 'unit' ? 1 : lane.concurrency;
+      grants.set(lane, grantWorkers(base));
+    }
+  }
+  const deferredLanes = grants.size > 0
+    ? sharedLanes.filter((lane) => grants.get(lane) === 0)
+    : [];
+  const immediateLanes = grants.size > 0
+    ? sharedLanes.filter((lane) => (grants.get(lane) ?? lane.concurrency) > 0)
+    : sharedLanes;
+  const settledSharedLanes = await Promise.allSettled(immediateLanes.map(async (lane) => {
     // One unit worker fills otherwise-idle CPU without recreating broad process pressure.
-    const concurrency = overlapsSubprocess && lane.name === 'unit' ? 1 : lane.concurrency;
+    const concurrency = workerBudget === null && overlapsSubprocess && lane.name === 'unit'
+      ? 1
+      : (grants.get(lane) ?? lane.concurrency);
     resultsByLane.set(lane, await runLane(lane, concurrency, sharedSchedule));
   }));
   const sharedFailure = settledSharedLanes.find((result) => result.status === 'rejected');
   if (sharedFailure) throw sharedFailure.reason;
+  // Budget-exhausted lanes start only after reserved capacity has been released.
+  await Promise.allSettled(deferredLanes.map(async (lane) => {
+    resultsByLane.set(lane, await runLane(lane, Math.min(lane.concurrency, workerBudget), sharedSchedule));
+  }));
 
   for (const lane of lanes.filter((candidate) => candidate.name === 'exclusive')) {
     resultsByLane.set(lane, await runLane(lane));
@@ -815,6 +846,8 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
         if (scheduleCancelled) return;
         scheduleCancelled = true;
         processTree.cleanup('SIGKILL');
+      }, {
+        workerBudget: Number.isInteger(args.shards) && args.shards > 0 ? args.shards : null,
       });
     } catch (error) {
       console.error('Full suite shard execution failed:', error);
