@@ -15,6 +15,76 @@ const INVALID_TIMESTAMP = '2026-13-40T25:61:61.999Z';
 const HASH = 'a'.repeat(64);
 const OTHER_HASH = 'b'.repeat(64);
 
+// Injected drivers must obey the same success postconditions the wrapper
+// enforces on the builtin driver: exact transition reason, changed flag, and a
+// row satisfying the operation's phase/identity/null-row contract.
+function injectedOwnerSuccess(operation, row, input) {
+	const now = input.now || NOW;
+	const freshGeneration = `${input.generation || 'generation'}-injected-fresh`;
+	switch (operation) {
+	case 'watchOwnerReserveReopened':
+		return {
+			ok: true, changed: true, reason: 'reopened',
+			row: { ...row, generation: freshGeneration, phase: 'starting', controller_pid: input.controllerPid,
+				watcher_pid: null, started_at: now, updated_at: now, heartbeat_at: null,
+				terminal_receipt_id: null, block_reason: null },
+		};
+	case 'watchOwnerRecordTerminal':
+		return {
+			ok: true, changed: true, reason: 'terminal_pending',
+			row: { ...row, phase: 'terminal_pending', terminal_receipt_id: input.terminalReceiptId, updated_at: now },
+		};
+	case 'watchOwnerCompleteTerminal':
+		return {
+			ok: true, changed: true, reason: 'complete',
+			row: { ...row, phase: 'complete', watcher_pid: null, heartbeat_at: null,
+				terminal_receipt_id: input.terminalReceiptId, updated_at: now },
+		};
+	case 'watchOwnerAbortStarting':
+		return { ok: true, changed: true, reason: 'aborted', row: null };
+	case 'watchOwnerReleaseNonterminal':
+		return { ok: true, changed: true, reason: 'released', row: null };
+	case 'watchOwnerRecoverDeadStarting':
+	case 'watchOwnerRecoverDeadWatcher':
+		return {
+			ok: true, changed: true, reason: 'recovered',
+			row: { ...row, generation: freshGeneration, phase: 'starting', controller_pid: input.controllerPid,
+				watcher_pid: null, started_at: now, updated_at: now, heartbeat_at: null,
+				terminal_receipt_id: null, block_reason: null },
+		};
+	case 'watchOwnerMarkLegacyBlocked':
+		return {
+			ok: true, changed: true, reason: 'blocked',
+			row: { ...row, phase: 'blocked', controller_pid: null, watcher_pid: input.watcherPid ?? null,
+				heartbeat_at: null, terminal_receipt_id: input.terminalReceiptId ?? null,
+				block_reason: input.blockReason, legacy_evidence_hash: input.legacyEvidenceHash },
+		};
+	case 'watchOwnerRecheckLegacyBlocked':
+		if (input.action === 'release') return { ok: true, changed: true, reason: 'released', row: null };
+		return {
+			ok: true, changed: true, reason: 'complete',
+			row: { ...row, phase: 'complete', watcher_pid: null, heartbeat_at: null,
+				terminal_receipt_id: input.terminalReceiptId, block_reason: null, updated_at: now },
+		};
+	case 'watchOwnerImportLegacyStarting':
+		return {
+			ok: true, changed: true, reason: 'imported',
+			row: { ...row, generation: freshGeneration, phase: 'starting', controller_pid: input.controllerPid,
+				watcher_pid: null, started_at: now, updated_at: now, heartbeat_at: null,
+				terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: input.legacyEvidenceHash },
+		};
+	case 'watchOwnerImportLegacyComplete':
+		return {
+			ok: true, changed: true, reason: 'imported',
+			row: { ...row, generation: freshGeneration, phase: 'complete', controller_pid: null,
+				watcher_pid: null, heartbeat_at: null, terminal_receipt_id: input.terminalReceiptId,
+				block_reason: null, legacy_evidence_hash: input.legacyEvidenceHash },
+		};
+	default:
+		throw new Error(`no injected success factory for ${operation}`);
+	}
+}
+
 describe('watch owner SQLite authority', () => {
 	let root;
 	let databasePath;
@@ -108,7 +178,9 @@ describe('watch owner SQLite authority', () => {
 			watchOwnerRecordTerminal(input) {
 				submitted = input;
 				const authorized = input.expectedSnapshot?.phase === 'running';
-				return { ok: authorized, changed: authorized, reason: authorized ? 'recorded' : 'snapshot_mismatch' };
+				return authorized
+					? injectedOwnerSuccess('watchOwnerRecordTerminal', retainedRow, input)
+					: { ok: false, changed: false, reason: 'snapshot_mismatch' };
 			},
 		};
 
@@ -123,7 +195,7 @@ describe('watch owner SQLite authority', () => {
 			},
 		});
 
-		expect(result).toMatchObject({ ok: true, changed: true, reason: 'recorded' });
+		expect(result).toMatchObject({ ok: true, changed: true, reason: 'terminal_pending' });
 		expect(submitted.expectedSnapshot).toMatchObject({ phase: 'running', watcher_pid: 268 });
 		expect(Object.isFrozen(submitted.expectedSnapshot)).toBe(true);
 		expect(retainedRow.phase).toBe('blocked');
@@ -190,7 +262,19 @@ describe('watch owner SQLite authority', () => {
 			awaitKind: 'pid-and-provider', pidResult: false,
 		}],
 	])('pins the authority target across async %s evidence verification', async (method, scenario) => {
-		const makeDriver = (label, blocked = false) => {
+		const successReasons = {
+			reserveReopened: 'reopened',
+			recordTerminal: 'terminal_pending',
+			completeTerminal: 'complete',
+			abortStarting: 'aborted',
+			recoverDeadStarting: 'recovered',
+			recoverDeadWatcher: 'recovered',
+			markLegacyBlocked: 'blocked',
+			recheckLegacyBlocked: 'complete',
+			importLegacyStarting: 'imported',
+			importLegacyComplete: 'imported',
+		};
+		const makeDriver = (_label, blocked = false) => {
 			const calls = [];
 			const row = {
 				repo: 'acme/forge', pr: 77, version: 1, generation: 'generation-77',
@@ -224,7 +308,7 @@ describe('watch owner SQLite authority', () => {
 			]) {
 				driver[operation] = (input, config) => {
 					calls.push({ method: operation, input, config });
-					return { ok: true, changed: true, reason: `mutated-${label}`, row: null };
+					return injectedOwnerSuccess(operation, row, input);
 				};
 			}
 			return driver;
@@ -262,7 +346,7 @@ describe('watch owner SQLite authority', () => {
 		}
 
 		const result = await owner[method]({ repo: 'acme/forge', pr: 77 }, scenario.input, opts);
-		expect(result).toMatchObject({ ok: true, changed: true, reason: `mutated-A` });
+		expect(result).toMatchObject({ ok: true, changed: true, reason: successReasons[method] });
 		expect(driverB.calls).toEqual([]);
 		expect(driverA.calls.length).toBeGreaterThanOrEqual(2);
 		expect(driverA.calls.every(call => call.config.databasePath === 'authority-A.sqlite')).toBe(true);
@@ -274,9 +358,9 @@ describe('watch owner SQLite authority', () => {
 			controller_pid: null, watcher_pid: 279, started_at: NOW, updated_at: NOW,
 			heartbeat_at: NOW, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
 		};
-		const makeDriver = label => ({
+		const makeDriver = _label => ({
 			watchOwnerRead: () => ({ ok: true, changed: false, reason: 'read', row }),
-			watchOwnerRecordTerminal: () => ({ ok: true, changed: true, reason: `mutated-${label}`, row: null }),
+			watchOwnerRecordTerminal: input => injectedOwnerSuccess('watchOwnerRecordTerminal', row, input),
 		});
 		const driverA = makeDriver('A');
 		const driverB = makeDriver('B');
@@ -301,7 +385,7 @@ describe('watch owner SQLite authority', () => {
 
 		expect(await owner.recordTerminal({ repo: 'acme/forge', pr: 79 }, {
 			generation: 'generation-79', pid: 279, terminalReceiptId: 'receipt-79', updatedAt: NEXT,
-		}, opts)).toMatchObject({ ok: true, changed: true, reason: 'mutated-A' });
+		}, opts)).toMatchObject({ ok: true, changed: true, reason: 'terminal_pending' });
 	});
 
 	test('returns a tagged invalid-input envelope when mutation accessors throw', async () => {
@@ -327,14 +411,19 @@ describe('watch owner SQLite authority', () => {
 
 	test('binds only the exact authority methods needed by an evidence-bound call', async () => {
 		const calls = [];
+		const readRow = {
+			repo: 'acme/forge', pr: 303, version: 1, generation: 'generation-303', phase: 'running',
+			controller_pid: null, watcher_pid: 303, started_at: NOW, updated_at: NOW,
+			heartbeat_at: NOW, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
+		};
 		const target = {
 			watchOwnerRead() {
 				calls.push('read');
-				return { ok: true, changed: false, reason: 'read', row: null };
+				return { ok: true, changed: false, reason: 'read', row: readRow };
 			},
-			watchOwnerRecordTerminal() {
+			watchOwnerRecordTerminal(input) {
 				calls.push('record');
-				return { ok: true, changed: true, reason: 'recorded', row: null };
+				return injectedOwnerSuccess('watchOwnerRecordTerminal', readRow, input);
 			},
 		};
 		const driverProxy = new Proxy(target, {
@@ -354,7 +443,7 @@ describe('watch owner SQLite authority', () => {
 		}, {
 			driver: driverProxy,
 			verifyTerminalReceipt: async () => true,
-		})).toMatchObject({ ok: true, changed: true, reason: 'recorded' });
+		})).toMatchObject({ ok: true, changed: true, reason: 'terminal_pending' });
 		expect(calls).toEqual(['read', 'record']);
 	});
 
@@ -1536,5 +1625,547 @@ describe('watch owner SQLite authority', () => {
 			pr += 1;
 		}
 		expect(await driver.queryAll('SELECT pr FROM kernel_pr_watch_owners WHERE pr IN (1, 80, 81)')).toEqual([]);
+	});
+});
+
+describe('watch owner successful-result postcondition validation', () => {
+	let root;
+	let databasePath;
+	let driver;
+	let gateSequence;
+
+	beforeEach(async () => {
+		gateSequence = 0;
+		root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-owner-postcondition-'));
+		databasePath = path.join(root, 'forge', 'kernel.sqlite');
+		driver = createBuiltinSQLiteDriver({ databasePath });
+		await driver.exec(`
+			CREATE TABLE kernel_pr_watch_owners (
+				repo TEXT NOT NULL,
+				pr INTEGER NOT NULL,
+				version INTEGER NOT NULL,
+				generation TEXT NOT NULL,
+				phase TEXT NOT NULL,
+				controller_pid INTEGER,
+				watcher_pid INTEGER,
+				started_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				heartbeat_at TEXT,
+				terminal_receipt_id TEXT,
+				block_reason TEXT,
+				legacy_evidence_hash TEXT,
+				PRIMARY KEY (repo, pr)
+			);
+			CREATE TABLE kernel_pr_watch_migration_gate (
+				singleton INTEGER NOT NULL PRIMARY KEY,
+				state TEXT NOT NULL,
+				snapshot_hash TEXT,
+				conflict_code TEXT,
+				updated_at TEXT NOT NULL
+			);
+		`);
+	});
+
+	afterEach(() => {
+		driver?.close();
+		fs.rmSync(root, { recursive: true, force: true });
+	});
+
+	const CONTROLLER_PID = 101;
+	const WATCHER_PID = 201;
+	const RECOVERY_PID = 301;
+	const LEGACY_PID = 401;
+	const RECEIPT_ID = 'receipt-postcondition';
+	const FINAL = '2026-08-19T08:00:04.000Z';
+
+	function authorityOpts(driverOverride, alive = []) {
+		const livePids = new Set(alive);
+		return {
+			driver: driverOverride || driver,
+			isPidAlive: async pid => livePids.has(pid),
+			verifyTerminalReceipt: async () => true,
+			verifyProviderEvidence: async () => true,
+		};
+	}
+
+	function toSnakeRow(record) {
+		return {
+			repo: record.repo, pr: record.pr, version: record.version, generation: record.generation,
+			phase: record.phase, controller_pid: record.controllerPid, watcher_pid: record.watcherPid,
+			started_at: record.startedAt, updated_at: record.updatedAt, heartbeat_at: record.heartbeatAt,
+			terminal_receipt_id: record.terminalReceiptId, block_reason: record.blockReason,
+			legacy_evidence_hash: record.legacyEvidenceHash,
+		};
+	}
+
+	async function seedLifecycle(ctx, targetPhase) {
+		const opts = authorityOpts();
+		const started = await owner.reserveStarting(ctx, {
+			controllerPid: CONTROLLER_PID, startedAt: NOW,
+		}, opts);
+		expect(started.ok).toBe(true);
+		const prior = { generation: started.record.generation, record: started.record };
+		if (targetPhase === 'starting') return prior;
+		const bound = await owner.bindRunning(ctx, {
+			generation: prior.generation, controllerPid: CONTROLLER_PID, pid: WATCHER_PID, updatedAt: LATER,
+		}, opts);
+		expect(bound.ok).toBe(true);
+		if (targetPhase === 'running') return { ...prior, record: bound.record };
+		const stopped = await owner.requestStop(ctx, {
+			generation: prior.generation, pid: WATCHER_PID, updatedAt: NEXT,
+		}, opts);
+		expect(stopped.ok).toBe(true);
+		if (targetPhase === 'stop_requested') return { ...prior, record: stopped.record };
+		const recorded = await owner.recordTerminal(ctx, {
+			generation: prior.generation, pid: WATCHER_PID, terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
+		}, opts);
+		expect(recorded.ok).toBe(true);
+		if (targetPhase === 'terminal_pending') return { ...prior, record: recorded.record };
+		const completed = await owner.completeTerminal(ctx, {
+			generation: prior.generation, pid: WATCHER_PID, terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
+		}, opts);
+		expect(completed.ok).toBe(true);
+		return { ...prior, record: completed.record };
+	}
+
+	async function seedGate(_ctx) {
+		gateSequence += 1;
+		const stamps = [NOW, LATER, NEXT, FINAL];
+		const stamp = stamps[Math.min(gateSequence - 1, stamps.length - 1)];
+		const published = await owner.publishMigrationQuarantine({ updatedAt: stamp }, authorityOpts());
+		expect(published.ok).toBe(true);
+		const bound = await owner.bindMigrationSnapshot({ snapshotHash: HASH, updatedAt: stamp }, authorityOpts());
+		expect(bound.ok).toBe(true);
+	}
+
+	async function seedBlocked(ctx, livePid) {
+		await seedGate(ctx);
+		const marked = await owner.markLegacyBlocked(ctx, {
+			blockReason: livePid ? 'legacy_live_pid' : 'legacy_conflict',
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
+			pid: livePid ? LEGACY_PID : undefined,
+			startedAt: LATER,
+		}, authorityOpts(null, livePid ? [LEGACY_PID] : []));
+		expect(marked.ok).toBe(true);
+		return { generation: marked.record.generation, record: marked.record };
+	}
+
+	const POSTCONDITION_SPECS = [
+		{
+			name: 'readOwner',
+			driverMethod: 'watchOwnerRead',
+			async seed(ctx) {
+				return seedLifecycle(ctx, 'starting');
+			},
+			async act(ctx, prior, opts) {
+				return owner.readOwner(ctx, opts);
+			},
+			expect: { changed: false, reason: 'read' },
+			assertSuccess(result, prior) {
+				expect(result.record.phase).toBe('starting');
+				expect(result.record.generation).toBe(prior.generation);
+			},
+			tamper: result => ({ ...result, changed: true }),
+		},
+		{
+			name: 'reserveStarting',
+			driverMethod: 'watchOwnerReserveStarting',
+			async seed() {
+				return null;
+			},
+			async act(ctx, _prior, opts) {
+				return owner.reserveStarting(ctx, {
+					controllerPid: CONTROLLER_PID, startedAt: NOW,
+				}, opts);
+			},
+			expect: { changed: true, reason: 'acquired' }, forbidIdempotent: true,
+			assertSuccess(result) {
+				expect(result.record.phase).toBe('starting');
+				expect(result.record.controllerPid).toBe(CONTROLLER_PID);
+				expect(result.record.watcherPid).toBeNull();
+				expect(result.record.legacyEvidenceHash).toBeNull();
+				expect(result.record.generation).toMatch(/^[0-9a-f-]{36}$/);
+			},
+			tamper: result => ({ ...result, row: { ...result.row, controller_pid: 999 } }),
+		},
+		{
+			name: 'reserveReopened',
+			driverMethod: 'watchOwnerReserveReopened',
+			async seed(ctx) {
+				return seedLifecycle(ctx, 'complete');
+			},
+			async act(ctx, prior, opts) {
+				return owner.reserveReopened(ctx, {
+					generation: prior.generation, controllerPid: RECOVERY_PID,
+					expectedReceiptId: RECEIPT_ID, providerEvidence: { state: 'OPEN' }, startedAt: FINAL,
+				}, opts);
+			},
+			expect: { changed: true, reason: 'reopened' }, forbidIdempotent: true,
+			assertSuccess(result, prior) {
+				expect(result.record.phase).toBe('starting');
+				expect(result.record.controllerPid).toBe(RECOVERY_PID);
+				expect(result.record.terminalReceiptId).toBeNull();
+				expect(result.record.generation).not.toBe(prior.generation);
+			},
+			tamper: result => ({ ...result, row: { ...result.row, controller_pid: 999 } }),
+		},
+		{
+			name: 'bindRunning',
+			driverMethod: 'watchOwnerBindRunning',
+			async seed(ctx) {
+				return seedLifecycle(ctx, 'starting');
+			},
+			async act(ctx, prior, opts) {
+				return owner.bindRunning(ctx, {
+					generation: prior.generation, controllerPid: CONTROLLER_PID, pid: WATCHER_PID, updatedAt: LATER,
+				}, opts);
+			},
+			expect: { changed: true, reason: 'bound' }, replay: true,
+			assertSuccess(result, prior) {
+				expect(result.record.phase).toBe('running');
+				expect(result.record.controllerPid).toBeNull();
+				expect(result.record.watcherPid).toBe(WATCHER_PID);
+				expect(result.record.generation).toBe(prior.generation);
+			},
+			tamper: result => ({ ...result, row: { ...result.row, watcher_pid: WATCHER_PID + 1 } }),
+		},
+		{
+			name: 'heartbeat',
+			driverMethod: 'watchOwnerHeartbeat',
+			async seed(ctx) {
+				return seedLifecycle(ctx, 'running');
+			},
+			async act(ctx, prior, opts) {
+				return owner.heartbeat(ctx, {
+					generation: prior.generation, pid: WATCHER_PID, updatedAt: NEXT,
+				}, opts);
+			},
+			expect: { changed: true, reason: 'heartbeat' }, forbidIdempotent: true,
+			assertSuccess(result, prior) {
+				expect(result.record.phase).toBe('running');
+				expect(result.record.watcherPid).toBe(WATCHER_PID);
+				expect(result.record.generation).toBe(prior.generation);
+			},
+			tamper: result => ({ ...result, row: { ...result.row, watcher_pid: WATCHER_PID + 1 } }),
+		},
+		{
+			name: 'requestStop',
+			driverMethod: 'watchOwnerRequestStop',
+			async seed(ctx) {
+				return seedLifecycle(ctx, 'running');
+			},
+			async act(ctx, prior, opts) {
+				return owner.requestStop(ctx, {
+					generation: prior.generation, pid: WATCHER_PID, updatedAt: NEXT,
+				}, opts);
+			},
+			expect: { changed: true, reason: 'stop_requested' }, replay: true,
+			assertSuccess(result, prior) {
+				expect(result.record.phase).toBe('stop_requested');
+				expect(result.record.watcherPid).toBe(WATCHER_PID);
+				expect(result.record.generation).toBe(prior.generation);
+			},
+			tamper: result => ({ ...result, row: { ...result.row, generation: 'forged-generation' } }),
+		},
+		{
+			name: 'recordTerminal',
+			driverMethod: 'watchOwnerRecordTerminal',
+			async seed(ctx) {
+				return seedLifecycle(ctx, 'running');
+			},
+			async act(ctx, prior, opts) {
+				return owner.recordTerminal(ctx, {
+					generation: prior.generation, pid: WATCHER_PID, terminalReceiptId: RECEIPT_ID, updatedAt: NEXT,
+				}, opts);
+			},
+			expect: { changed: true, reason: 'terminal_pending' }, replay: true,
+			assertSuccess(result, prior) {
+				expect(result.record.phase).toBe('terminal_pending');
+				expect(result.record.terminalReceiptId).toBe(RECEIPT_ID);
+				expect(result.record.watcherPid).toBe(WATCHER_PID);
+				expect(result.record.generation).toBe(prior.generation);
+			},
+			tamper: result => ({ ...result, row: { ...result.row, terminal_receipt_id: 'forged-receipt' } }),
+		},
+		{
+			name: 'completeTerminal',
+			driverMethod: 'watchOwnerCompleteTerminal',
+			async seed(ctx) {
+				return seedLifecycle(ctx, 'terminal_pending');
+			},
+			async act(ctx, prior, opts) {
+				return owner.completeTerminal(ctx, {
+					generation: prior.generation, pid: WATCHER_PID, terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
+				}, opts);
+			},
+			expect: { changed: true, reason: 'complete' }, replay: true,
+			assertSuccess(result, prior) {
+				expect(result.record.phase).toBe('complete');
+				expect(result.record.watcherPid).toBeNull();
+				expect(result.record.terminalReceiptId).toBe(RECEIPT_ID);
+				expect(result.record.generation).toBe(prior.generation);
+			},
+			tamper: result => ({ ...result, row: { ...result.row, terminal_receipt_id: 'forged-receipt' } }),
+		},
+		{
+			name: 'abortStarting',
+			driverMethod: 'watchOwnerAbortStarting',
+			async seed(ctx) {
+				return seedLifecycle(ctx, 'starting');
+			},
+			async act(ctx, prior, opts) {
+				return owner.abortStarting(ctx, {
+					generation: prior.generation, controllerPid: CONTROLLER_PID, updatedAt: LATER,
+				}, authorityOptsFor(opts, [CONTROLLER_PID]));
+			},
+			expect: { changed: true, reason: 'aborted' }, forbidIdempotent: true,
+			assertSuccess(result) {
+				expect(result.record).toBeNull();
+			},
+			tamper: (_result, prior) => ({
+				ok: true, changed: true, reason: 'aborted',
+				row: { ...toSnakeRow(prior.record), controller_pid: CONTROLLER_PID, phase: 'starting' },
+			}),
+		},
+		{
+			name: 'releaseNonterminal',
+			driverMethod: 'watchOwnerReleaseNonterminal',
+			async seed(ctx) {
+				return seedLifecycle(ctx, 'stop_requested');
+			},
+			async act(ctx, prior, opts) {
+				return owner.releaseNonterminal(ctx, {
+					generation: prior.generation, pid: WATCHER_PID,
+				}, opts);
+			},
+			expect: { changed: true, reason: 'released' }, forbidIdempotent: true,
+			assertSuccess(result) {
+				expect(result.record).toBeNull();
+			},
+			tamper: (_result, prior) => ({
+				ok: true, changed: true, reason: 'released',
+				row: { ...toSnakeRow(prior.record), block_reason: 'legacy_live_pid', watcher_pid: LEGACY_PID },
+			}),
+		},
+		{
+			name: 'recoverDeadStarting',
+			driverMethod: 'watchOwnerRecoverDeadStarting',
+			async seed(ctx) {
+				return seedLifecycle(ctx, 'starting');
+			},
+			async act(ctx, prior, opts) {
+				return owner.recoverDeadStarting(ctx, {
+					generation: prior.generation, controllerPid: CONTROLLER_PID,
+					recoveryControllerPid: RECOVERY_PID, updatedAt: LATER,
+				}, opts);
+			},
+			expect: { changed: true, reason: 'recovered' }, forbidIdempotent: true,
+			assertSuccess(result, prior) {
+				expect(result.record.phase).toBe('starting');
+				expect(result.record.controllerPid).toBe(RECOVERY_PID);
+				expect(result.record.watcherPid).toBeNull();
+				expect(result.record.generation).not.toBe(prior.generation);
+			},
+			tamper: result => ({ ...result, row: { ...result.row, controller_pid: 999 } }),
+		},
+		{
+			name: 'recoverDeadWatcher',
+			driverMethod: 'watchOwnerRecoverDeadWatcher',
+			async seed(ctx) {
+				return seedLifecycle(ctx, 'running');
+			},
+			async act(ctx, prior, opts) {
+				return owner.recoverDeadWatcher(ctx, {
+					generation: prior.generation, pid: WATCHER_PID,
+					recoveryControllerPid: RECOVERY_PID, providerEvidence: { state: 'OPEN' }, updatedAt: NEXT,
+				}, opts);
+			},
+			expect: { changed: true, reason: 'recovered' }, forbidIdempotent: true,
+			assertSuccess(result, prior) {
+				expect(result.record.phase).toBe('starting');
+				expect(result.record.controllerPid).toBe(RECOVERY_PID);
+				expect(result.record.watcherPid).toBeNull();
+				expect(result.record.generation).not.toBe(prior.generation);
+			},
+			tamper: result => ({ ...result, row: { ...result.row, controller_pid: 999 } }),
+		},
+		{
+			name: 'markLegacyBlocked',
+			driverMethod: 'watchOwnerMarkLegacyBlocked',
+			async seed(ctx) {
+				await seedGate(ctx);
+				return null;
+			},
+			async act(ctx, _prior, opts) {
+				return owner.markLegacyBlocked(ctx, {
+					blockReason: 'legacy_live_pid', snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
+					pid: LEGACY_PID, terminalReceiptId: RECEIPT_ID, startedAt: LATER,
+				}, authorityOptsFor(opts, [LEGACY_PID]));
+			},
+			expect: { changed: true, reason: 'blocked' }, replay: true,
+			assertSuccess(result) {
+				expect(result.record.phase).toBe('blocked');
+				expect(result.record.blockReason).toBe('legacy_live_pid');
+				expect(result.record.watcherPid).toBe(LEGACY_PID);
+				expect(result.record.terminalReceiptId).toBe(RECEIPT_ID);
+				expect(result.record.legacyEvidenceHash).toBe(OTHER_HASH);
+				expect(result.record.controllerPid).toBeNull();
+			},
+			tamper: result => ({ ...result, row: { ...result.row, legacy_evidence_hash: HASH } }),
+		},
+		{
+			name: 'recheckLegacyBlocked release',
+			driverMethod: 'watchOwnerRecheckLegacyBlocked',
+			async seed(ctx) {
+				return seedBlocked(ctx, true);
+			},
+			async act(ctx, prior, opts) {
+				return owner.recheckLegacyBlocked(ctx, {
+					generation: prior.generation, action: 'release',
+					legacyEvidenceHash: OTHER_HASH, pid: LEGACY_PID, updatedAt: NEXT,
+				}, authorityOptsFor(opts, []));
+			},
+			expect: { changed: true, reason: 'released' }, forbidIdempotent: true,
+			assertSuccess(result) {
+				expect(result.record).toBeNull();
+			},
+			tamper: (_result, prior) => ({
+				ok: true, changed: true, reason: 'released',
+				row: { ...toSnakeRow(prior.record), block_reason: 'legacy_live_pid', watcher_pid: LEGACY_PID },
+			}),
+		},
+		{
+			name: 'recheckLegacyBlocked complete',
+			driverMethod: 'watchOwnerRecheckLegacyBlocked',
+			async seed(ctx) {
+				return seedBlocked(ctx, false);
+			},
+			async act(ctx, prior, opts) {
+				return owner.recheckLegacyBlocked(ctx, {
+					generation: prior.generation, action: 'complete', legacyEvidenceHash: OTHER_HASH,
+					terminalReceiptId: RECEIPT_ID, updatedAt: NEXT,
+				}, authorityOptsFor(opts, []));
+			},
+			expect: { changed: true, reason: 'complete' }, forbidIdempotent: true,
+			assertSuccess(result) {
+				expect(result.record.phase).toBe('complete');
+				expect(result.record.blockReason).toBeNull();
+				expect(result.record.watcherPid).toBeNull();
+				expect(result.record.terminalReceiptId).toBe(RECEIPT_ID);
+				expect(result.record.legacyEvidenceHash).toBe(OTHER_HASH);
+			},
+			tamper: result => ({ ...result, row: { ...result.row, legacy_evidence_hash: HASH } }),
+		},
+		{
+			name: 'importLegacyStarting',
+			driverMethod: 'watchOwnerImportLegacyStarting',
+			async seed(ctx) {
+				await seedGate(ctx);
+				return null;
+			},
+			async act(ctx, _prior, opts) {
+				return owner.importLegacyStarting(ctx, {
+					snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
+					legacyPid: LEGACY_PID, controllerPid: CONTROLLER_PID,
+					providerEvidence: { state: 'OPEN' }, startedAt: LATER,
+				}, authorityOptsFor(opts, []));
+			},
+			expect: { changed: true, reason: 'imported' }, replay: true,
+			assertSuccess(result) {
+				expect(result.record.phase).toBe('starting');
+				expect(result.record.controllerPid).toBe(CONTROLLER_PID);
+				expect(result.record.legacyEvidenceHash).toBe(OTHER_HASH);
+			},
+			tamper: result => ({ ...result, row: { ...result.row, legacy_evidence_hash: HASH } }),
+		},
+		{
+			name: 'importLegacyComplete',
+			driverMethod: 'watchOwnerImportLegacyComplete',
+			async seed(ctx) {
+				await seedGate(ctx);
+				return null;
+			},
+			async act(ctx, _prior, opts) {
+				return owner.importLegacyComplete(ctx, {
+					snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
+					legacyPid: LEGACY_PID, terminalReceiptId: RECEIPT_ID, startedAt: LATER,
+				}, authorityOptsFor(opts, []));
+			},
+			expect: { changed: true, reason: 'imported' }, replay: true,
+			assertSuccess(result) {
+				expect(result.record.phase).toBe('complete');
+				expect(result.record.watcherPid).toBeNull();
+				expect(result.record.controllerPid).toBeNull();
+				expect(result.record.terminalReceiptId).toBe(RECEIPT_ID);
+				expect(result.record.legacyEvidenceHash).toBe(OTHER_HASH);
+			},
+			tamper: result => ({ ...result, row: { ...result.row, legacy_evidence_hash: HASH } }),
+		},
+	];
+
+	function authorityOptsFor(baseOpts, alive) {
+		const opts = authorityOpts(baseOpts.driver, alive);
+		return { ...opts, verifyTerminalReceipt: baseOpts.verifyTerminalReceipt, verifyProviderEvidence: baseOpts.verifyProviderEvidence };
+	}
+
+	test.each(POSTCONDITION_SPECS.map(spec => [spec.name, spec]))(
+		'%s success satisfies every operation postcondition',
+		async (_name, spec) => {			const happyCtx = { repo: 'acme/forge', pr: 951 };
+			const prior = await spec.seed(happyCtx);
+			const happy = await spec.act(happyCtx, prior, authorityOpts());
+			expect(happy.ok).toBe(true);
+			expect(happy.changed).toBe(spec.expect.changed);
+			expect(happy.reason).toBe(spec.expect.reason);
+			spec.assertSuccess(happy, prior);
+
+			if (spec.replay) {
+				const replayed = await spec.act(happyCtx, prior, authorityOpts());
+				expect(replayed).toEqual({ ok: true, changed: false, reason: 'idempotent', record: happy.record });
+			}
+
+			if (spec.forbidIdempotent) {
+				const forgeCtx = { repo: 'acme/forge', pr: 953 };
+				const forgePrior = await spec.seed(forgeCtx);
+				const forgedRow = { ...toSnakeRow(happy.record || forgePrior.record), pr: 953 };
+				const forgingDriver = {
+					...driver,
+					[spec.driverMethod]: () => ({ ok: true, changed: false, reason: 'idempotent', row: forgedRow }),
+				};
+				const forged = await spec.act(forgeCtx, forgePrior, authorityOpts(forgingDriver));
+				expect(forged).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+			}
+
+			const tamperCtx = { repo: 'acme/forge', pr: 952 };
+			const tamperPrior = await spec.seed(tamperCtx);
+			const tamperingDriver = {
+				...driver,
+				[spec.driverMethod]: (input, config) => spec.tamper(
+					driver[spec.driverMethod](input, config),
+					tamperPrior,
+				),
+			};
+			const tampered = await spec.act(tamperCtx, tamperPrior, authorityOpts(tamperingDriver));
+			expect(tampered).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+		},
+	);
+
+	test('rejects read successes whose reason and row pairing is impossible', async () => {
+		const ctx = { repo: 'acme/forge', pr: 955 };
+		await seedLifecycle(ctx, 'starting');
+		const forgedRow = {
+			repo: 'acme/forge', pr: 955, version: 1, generation: 'generation-955', phase: 'starting',
+			controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: NOW, updated_at: NOW,
+			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
+		};
+		const absentWithRow = await owner.readOwner(ctx, authorityOpts({
+			...driver,
+			watchOwnerRead: () => ({ ok: true, changed: false, reason: 'absent', row: forgedRow }),
+		}));
+		expect(absentWithRow).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+		const readWithoutRow = await owner.readOwner(ctx, authorityOpts({
+			...driver,
+			watchOwnerRead: () => ({ ok: true, changed: false, reason: 'read', row: null }),
+		}));
+		expect(readWithoutRow).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
 	});
 });
