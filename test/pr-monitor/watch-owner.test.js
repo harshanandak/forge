@@ -1778,7 +1778,7 @@ describe('watch owner successful-result postcondition validation', () => {
 					controllerPid: CONTROLLER_PID, startedAt: NOW,
 				}, opts);
 			},
-			expect: { changed: true, reason: 'acquired' }, forbidIdempotent: true,
+			expect: { changed: true, reason: 'acquired' }, forbidIdempotent: true, stampsNow: true,
 			assertSuccess(result) {
 				expect(result.record.phase).toBe('starting');
 				expect(result.record.controllerPid).toBe(CONTROLLER_PID);
@@ -1800,7 +1800,7 @@ describe('watch owner successful-result postcondition validation', () => {
 					expectedReceiptId: RECEIPT_ID, providerEvidence: { state: 'OPEN' }, startedAt: FINAL,
 				}, opts);
 			},
-			expect: { changed: true, reason: 'reopened' }, forbidIdempotent: true,
+			expect: { changed: true, reason: 'reopened' }, forbidIdempotent: true, stampsNow: true,
 			assertSuccess(result, prior) {
 				expect(result.record.phase).toBe('starting');
 				expect(result.record.controllerPid).toBe(RECOVERY_PID);
@@ -1959,7 +1959,7 @@ describe('watch owner successful-result postcondition validation', () => {
 					recoveryControllerPid: RECOVERY_PID, updatedAt: LATER,
 				}, opts);
 			},
-			expect: { changed: true, reason: 'recovered' }, forbidIdempotent: true,
+			expect: { changed: true, reason: 'recovered' }, forbidIdempotent: true, stampsNow: true,
 			assertSuccess(result, prior) {
 				expect(result.record.phase).toBe('starting');
 				expect(result.record.controllerPid).toBe(RECOVERY_PID);
@@ -1980,7 +1980,7 @@ describe('watch owner successful-result postcondition validation', () => {
 					recoveryControllerPid: RECOVERY_PID, providerEvidence: { state: 'OPEN' }, updatedAt: NEXT,
 				}, opts);
 			},
-			expect: { changed: true, reason: 'recovered' }, forbidIdempotent: true,
+			expect: { changed: true, reason: 'recovered' }, forbidIdempotent: true, stampsNow: true,
 			assertSuccess(result, prior) {
 				expect(result.record.phase).toBe('starting');
 				expect(result.record.controllerPid).toBe(RECOVERY_PID);
@@ -2002,7 +2002,7 @@ describe('watch owner successful-result postcondition validation', () => {
 					pid: LEGACY_PID, terminalReceiptId: RECEIPT_ID, startedAt: LATER,
 				}, authorityOptsFor(opts, [LEGACY_PID]));
 			},
-			expect: { changed: true, reason: 'blocked' }, replay: true,
+			expect: { changed: true, reason: 'blocked' }, replay: true, stampsNow: true,
 			assertSuccess(result) {
 				expect(result.record.phase).toBe('blocked');
 				expect(result.record.blockReason).toBe('legacy_live_pid');
@@ -2070,7 +2070,7 @@ describe('watch owner successful-result postcondition validation', () => {
 					providerEvidence: { state: 'OPEN' }, startedAt: LATER,
 				}, authorityOptsFor(opts, []));
 			},
-			expect: { changed: true, reason: 'imported' }, replay: true,
+			expect: { changed: true, reason: 'imported' }, replay: true, stampsNow: true,
 			assertSuccess(result) {
 				expect(result.record.phase).toBe('starting');
 				expect(result.record.controllerPid).toBe(CONTROLLER_PID);
@@ -2091,7 +2091,7 @@ describe('watch owner successful-result postcondition validation', () => {
 					legacyPid: LEGACY_PID, terminalReceiptId: RECEIPT_ID, startedAt: LATER,
 				}, authorityOptsFor(opts, []));
 			},
-			expect: { changed: true, reason: 'imported' }, replay: true,
+			expect: { changed: true, reason: 'imported' }, replay: true, stampsNow: true,
 			assertSuccess(result) {
 				expect(result.record.phase).toBe('complete');
 				expect(result.record.watcherPid).toBeNull();
@@ -2138,13 +2138,14 @@ describe('watch owner successful-result postcondition validation', () => {
 			if (spec.stampsNow) {
 				const staleCtx = { repo: 'acme/forge', pr: 954 };
 				const stalePrior = await spec.seed(staleCtx);
+				const STALE = '2026-08-19T07:59:59.000Z';
 				const rewindingDriver = {
 					...driver,
 					[spec.driverMethod]: (input, config) => {
 						const result = driver[spec.driverMethod](input, config);
 						if (!result.ok || !result.row) return result;
-						const rewound = { ...result.row, updated_at: NOW };
-						if (rewound.heartbeat_at != null) rewound.heartbeat_at = NOW;
+						const rewound = { ...result.row, started_at: STALE, updated_at: STALE };
+						if (rewound.heartbeat_at != null) rewound.heartbeat_at = STALE;
 						return { ...result, row: rewound };
 					},
 				};
