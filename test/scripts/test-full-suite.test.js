@@ -1204,6 +1204,16 @@ describe('scripts/test-full-suite.js', () => {
       expect(JSON.parse(fs.readFileSync(outputPath, 'utf8')).allFileDurations).toEqual([
         { durationMs: 1250, file: 'test/a.test.js' },
       ]);
+      expect(JSON.parse(fs.readFileSync(outputPath, 'utf8')).label).toBe('local-full');
+
+      const prefixedPath = path.join(root, 'full-matrix-windows-latest-node22.profile.json');
+      expect(writeDurationProfile({
+        allTests: ['test/a.test.js'],
+        label: 'full-matrix-windows-latest-node22',
+        outputPath: prefixedPath,
+        runReportDir: runDir,
+      })).toBe(true);
+      expect(JSON.parse(fs.readFileSync(prefixedPath, 'utf8')).label).toBe('full-matrix-windows-latest-node22');
 
       fs.rmSync(outputPath);
       expect(writeDurationProfile({
