@@ -78,6 +78,22 @@ describe('watch owner SQLite authority', () => {
 		})).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
 	});
 
+	test('fails closed without exposing malformed rows from an injected list driver', async () => {
+		const validRow = {
+			repo: 'acme/forge', pr: 81, version: 1, generation: 'generation-81', phase: 'starting',
+			controller_pid: 281, watcher_pid: null, started_at: NOW, updated_at: NOW,
+			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
+		};
+		const malformedRow = { ...validRow, pr: '82' };
+		const result = await owner.enumerateOwners(null, {
+			driver: {
+				watchOwnerList: () => ({ ok: true, changed: false, reason: 'read', rows: [validRow, malformedRow] }),
+			},
+		});
+
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', records: [] });
+	});
+
 	test('freezes a copied authority snapshot across awaited receipt verification', async () => {
 		const retainedRow = {
 			repo: 'acme/forge', pr: 68, version: 1, generation: 'generation-68', phase: 'running',
@@ -193,7 +209,10 @@ describe('watch owner SQLite authority', () => {
 					calls.push({ method: 'watchGateRead', input, config });
 					return {
 						ok: true, changed: false, reason: 'read',
-						gate: { state: 'quarantined', snapshot_hash: HASH, conflict_code: null },
+						gate: {
+							singleton: 1, state: 'quarantined', snapshot_hash: HASH,
+							conflict_code: null, updated_at: NOW,
+						},
 					};
 				},
 			};
@@ -999,6 +1018,35 @@ describe('watch owner SQLite authority', () => {
 		} });
 		expect(await owner.readMigrationGate({}, {}))
 			.toEqual({ ok: false, changed: false, reason: 'authority_unavailable', gate: null });
+	});
+
+	test('copies a successful injected migration gate before exposing it', async () => {
+		const gate = {
+			singleton: 1, state: 'quarantined', snapshot_hash: HASH,
+			conflict_code: null, updated_at: NOW,
+		};
+		const result = await owner.readMigrationGate({}, {
+			driver: {
+				watchGateRead: () => ({ ok: true, changed: false, reason: 'read', gate }),
+			},
+		});
+
+		expect(result).toEqual({ ok: true, changed: false, reason: 'read', gate });
+		expect(result.gate).not.toBe(gate);
+		gate.state = 'complete';
+		expect(result.gate.state).toBe('quarantined');
+	});
+
+	test('fails closed for a malformed successful injected migration gate', async () => {
+		const malformedGate = {
+			singleton: 1, state: 'unknown', snapshot_hash: HASH,
+			conflict_code: null, updated_at: NOW,
+		};
+		expect(await owner.readMigrationGate({}, {
+			driver: {
+				watchGateRead: () => ({ ok: true, changed: false, reason: 'read', gate: malformedGate }),
+			},
+		})).toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
 	});
 
 	test('returns gate-shaped envelopes for every gate input validation failure', async () => {
