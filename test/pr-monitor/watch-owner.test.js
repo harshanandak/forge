@@ -310,13 +310,14 @@ describe('watch owner SQLite authority', () => {
 			importLegacyStarting: 'imported',
 			importLegacyComplete: 'imported',
 		};
-		const makeDriver = (_label, blocked = false) => {
+		const makeDriver = (_label, blocked = false, starting = false) => {
 			const calls = [];
 			const row = {
 				repo: 'acme/forge', pr: 77, version: 1, generation: 'generation-77',
-				phase: blocked ? 'blocked' : 'running', controller_pid: null,
-				watcher_pid: blocked ? null : 101, started_at: NOW, updated_at: NOW,
-				heartbeat_at: blocked ? null : NOW, terminal_receipt_id: blocked ? null : null,
+				phase: starting ? 'starting' : (blocked ? 'blocked' : 'running'),
+				controller_pid: starting ? 101 : null,
+				watcher_pid: starting || blocked ? null : 101, started_at: NOW, updated_at: NOW,
+				heartbeat_at: starting || blocked ? null : NOW, terminal_receipt_id: null,
 				block_reason: blocked ? 'legacy_lossy' : null, legacy_evidence_hash: blocked ? OTHER_HASH : null,
 			};
 			const driver = {
@@ -350,7 +351,7 @@ describe('watch owner SQLite authority', () => {
 			return driver;
 		};
 
-		const driverA = makeDriver('A', scenario.blocked);
+		const driverA = makeDriver('A', scenario.blocked, method === 'recoverDeadStarting');
 		const driverB = makeDriver('B', scenario.blocked);
 		const opts = {
 			driver: driverA,
@@ -2543,6 +2544,43 @@ describe('watch owner successful-result postcondition validation', () => {
 			}),
 		}));
 		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', records: [] });
+	});
+
+	test('binds dead-watcher recovery to the captured generation and watcher', async () => {
+		const ctx = { repo: 'acme/forge', pr: 971 };
+		const prior = await seedLifecycle(ctx, 'running');
+		let recoveryAttempts = 0;
+		const foreignPid = await owner.recoverDeadWatcher(ctx, {
+			generation: prior.generation, pid: WATCHER_PID + 1,
+			recoveryControllerPid: RECOVERY_PID, providerEvidence: { state: 'OPEN' }, updatedAt: NEXT,
+		}, authorityOpts({
+			...driver,
+			isPidAlive: async () => false,
+			watchOwnerRecoverDeadWatcher: () => {
+				recoveryAttempts += 1;
+				return { ok: true, changed: true, reason: 'recovered' };
+			},
+		}));
+		expect(foreignPid).toEqual({ ok: false, changed: false, reason: 'generation_mismatch', record: null });
+		expect(recoveryAttempts).toBe(0);
+	});
+
+	test('rejects idempotent conflict-retry claims the builtin driver cannot produce', async () => {
+		await seedGate({ repo: 'acme/forge', pr: 972 });
+		await owner.publishMigrationConflict({
+			snapshotHash: HASH, conflictCode: 'legacy_snapshot_changed', updatedAt: LATER,
+		}, authorityOpts());
+		const result = await owner.retryMigrationConflict({
+			expectedSnapshotHash: HASH, expectedConflictCode: 'legacy_snapshot_changed',
+			replacementSnapshotHash: OTHER_HASH, updatedAt: NEXT,
+		}, authorityOpts({
+			...driver,
+			watchGateRetryConflict: () => ({
+				ok: true, changed: false, reason: 'idempotent',
+				gate: { singleton: 1, state: 'quarantined', snapshot_hash: OTHER_HASH, conflict_code: null, updated_at: LATER },
+			}),
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
 	});
 
 	test('rejects read successes that claim corrupt or arbitrary reasons for null rows', async () => {
