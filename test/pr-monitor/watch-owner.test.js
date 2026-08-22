@@ -310,15 +310,39 @@ describe('watch owner SQLite authority', () => {
 			importLegacyStarting: 'imported',
 			importLegacyComplete: 'imported',
 		};
-		const makeDriver = (_label, blocked = false, starting = false) => {
+		const makeDriver = (_label, shape = 'running') => {
 			const calls = [];
+			const shapes = {
+				running: {
+					phase: 'running', controller_pid: null, watcher_pid: 101,
+					heartbeat_at: NOW, block_reason: null, legacy_evidence_hash: null,
+					terminal_receipt_id: null,
+				},
+				blocked: {
+					phase: 'blocked', controller_pid: null, watcher_pid: null,
+					heartbeat_at: null, block_reason: 'legacy_lossy', legacy_evidence_hash: OTHER_HASH,
+					terminal_receipt_id: null,
+				},
+				starting: {
+					phase: 'starting', controller_pid: 101, watcher_pid: null,
+					heartbeat_at: null, block_reason: null, legacy_evidence_hash: null,
+					terminal_receipt_id: null,
+				},
+				terminal_pending: {
+					phase: 'terminal_pending', controller_pid: null, watcher_pid: 101,
+					heartbeat_at: NOW, block_reason: null, legacy_evidence_hash: null,
+					terminal_receipt_id: 'receipt-77',
+				},
+				complete: {
+					phase: 'complete', controller_pid: null, watcher_pid: null,
+					heartbeat_at: null, block_reason: null, legacy_evidence_hash: null,
+					terminal_receipt_id: 'receipt-77',
+				},
+			};
 			const row = {
 				repo: 'acme/forge', pr: 77, version: 1, generation: 'generation-77',
-				phase: starting ? 'starting' : (blocked ? 'blocked' : 'running'),
-				controller_pid: starting ? 101 : null,
-				watcher_pid: starting || blocked ? null : 101, started_at: NOW, updated_at: NOW,
-				heartbeat_at: starting || blocked ? null : NOW, terminal_receipt_id: null,
-				block_reason: blocked ? 'legacy_lossy' : null, legacy_evidence_hash: blocked ? OTHER_HASH : null,
+				started_at: NOW, updated_at: NOW,
+				...shapes[shape],
 			};
 			const driver = {
 				calls,
@@ -351,8 +375,14 @@ describe('watch owner SQLite authority', () => {
 			return driver;
 		};
 
-		const driverA = makeDriver('A', scenario.blocked, method === 'recoverDeadStarting');
-		const driverB = makeDriver('B', scenario.blocked);
+		const priorShapes = {
+			recoverDeadStarting: 'starting',
+			abortStarting: 'starting',
+			completeTerminal: 'terminal_pending',
+			reserveReopened: 'complete',
+		};
+		const driverA = makeDriver('A', priorShapes[method] || (scenario.blocked ? 'blocked' : 'running'));
+		const driverB = makeDriver('B', priorShapes[method] || (scenario.blocked ? 'blocked' : 'running'));
 		const opts = {
 			driver: driverA,
 			databaseConfig: { databasePath: 'authority-A.sqlite' },
@@ -588,8 +618,10 @@ describe('watch owner SQLite authority', () => {
 
 		expect(recorded).toMatchObject({ ok: true, changed: true, reason: 'terminal_pending' });
 		expect(replay).toEqual({ ok: true, changed: false, reason: 'idempotent', record: recorded.record });
-		expect(mismatched).toMatchObject({ ok: false, changed: false, reason: 'receipt_unverified' });
-		expect(receiptChecks).toBe(2);
+		// A terminal_pending prior with a different receipt is now bound as
+		// stale before receipt verification runs.
+		expect(mismatched).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
+		expect(receiptChecks).toBe(1);
 	});
 
 	test('supports exact abort, release, and dead-process recovery without a generic clear', async () => {
@@ -697,7 +729,7 @@ describe('watch owner SQLite authority', () => {
 				}, base),
 			},
 			{
-				name: 'receipt', ctx: receiptCtx, reason: 'receipt_mismatch',
+				name: 'receipt', ctx: receiptCtx, reason: 'stale_evidence',
 				attempt: () => owner.reserveReopened(receiptCtx, {
 					generation: receiptStart.record.generation, controllerPid: 309,
 					expectedReceiptId: 'stale-receipt', providerEvidence: { state: 'OPEN' }, startedAt: NEXT,
@@ -2544,6 +2576,52 @@ describe('watch owner successful-result postcondition validation', () => {
 			}),
 		}));
 		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', records: [] });
+	});
+
+	test('binds evidence-bound mutations to the captured owner before verification', async () => {
+		const base = { repo: 'acme/forge' };
+		const runningCtx = { ...base, pr: 975 };
+		const startedPrior = await seedLifecycle(runningCtx, 'starting');
+		const reopenFromStarting = await owner.reserveReopened({ ...base, pr: 975 }, {
+			generation: startedPrior.generation, controllerPid: RECOVERY_PID,
+			expectedReceiptId: RECEIPT_ID, providerEvidence: { state: 'OPEN' }, startedAt: LATER,
+		}, authorityOpts());
+		expect(reopenFromStarting).toMatchObject({ ok: false });
+
+		const terminalCtx = { ...base, pr: 976 };
+		const startingPrior = await seedLifecycle(terminalCtx, 'starting');
+		const terminalFromStarting = await owner.recordTerminal(terminalCtx, {
+			generation: startingPrior.generation, pid: WATCHER_PID,
+			terminalReceiptId: RECEIPT_ID, updatedAt: NEXT,
+		}, authorityOpts({
+			...driver,
+			verifyTerminalReceipt: async () => true,
+			watchOwnerRecordTerminal: () => ({ ok: true, changed: true, reason: 'terminal_pending' }),
+		}));
+		expect(terminalFromStarting).toEqual({ ok: false, changed: false, reason: 'stale_evidence', record: null });
+
+		const completeCtx = { ...base, pr: 977 };
+		const runningPrior = await seedLifecycle(completeCtx, 'running');
+		const completeFromRunning = await owner.completeTerminal(completeCtx, {
+			generation: runningPrior.generation, pid: WATCHER_PID,
+			terminalReceiptId: RECEIPT_ID, updatedAt: NEXT,
+		}, authorityOpts({
+			...driver,
+			isPidAlive: async () => false,
+			watchOwnerCompleteTerminal: () => ({ ok: true, changed: true, reason: 'complete' }),
+		}));
+		expect(completeFromRunning).toEqual({ ok: false, changed: false, reason: 'stale_evidence', record: null });
+
+		const abortCtx = { ...base, pr: 978 };
+		const abortRunningPrior = await seedLifecycle(abortCtx, 'running');
+		const abortFromRunning = await owner.abortStarting(abortCtx, {
+			generation: abortRunningPrior.generation, controllerPid: CONTROLLER_PID, updatedAt: LATER,
+		}, authorityOpts({
+			...driver,
+			isPidAlive: async () => true,
+			watchOwnerAbortStarting: () => ({ ok: true, changed: true, reason: 'aborted' }),
+		}));
+		expect(abortFromRunning).toEqual({ ok: false, changed: false, reason: 'stale_evidence', record: null });
 	});
 
 	test('binds dead-watcher recovery to the captured generation and watcher', async () => {
