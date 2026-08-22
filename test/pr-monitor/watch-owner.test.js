@@ -2776,4 +2776,31 @@ describe('watch owner successful-result postcondition validation', () => {
 		}));
 		expect(result).toEqual({ ok: false, changed: false, reason: 'enumeration_overflow', records: [] });
 	});
+
+	test('binds a running result to the captured provenance of the starting row', async () => {
+		const ctx = { repo: 'acme/forge', pr: 980 };
+		await seedGate(ctx);
+		const imported = await owner.importLegacyStarting(ctx, {
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
+			legacyPid: LEGACY_PID, controllerPid: CONTROLLER_PID,
+			providerEvidence: { state: 'OPEN' }, startedAt: LATER,
+		}, authorityOpts());
+		expect(imported.ok).toBe(true);
+		const cleared = await owner.bindRunning(ctx, {
+			generation: imported.record.generation, controllerPid: CONTROLLER_PID,
+			pid: WATCHER_PID, updatedAt: NEXT,
+		}, authorityOpts({
+			...driver,
+			watchOwnerBindRunning: input => ({
+				ok: true, changed: true, reason: 'bound',
+				row: {
+					repo: ctx.repo, pr: 980, version: 1, generation: input.generation, phase: 'running',
+					controller_pid: null, watcher_pid: WATCHER_PID, started_at: NOW,
+					updated_at: NEXT, heartbeat_at: NEXT, terminal_receipt_id: null,
+					block_reason: null, legacy_evidence_hash: null,
+				},
+			}),
+		}));
+		expect(cleared).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+	});
 });
