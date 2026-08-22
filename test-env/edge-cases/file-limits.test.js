@@ -1,5 +1,6 @@
 // Test: File Size Limit Edge Cases
 // Validates warnings for oversized files (non-blocking)
+// forge-test-resource: exclusive
 
 import { describe, test, beforeAll, afterAll, expect } from 'bun:test';
 const fs = require('node:fs');

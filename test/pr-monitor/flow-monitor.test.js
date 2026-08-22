@@ -1,5 +1,7 @@
 'use strict';
 
+// forge-test-resource: exclusive
+
 const { describe, expect, test } = require('bun:test');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
@@ -126,6 +128,37 @@ async function seedHistory(store, count) {
     store.events.push(event);
   }
   store.setCursor('legacy-journal', count);
+}
+
+async function seedExternalPlanTail(store) {
+  await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
+  const template = store.events[0];
+  const planId = 'f'.repeat(64);
+  const reference = {
+    format: 'segments-v1',
+    id: planId,
+    start_sequence: 1,
+    segment_count: 2,
+    segment_index: 0,
+  };
+  for (let sequence = 2; sequence <= 131; sequence += 1) {
+    const event = structuredClone(template);
+    event.object_id = `00000000-0000-4000-8000-${sequence.toString(16).padStart(12, '0')}`;
+    event.payload.event_id = sequence.toString(16).padStart(64, '0');
+    event.payload.sequence = sequence;
+    event.payload.bounded_payload.record.seq = sequence;
+    event.payload.bounded_payload.snapshot = null;
+    event.payload.bounded_payload.checkpoint_complete = false;
+    event.payload.bounded_payload.batch_plan = reference;
+    event.content_hash = computeContentHash(event);
+    store.events.push(event);
+  }
+  const markerSequence = reference.start_sequence + reference.segment_count;
+  const markerKey = `batch-plan:${planId}:commit`;
+  const markerId = crypto.createHash('sha256')
+    .update(`pr:owner/forge:42:${markerSequence}:monitor.checkpoint:${markerKey}`)
+    .digest('hex');
+  return { markerId, markerSequence, template };
 }
 
 describe('Flow-backed PR monitor authority', () => {
@@ -939,6 +972,75 @@ describe('Flow-backed PR monitor authority', () => {
       .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
   });
 
+  test('rejects a getEvent row whose content_hash agrees with the envelope claim but the envelope content hash is invalid', async () => {
+    const store = durableStore();
+    const { markerId, markerSequence, template } = await seedExternalPlanTail(store);
+    const marker = structuredClone(template);
+    marker.payload.event_id = markerId;
+    marker.payload.sequence = markerSequence;
+    marker.content_hash = computeContentHash(marker);
+    marker.created_at = '2026-08-12T12:00:01.000Z';
+    let getEventCalls = 0;
+    store.getEvent = async () => {
+      getEventCalls += 1;
+      return { content_hash: marker.content_hash, envelope_json: JSON.stringify(marker) };
+    };
+    let gathers = 0;
+    let deliveries = 0;
+
+    let failure;
+    try {
+      await runFlowMonitorPass(context(
+        store,
+        async () => { gathers += 1; return snapshot(); },
+        async () => { deliveries += 1; },
+      ));
+    } catch (error) {
+      failure = error;
+    }
+    expect(getEventCalls).toBe(1);
+    expect(failure).toMatchObject({
+      code: 'MONITOR_HISTORY_INCOMPLETE',
+      message: 'Durable monitor history is incomplete',
+    });
+    expect(gathers).toBe(0);
+    expect(deliveries).toBe(0);
+  });
+
+  test('rejects structurally malformed valid getEvent JSON before recovery side effects', async () => {
+    const store = durableStore();
+    await seedExternalPlanTail(store);
+    const contentHash = '0'.repeat(64);
+    let getEventCalls = 0;
+    store.getEvent = async () => {
+      getEventCalls += 1;
+      return {
+        content_hash: contentHash,
+        envelope_json: JSON.stringify({ content_hash: contentHash }),
+      };
+    };
+    let gathers = 0;
+    let deliveries = 0;
+
+    let failure;
+    try {
+      await runFlowMonitorPass(context(
+        store,
+        async () => { gathers += 1; return snapshot(); },
+        async () => { deliveries += 1; },
+      ));
+    } catch (error) {
+      failure = error;
+    }
+    expect(getEventCalls).toBe(1);
+    expect(failure).toMatchObject({
+      code: 'MONITOR_HISTORY_INCOMPLETE',
+      message: 'Durable monitor history is incomplete',
+    });
+    expect(gathers).toBe(0);
+    expect(deliveries).toBe(0);
+  });
+
   test('bounds high-cardinality snapshots before Flow validation and durable persistence', async () => {
     const store = durableStore();
     const large = snapshot({
@@ -1260,6 +1362,21 @@ describe('Flow-backed PR monitor authority', () => {
 
     await expect(runFlowMonitorPass(context(store, async () => {
       throw new Error('corrupt replay must not poll the provider');
+    }, async () => {}))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+  });
+
+  test('rejects a durable row hash that disagrees with its validated envelope before provider observation', async () => {
+    const store = durableStore();
+    await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
+    const readEventTail = store.readEventTail;
+    store.readEventTail = async (...args) => {
+      const tail = await readEventTail(...args);
+      tail.events[0].content_hash = '0'.repeat(64);
+      return tail;
+    };
+
+    await expect(runFlowMonitorPass(context(store, async () => {
+      throw new Error('inconsistent durable row must not poll the provider');
     }, async () => {}))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
   });
 

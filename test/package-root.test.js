@@ -69,6 +69,7 @@ test('ASSET_ROOTS covers the core setup assets', () => {
   expect(ASSET_ROOTS).toContain('AGENTS.md');
   expect(ASSET_ROOTS).toContain('.forge/hooks');
   expect(ASSET_ROOTS).toContain('scripts');
+  expect(ASSET_ROOTS).toContain('lib/kernel/windows-private-acl.js');
 });
 
 test('extractEmbeddedAssets() writes every asset preserving relative paths and returns the count', () => {

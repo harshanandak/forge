@@ -10,9 +10,16 @@ let MonitorRuntimeError;
 let createMonitorReceipt;
 let createMonitorState;
 let reduceMonitor;
+let reduceMonitorBatch;
 
 beforeAll(() => {
-  ({ MonitorRuntimeError, createMonitorReceipt, createMonitorState, reduceMonitor } = require("../src/monitor-runtime.js"));
+  ({
+    MonitorRuntimeError,
+    createMonitorReceipt,
+    createMonitorState,
+    reduceMonitor,
+    reduceMonitorBatch,
+  } = require("../src/monitor-runtime.js"));
 });
 
 function spec(overrides = {}) {
@@ -61,7 +68,125 @@ function observation(sequence, status, overrides = {}) {
   return value;
 }
 
+function reduceSequentially(monitorSpec, initialState, events) {
+  let state = initialState;
+  const effects = [];
+  let modelTurns = 0;
+  for (const event of events) {
+    const transition = reduceMonitor(monitorSpec, state, event);
+    state = transition.state;
+    effects.push(...transition.effects);
+    modelTurns += transition.modelTurns;
+  }
+  return { state, effects, modelTurns };
+}
+
+function capturedError(callback) {
+  try {
+    callback();
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected callback to throw");
+}
+
 describe("MonitorSpec deterministic reducer", () => {
+  test("batch replay matches sequential advisory reductions without mutating inputs", () => {
+    const monitorSpec = spec({
+      terminalPredicate: () => false,
+      reducer: (previous = [], payload) => {
+        previous.push(payload.status);
+        return previous;
+      },
+    });
+    const initialState = createMonitorState(monitorSpec);
+    const events = [
+      { kind: "observation", event: observation(0, "PENDING", { actionability: "advisory" }) },
+      { kind: "observation", event: observation(1, "RUNNING", { actionability: "advisory" }) },
+      { kind: "observation", event: observation(2, "GREEN", { actionability: "advisory" }) },
+    ];
+    const stateSnapshot = structuredClone(initialState);
+    const eventSnapshot = structuredClone(events);
+
+    expect(reduceMonitorBatch(monitorSpec, initialState, events))
+      .toEqual(reduceSequentially(monitorSpec, initialState, events));
+    expect(initialState).toEqual(stateSnapshot);
+    expect(events).toEqual(eventSnapshot);
+  });
+
+  test("batch replay matches sequential pending, backpressure, retry, and acknowledgement reductions", () => {
+    const monitorSpec = spec({ maxPending: 1, terminalPredicate: () => false });
+    const initialState = createMonitorState(monitorSpec);
+    const events = [
+      { kind: "observation", event: observation(0, "PENDING") },
+      { kind: "observation", event: observation(1, "RUNNING") },
+      { kind: "delivery-failed", sequence: 0, observedAt: "2026-08-09T12:01:01.000Z" },
+      { kind: "acknowledge", sequence: 0 },
+      { kind: "acknowledge", sequence: 1 },
+    ];
+
+    expect(reduceMonitorBatch(monitorSpec, initialState, events))
+      .toEqual(reduceSequentially(monitorSpec, initialState, events));
+  });
+
+  test("batch replay matches sequential terminal cleanup reductions", () => {
+    const monitorSpec = spec();
+    const initialState = createMonitorState(monitorSpec);
+    const events = [
+      { kind: "observation", event: observation(0, "PASS", { actionability: "advisory" }) },
+      {
+        kind: "cleanup-complete",
+        processCleanup: { status: "PASS" },
+        leaseCleanup: { status: "PASS" },
+      },
+    ];
+
+    expect(reduceMonitorBatch(monitorSpec, initialState, events))
+      .toEqual(reduceSequentially(monitorSpec, initialState, events));
+  });
+
+  test("batch replay rebuilds independently from each strict 128-event suffix", () => {
+    const monitorSpec = spec({ maxHistory: 128, terminalPredicate: () => false });
+    const observations = Array.from({ length: 129 }, (_, sequence) => ({
+      kind: "observation",
+      event: observation(sequence, `STATE-${sequence}`, { actionability: "advisory" }),
+    }));
+    const firstTail = observations.slice(0, 128);
+    const shiftedTail = observations.slice(1);
+
+    const first = reduceMonitorBatch(monitorSpec, createMonitorState(monitorSpec), firstTail);
+    const shifted = reduceMonitorBatch(monitorSpec, createMonitorState(monitorSpec), shiftedTail);
+
+    expect(first).toEqual(reduceSequentially(monitorSpec, createMonitorState(monitorSpec), firstTail));
+    expect(shifted).toEqual(reduceSequentially(monitorSpec, createMonitorState(monitorSpec), shiftedTail));
+    expect(Object.keys(first.state.seenEvents)).toHaveLength(128);
+    expect(Object.hasOwn(first.state.seenEvents, "event-0")).toBe(true);
+    expect(Object.keys(shifted.state.seenEvents)).toHaveLength(128);
+    expect(Object.hasOwn(shifted.state.seenEvents, "event-0")).toBe(false);
+    expect(Object.hasOwn(shifted.state.seenEvents, "event-128")).toBe(true);
+  });
+
+  test.each([
+    ["tampered observation", spec({ terminalPredicate: () => false }), () => {
+      const event = observation(0, "PENDING");
+      event.payload.bounded_payload.status = "TAMPERED";
+      return { kind: "observation", event };
+    }],
+    ["invalid spec", spec({ maxPending: 0 }), () => ({
+      kind: "observation", event: observation(0, "PENDING"),
+    })],
+  ])("batch replay preserves sequential failure parity for %s", (_label, monitorSpec, eventFactory) => {
+    const validSpec = spec({ terminalPredicate: () => false });
+    const initialState = createMonitorState(validSpec);
+    const event = eventFactory();
+    const sequentialError = capturedError(() => reduceMonitor(monitorSpec, initialState, event));
+    const batchError = capturedError(() => reduceMonitorBatch(monitorSpec, initialState, [event]));
+
+    expect(batchError.constructor).toBe(sequentialError.constructor);
+    expect(batchError).toMatchObject({ message: sequentialError.message });
+    if (sequentialError.code !== undefined) expect(batchError.code).toBe(sequentialError.code);
+  });
+
   test("emits a delivery only for an actionable state transition", () => {
     const monitorSpec = spec({ terminalPredicate: () => false });
     const result = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
