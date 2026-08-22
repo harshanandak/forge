@@ -2310,6 +2310,24 @@ describe('watch owner successful-result postcondition validation', () => {
 		expect(result.ok).toBe(false);
 	});
 
+	test('consumes rejected async adapter promises without crashing the host', async () => {
+		let unhandled = 0;
+		const onUnhandled = () => { unhandled += 1; };
+		process.on('unhandledRejection', onUnhandled);
+		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 979 }, {
+			controllerPid: CONTROLLER_PID, startedAt: NOW,
+		}, authorityOpts({
+			...driver,
+			watchOwnerReserveStarting: async () => {
+				throw new Error('async adapter rejected');
+			},
+		}));
+		await new Promise(resolve => setImmediate(resolve));
+		process.off('unhandledRejection', onUnhandled);
+		expect(result.ok).toBe(false);
+		expect(unhandled).toBe(0);
+	});
+
 	test('rejects idempotent import claims made without a captured prior row', async () => {
 		const ctx = { repo: 'acme/forge', pr: 959 };
 		await seedGate(ctx);
