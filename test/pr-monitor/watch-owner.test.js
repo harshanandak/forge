@@ -2501,6 +2501,50 @@ describe('watch owner successful-result postcondition validation', () => {
 		expect(submitted.expectedSnapshot.started_at).toBe(startedReads[0]);
 	});
 
+	test('rejects heartbeats routed to a foreign generation or pid', async () => {
+		const ctx = { repo: 'acme/forge', pr: 969 };
+		const prior = await seedLifecycle(ctx, 'running');
+		const foreignGeneration = await owner.heartbeat(ctx, {
+			generation: `other-${prior.generation}`, pid: WATCHER_PID, updatedAt: NEXT,
+		}, authorityOpts());
+		expect(foreignGeneration).toEqual({
+			ok: false, changed: false, reason: 'generation_mismatch', record: null,
+		});
+		const foreignPid = await owner.heartbeat(ctx, {
+			generation: prior.generation, pid: WATCHER_PID + 1, updatedAt: NEXT,
+		}, authorityOpts());
+		expect(foreignPid).toEqual({ ok: false, changed: false, reason: 'pid_mismatch', record: null });
+	});
+
+	test('rejects gate mutation envelopes the builtin driver cannot produce', async () => {
+		await seedGate({ repo: 'acme/forge', pr: 970 });
+		const mismatched = await owner.bindMigrationSnapshot({
+			snapshotHash: HASH, updatedAt: LATER,
+		}, authorityOpts({
+			...driver,
+			watchGateBindSnapshot: () => ({
+				ok: true, changed: false, reason: 'bound',
+				gate: { singleton: 1, state: 'quarantined', snapshot_hash: HASH, conflict_code: null, updated_at: LATER },
+			}),
+		}));
+		expect(mismatched).toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
+	});
+
+	test('rejects enumeration sequences that are not strictly increasing', async () => {
+		const validRow = pr => ({
+			repo: 'acme/forge', pr, version: 1, generation: `generation-${pr}`, phase: 'starting',
+			controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: NOW, updated_at: NOW,
+			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
+		});
+		const result = await owner.enumerateOwners(null, authorityOpts({
+			...driver,
+			watchOwnerList: () => ({
+				ok: true, changed: false, reason: 'read', rows: [validRow(2), validRow(1)],
+			}),
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', records: [] });
+	});
+
 	test('rejects read successes that claim corrupt or arbitrary reasons for null rows', async () => {
 		const ctx = { repo: 'acme/forge', pr: 960 };
 		const result = await owner.readOwner(ctx, authorityOpts({
