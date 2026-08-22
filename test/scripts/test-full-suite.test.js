@@ -691,6 +691,38 @@ describe('scripts/test-full-suite.js', () => {
     expect(maxActive).toBeGreaterThan(1);
   });
 
+  test('runLaneSchedule propagates deferred-lane failures instead of masking them', async () => {
+    const lanes = [
+      { name: 'unit', concurrency: 1, shards: [{ files: ['test/a.test.js'], index: 0 }] },
+      { name: 'subprocess', concurrency: 1, shards: [{ files: ['test/s.test.js'], index: 1 }] },
+    ];
+    let exclusiveSpawned = false;
+    const executedLanes = [];
+    const execute = async (shard, lane) => {
+      executedLanes.push(lane.name);
+      if (lane.name === 'unit') throw new Error('deferred boom');
+      return { code: 0, resource: lane.name };
+    };
+
+    await expect(runLaneSchedule(lanes, execute, () => {}, { workerBudget: 1 }))
+      .rejects.toThrow('deferred boom');
+    expect(executedLanes).not.toContain('exclusive');
+
+    const exclusiveLanes = [...lanes, {
+      name: 'exclusive',
+      concurrency: 1,
+      shards: [{ files: ['test/x.test.js'], index: 2 }],
+    }];
+    const spawnProbe = async (shard, lane) => {
+      if (lane.name === 'exclusive') exclusiveSpawned = true;
+      if (lane.name === 'unit') throw new Error('deferred boom two');
+      return { code: 0, resource: lane.name };
+    };
+    await expect(runLaneSchedule(exclusiveLanes, spawnProbe, () => {}, { workerBudget: 1 }))
+      .rejects.toThrow('deferred boom two');
+    expect(exclusiveSpawned).toBe(false);
+  });
+
   test('concurrent full-suite invocations use disjoint receipt directories', async () => {
     const receiptPaths = [];
     let pid = 9020;

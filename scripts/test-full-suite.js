@@ -543,9 +543,11 @@ async function runLaneSchedule(lanes, execute, cancel = () => {}, options = {}) 
   const sharedFailure = settledSharedLanes.find((result) => result.status === 'rejected');
   if (sharedFailure) throw sharedFailure.reason;
   // Budget-exhausted lanes start only after reserved capacity has been released.
-  await Promise.allSettled(deferredLanes.map(async (lane) => {
+  const settledDeferredLanes = await Promise.allSettled(deferredLanes.map(async (lane) => {
     resultsByLane.set(lane, await runLane(lane, Math.min(lane.concurrency, workerBudget), sharedSchedule));
   }));
+  const deferredFailure = settledDeferredLanes.find((result) => result.status === 'rejected');
+  if (deferredFailure) throw deferredFailure.reason;
 
   for (const lane of lanes.filter((candidate) => candidate.name === 'exclusive')) {
     resultsByLane.set(lane, await runLane(lane));
