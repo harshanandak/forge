@@ -20,24 +20,25 @@ const OTHER_HASH = 'b'.repeat(64);
 // row satisfying the operation's phase/identity/null-row contract.
 function injectedOwnerSuccess(operation, row, input) {
 	const now = input.now || NOW;
+	const base = { version: 1, repo: input.repo, pr: input.pr, ...(row || {}) };
 	const freshGeneration = `${input.generation || 'generation'}-injected-fresh`;
 	switch (operation) {
 	case 'watchOwnerReserveReopened':
 		return {
 			ok: true, changed: true, reason: 'reopened',
-			row: { ...row, generation: freshGeneration, phase: 'starting', controller_pid: input.controllerPid,
+			row: { ...base, generation: freshGeneration, phase: 'starting', controller_pid: input.controllerPid,
 				watcher_pid: null, started_at: now, updated_at: now, heartbeat_at: null,
 				terminal_receipt_id: null, block_reason: null },
 		};
 	case 'watchOwnerRecordTerminal':
 		return {
 			ok: true, changed: true, reason: 'terminal_pending',
-			row: { ...row, phase: 'terminal_pending', terminal_receipt_id: input.terminalReceiptId, updated_at: now },
+			row: { ...base, phase: 'terminal_pending', terminal_receipt_id: input.terminalReceiptId, updated_at: now },
 		};
 	case 'watchOwnerCompleteTerminal':
 		return {
 			ok: true, changed: true, reason: 'complete',
-			row: { ...row, phase: 'complete', watcher_pid: null, heartbeat_at: null,
+			row: { ...base, phase: 'complete', watcher_pid: null, heartbeat_at: null,
 				terminal_receipt_id: input.terminalReceiptId, updated_at: now },
 		};
 	case 'watchOwnerAbortStarting':
@@ -48,14 +49,14 @@ function injectedOwnerSuccess(operation, row, input) {
 	case 'watchOwnerRecoverDeadWatcher':
 		return {
 			ok: true, changed: true, reason: 'recovered',
-			row: { ...row, generation: freshGeneration, phase: 'starting', controller_pid: input.controllerPid,
+			row: { ...base, generation: freshGeneration, phase: 'starting', controller_pid: input.controllerPid,
 				watcher_pid: null, started_at: now, updated_at: now, heartbeat_at: null,
 				terminal_receipt_id: null, block_reason: null },
 		};
 	case 'watchOwnerMarkLegacyBlocked':
 		return {
 			ok: true, changed: true, reason: 'blocked',
-			row: { ...row, phase: 'blocked', controller_pid: null, watcher_pid: input.watcherPid ?? null,
+			row: { ...base, phase: 'blocked', controller_pid: null, watcher_pid: input.watcherPid ?? null,
 				heartbeat_at: null, terminal_receipt_id: input.terminalReceiptId ?? null,
 				block_reason: input.blockReason, legacy_evidence_hash: input.legacyEvidenceHash },
 		};
@@ -63,21 +64,22 @@ function injectedOwnerSuccess(operation, row, input) {
 		if (input.action === 'release') return { ok: true, changed: true, reason: 'released', row: null };
 		return {
 			ok: true, changed: true, reason: 'complete',
-			row: { ...row, phase: 'complete', watcher_pid: null, heartbeat_at: null,
+			row: { ...base, phase: 'complete', watcher_pid: null, heartbeat_at: null,
 				terminal_receipt_id: input.terminalReceiptId, block_reason: null, updated_at: now },
 		};
 	case 'watchOwnerImportLegacyStarting':
 		return {
 			ok: true, changed: true, reason: 'imported',
-			row: { ...row, generation: freshGeneration, phase: 'starting', controller_pid: input.controllerPid,
+			row: { ...base, generation: freshGeneration, phase: 'starting', controller_pid: input.controllerPid,
 				watcher_pid: null, started_at: now, updated_at: now, heartbeat_at: null,
 				terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: input.legacyEvidenceHash },
 		};
 	case 'watchOwnerImportLegacyComplete':
 		return {
 			ok: true, changed: true, reason: 'imported',
-			row: { ...row, generation: freshGeneration, phase: 'complete', controller_pid: null,
-				watcher_pid: null, heartbeat_at: null, terminal_receipt_id: input.terminalReceiptId,
+			row: { ...base, generation: freshGeneration, phase: 'complete', controller_pid: null,
+				watcher_pid: null, heartbeat_at: null, started_at: now, updated_at: now,
+				terminal_receipt_id: input.terminalReceiptId,
 				block_reason: null, legacy_evidence_hash: input.legacyEvidenceHash },
 		};
 	default:
@@ -338,8 +340,9 @@ describe('watch owner SQLite authority', () => {
 					heartbeat_at: null, block_reason: null, legacy_evidence_hash: null,
 					terminal_receipt_id: 'receipt-77',
 				},
+				absent: null,
 			};
-			const row = {
+			const row = shapes[shape] === null ? null : {
 				repo: 'acme/forge', pr: 77, version: 1, generation: 'generation-77',
 				started_at: NOW, updated_at: NOW,
 				...shapes[shape],
@@ -348,7 +351,9 @@ describe('watch owner SQLite authority', () => {
 				calls,
 				watchOwnerRead(input, config) {
 					calls.push({ method: 'watchOwnerRead', input, config });
-					return { ok: true, changed: false, reason: 'read', row };
+					return row === null
+						? { ok: true, changed: false, reason: 'absent', row: null }
+						: { ok: true, changed: false, reason: 'read', row };
 				},
 				watchGateRead(input, config) {
 					calls.push({ method: 'watchGateRead', input, config });
@@ -380,6 +385,8 @@ describe('watch owner SQLite authority', () => {
 			abortStarting: 'starting',
 			completeTerminal: 'terminal_pending',
 			reserveReopened: 'complete',
+			importLegacyStarting: 'absent',
+			importLegacyComplete: 'absent',
 		};
 		const driverA = makeDriver('A', priorShapes[method] || (scenario.blocked ? 'blocked' : 'running'));
 		const driverB = makeDriver('B', priorShapes[method] || (scenario.blocked ? 'blocked' : 'running'));
@@ -413,6 +420,7 @@ describe('watch owner SQLite authority', () => {
 		}
 
 		const result = await owner[method]({ repo: 'acme/forge', pr: 77 }, scenario.input, opts);
+		if (!result.ok) console.log('DEBUGPINS', method, JSON.stringify(result), JSON.stringify(driverA.calls));
 		expect(result).toMatchObject({ ok: true, changed: true, reason: successReasons[method] });
 		expect(driverB.calls).toEqual([]);
 		expect(driverA.calls.length).toBeGreaterThanOrEqual(2);
@@ -736,7 +744,7 @@ describe('watch owner SQLite authority', () => {
 				}, { ...base, verifyProviderEvidence: async () => true }),
 			},
 			{
-				name: 'legacy evidence', ctx: evidenceCtx, reason: 'evidence_mismatch',
+				name: 'legacy evidence', ctx: evidenceCtx, reason: 'stale_evidence',
 				attempt: () => owner.recheckLegacyBlocked(evidenceCtx, {
 					generation: blocked.record.generation, action: 'release',
 					legacyEvidenceHash: OTHER_HASH, updatedAt: LATER,
@@ -2576,6 +2584,51 @@ describe('watch owner successful-result postcondition validation', () => {
 			}),
 		}));
 		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', records: [] });
+	});
+
+	test('rejects changed imports over an existing captured owner', async () => {
+		const ctx = { repo: 'acme/forge', pr: 973 };
+		const prior = await seedLifecycle(ctx, 'starting');
+		const result = await owner.importLegacyStarting(ctx, {
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
+			legacyPid: LEGACY_PID, controllerPid: CONTROLLER_PID,
+			providerEvidence: { state: 'OPEN' }, startedAt: LATER,
+		}, authorityOpts({
+			...driver,
+			watchGateRead: () => ({
+				ok: true, changed: false, reason: 'read',
+				gate: { singleton: 1, state: 'quarantined', snapshot_hash: HASH, conflict_code: null, updated_at: NOW },
+			}),
+			watchOwnerImportLegacyStarting: () => ({
+				ok: true, changed: true, reason: 'imported',
+				row: {
+					repo: ctx.repo, pr: 973, version: 1, generation: `other-${prior.generation}`, phase: 'starting',
+					controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: LATER, updated_at: LATER,
+					heartbeat_at: null, terminal_receipt_id: null, block_reason: null,
+					legacy_evidence_hash: OTHER_HASH,
+				},
+			}),
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+	});
+
+	test('binds blocked-row rechecks to the captured owner', async () => {
+		const foreignCtx = { repo: 'acme/forge', pr: 975 };
+		const runningPrior = await seedLifecycle(foreignCtx, 'running');
+		let mutationAttempts = 0;
+		const result = await owner.recheckLegacyBlocked(foreignCtx, {
+			generation: runningPrior.generation, action: 'release',
+			legacyEvidenceHash: OTHER_HASH, pid: WATCHER_PID, updatedAt: NEXT,
+		}, authorityOpts({
+			...driver,
+			isPidAlive: async () => false,
+			watchOwnerRecheckLegacyBlocked: () => {
+				mutationAttempts += 1;
+				return { ok: true, changed: true, reason: 'released' };
+			},
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'stale_evidence', record: null });
+		expect(mutationAttempts).toBe(0);
 	});
 
 	test('binds evidence-bound mutations to the captured owner before verification', async () => {
