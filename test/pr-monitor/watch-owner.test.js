@@ -2328,6 +2328,24 @@ describe('watch owner successful-result postcondition validation', () => {
 		expect(unhandled).toBe(0);
 	});
 
+	test('consumes rejected async enumeration promises without crashing the host', async () => {
+		let unhandled = 0;
+		const onUnhandled = () => { unhandled += 1; };
+		process.on('unhandledRejection', onUnhandled);
+		const result = await owner.enumerateOwners(null, authorityOpts({
+			...driver,
+			watchOwnerList: async () => {
+				throw new Error('async enumeration rejected');
+			},
+		}));
+		await new Promise(resolve => setImmediate(resolve));
+		process.off('unhandledRejection', onUnhandled);
+		expect(result).toEqual({
+			ok: false, changed: false, reason: 'invalid_operation', records: [],
+		});
+		expect(unhandled).toBe(0);
+	});
+
 	test('rejects idempotent import claims made without a captured prior row', async () => {
 		const ctx = { repo: 'acme/forge', pr: 959 };
 		await seedGate(ctx);
@@ -2775,6 +2793,38 @@ describe('watch owner successful-result postcondition validation', () => {
 			watchOwnerList: () => ({ ok: true, changed: false, reason: 'read', rows: tricky }),
 		}));
 		expect(result).toEqual({ ok: false, changed: false, reason: 'enumeration_overflow', records: [] });
+	});
+
+	test.each([
+		['legacy evidence', { legacy_evidence_hash: null }],
+		['start timestamp', { started_at: NOW }],
+	])('rejects heartbeats that rewrite imported %s', async (_label, rewritten) => {
+		const ctx = { repo: 'acme/forge', pr: 981 };
+		await seedGate(ctx);
+		const imported = await owner.importLegacyStarting(ctx, {
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
+			legacyPid: LEGACY_PID, controllerPid: CONTROLLER_PID,
+			providerEvidence: { state: 'OPEN' }, startedAt: LATER,
+		}, authorityOpts());
+		expect(imported.ok).toBe(true);
+		const running = await owner.bindRunning(ctx, {
+			generation: imported.record.generation, controllerPid: CONTROLLER_PID,
+			pid: WATCHER_PID, updatedAt: NEXT,
+		}, authorityOpts());
+		expect(running.ok).toBe(true);
+		const result = await owner.heartbeat(ctx, {
+			generation: running.record.generation, pid: WATCHER_PID, updatedAt: FINAL,
+		}, authorityOpts({
+			...driver,
+			watchOwnerHeartbeat: () => ({
+				ok: true, changed: true, reason: 'heartbeat',
+				row: {
+					...toSnakeRow(running.record), ...rewritten,
+					updated_at: FINAL, heartbeat_at: FINAL,
+				},
+			}),
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
 	});
 
 	test('binds a running result to the captured provenance of the starting row', async () => {
