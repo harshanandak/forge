@@ -2827,6 +2827,94 @@ describe('watch owner successful-result postcondition validation', () => {
 		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
 	});
 
+	test.each([
+		['legacy evidence', 982, { legacy_evidence_hash: null }],
+		['start timestamp', 983, { started_at: NOW }],
+	])('rejects active transitions that rewrite imported %s', async (_label, pr, rewritten) => {
+		const ctx = { repo: 'acme/forge', pr };
+		const completeAt = '2026-08-19T08:00:05.000Z';
+		await seedGate(ctx);
+		const imported = await owner.importLegacyStarting(ctx, {
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
+			legacyPid: LEGACY_PID, controllerPid: CONTROLLER_PID,
+			providerEvidence: { state: 'OPEN' }, startedAt: LATER,
+		}, authorityOpts());
+		const running = await owner.bindRunning(ctx, {
+			generation: imported.record.generation, controllerPid: CONTROLLER_PID,
+			pid: WATCHER_PID, updatedAt: NEXT,
+		}, authorityOpts());
+		expect(running.ok).toBe(true);
+
+		const stopped = await owner.requestStop(ctx, {
+			generation: running.record.generation, pid: WATCHER_PID, updatedAt: FINAL,
+		}, authorityOpts({
+			...driver,
+			watchOwnerRequestStop: () => ({
+				ok: true, changed: true, reason: 'stop_requested',
+				row: {
+					...toSnakeRow(running.record), ...rewritten,
+					phase: 'stop_requested', updated_at: FINAL,
+				},
+			}),
+		}));
+		expect(stopped).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+
+		const recorded = await owner.recordTerminal(ctx, {
+			generation: running.record.generation, pid: WATCHER_PID,
+			terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
+		}, authorityOpts({
+			...driver,
+			watchOwnerRecordTerminal: () => ({
+				ok: true, changed: true, reason: 'terminal_pending',
+				row: {
+					...toSnakeRow(running.record), ...rewritten,
+					phase: 'terminal_pending', terminal_receipt_id: RECEIPT_ID, updated_at: FINAL,
+				},
+			}),
+		}));
+		expect(recorded).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+
+		const pending = await owner.recordTerminal(ctx, {
+			generation: running.record.generation, pid: WATCHER_PID,
+			terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
+		}, authorityOpts());
+		expect(pending.ok).toBe(true);
+		const completed = await owner.completeTerminal(ctx, {
+			generation: pending.record.generation, pid: WATCHER_PID,
+			terminalReceiptId: RECEIPT_ID, updatedAt: completeAt,
+		}, authorityOpts({
+			...driver,
+			watchOwnerCompleteTerminal: () => ({
+				ok: true, changed: true, reason: 'complete',
+				row: {
+					...toSnakeRow(pending.record), ...rewritten,
+					phase: 'complete', watcher_pid: null, heartbeat_at: null, updated_at: completeAt,
+				},
+			}),
+		}));
+		expect(completed).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+	});
+
+	test('rejects blocked completion that rewrites its original start timestamp', async () => {
+		const ctx = { repo: 'acme/forge', pr: 984 };
+		const prior = await seedBlocked(ctx, false);
+		const result = await owner.recheckLegacyBlocked(ctx, {
+			generation: prior.generation, action: 'complete', legacyEvidenceHash: OTHER_HASH,
+			terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
+		}, authorityOpts({
+			...driver,
+			watchOwnerRecheckLegacyBlocked: () => ({
+				ok: true, changed: true, reason: 'complete',
+				row: {
+					...toSnakeRow(prior.record), phase: 'complete', watcher_pid: null,
+					started_at: NOW, updated_at: FINAL, terminal_receipt_id: RECEIPT_ID,
+					block_reason: null,
+				},
+			}),
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+	});
+
 	test('binds a running result to the captured provenance of the starting row', async () => {
 		const ctx = { repo: 'acme/forge', pr: 980 };
 		await seedGate(ctx);

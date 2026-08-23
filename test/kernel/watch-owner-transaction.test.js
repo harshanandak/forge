@@ -607,6 +607,65 @@ describe('watch owner dedicated SQLite transaction', () => {
 		expect(nestedOutcome).toMatchObject({ ok: true, changed: true, reason: 'acquired' });
 	});
 
+	test.each([
+		['bindRunning', 'watchOwnerBindRunning', 114, 115],
+		['heartbeat', 'watchOwnerHeartbeat', 116, 117],
+		['requestStop', 'watchOwnerRequestStop', 118, 119],
+	])('copies an optional %s snapshot before acquiring the writer transaction', (
+		_label, method, pr, nestedPr,
+	) => {
+		const controllerPid = 7_000 + pr;
+		const watcherPid = 8_000 + pr;
+		const started = driver.watchOwnerReserveStarting({
+			repo: 'acme/forge', pr, controllerPid, now: NOW,
+		});
+		let current = started.row;
+		if (method !== 'watchOwnerBindRunning') {
+			current = driver.watchOwnerBindRunning({
+				repo: 'acme/forge', pr, generation: current.generation,
+				controllerPid, watcherPid, now: LATER,
+			}).row;
+		}
+		const snapshot = driver.watchOwnerRead({ repo: 'acme/forge', pr }).row;
+		let nestedOutcome;
+		let nestedError;
+		const expectedSnapshot = new Proxy(snapshot, {
+			get(target, property, receiver) {
+				if (property === 'repo' && nestedOutcome === undefined && nestedError === undefined) {
+					try {
+						nestedOutcome = driver.watchOwnerReserveStarting(
+							{ repo: 'acme/forge', pr: nestedPr, controllerPid: 7_000 + nestedPr, now: NOW },
+							{ watchOwnerBusyTimeoutMs: 25 },
+						);
+					} catch (error) {
+						nestedError = error;
+					}
+				}
+				return Reflect.get(target, property, receiver);
+			},
+		});
+		const input = method === 'watchOwnerBindRunning'
+			? {
+				repo: 'acme/forge', pr, generation: current.generation,
+				controllerPid, watcherPid, now: LATER, expectedSnapshot,
+			}
+			: {
+				repo: 'acme/forge', pr, generation: current.generation,
+				watcherPid, now: '2026-08-19T08:00:02.000Z', expectedSnapshot,
+			};
+
+		const result = driver[method](input, { watchOwnerBusyTimeoutMs: 25 });
+
+		expect(result).toMatchObject({
+			ok: true, changed: true,
+			reason: method === 'watchOwnerBindRunning'
+				? 'bound'
+				: (method === 'watchOwnerHeartbeat' ? 'heartbeat' : 'stop_requested'),
+		});
+		expect(nestedError).toBeUndefined();
+		expect(nestedOutcome).toMatchObject({ ok: true, changed: true, reason: 'acquired' });
+	});
+
 	test('copies migration gate inputs before acquiring the writer transaction', () => {
 		expect(driver.watchGatePublishQuarantine({ now: NOW })).toMatchObject({ ok: true, changed: true });
 		const reads = { now: 0, snapshotHash: 0, conflictCode: 0 };
