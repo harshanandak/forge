@@ -2941,4 +2941,89 @@ describe('watch owner successful-result postcondition validation', () => {
 		}));
 		expect(cleared).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
 	});
+
+	test('rejects idempotent owner results that differ from the captured snapshot', async () => {
+		const ctx = { repo: 'acme/forge', pr: 985 };
+		const running = await seedLifecycle(ctx, 'running');
+		const stopped = await owner.requestStop(ctx, {
+			generation: running.generation, pid: WATCHER_PID, updatedAt: NEXT,
+		}, authorityOpts());
+		expect(stopped.ok).toBe(true);
+
+		const result = await owner.requestStop(ctx, {
+			generation: stopped.record.generation, pid: WATCHER_PID, updatedAt: FINAL,
+		}, authorityOpts({
+			...driver,
+			watchOwnerRequestStop: () => ({
+				ok: true, changed: false, reason: 'idempotent',
+				row: { ...toSnakeRow(stopped.record), updated_at: FINAL },
+			}),
+		}));
+
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+	});
+
+	test('binds nonterminal release to a captured stopped owner', async () => {
+		const ctx = { repo: 'acme/forge', pr: 986 };
+		let releaseAttempts = 0;
+		const rejectingOpts = () => authorityOpts({
+			...driver,
+			watchOwnerReleaseNonterminal: () => {
+				releaseAttempts += 1;
+				return { ok: true, changed: true, reason: 'released', row: null };
+			},
+		});
+		const absent = await owner.releaseNonterminal(ctx, {
+			generation: 'absent-generation', pid: WATCHER_PID,
+		}, rejectingOpts());
+		expect(absent).toEqual({ ok: false, changed: false, reason: 'phase_mismatch', record: null });
+
+		const running = await seedLifecycle(ctx, 'running');
+		const rejected = await owner.releaseNonterminal(ctx, {
+			generation: running.generation, pid: WATCHER_PID,
+		}, rejectingOpts());
+		expect(rejected).toEqual({ ok: false, changed: false, reason: 'phase_mismatch', record: null });
+
+		const stopped = await owner.requestStop(ctx, {
+			generation: running.generation, pid: WATCHER_PID, updatedAt: NEXT,
+		}, authorityOpts());
+		const foreignGeneration = await owner.releaseNonterminal(ctx, {
+			generation: 'foreign-generation', pid: WATCHER_PID,
+		}, rejectingOpts());
+		expect(foreignGeneration)
+			.toEqual({ ok: false, changed: false, reason: 'generation_mismatch', record: null });
+		const foreignPid = await owner.releaseNonterminal(ctx, {
+			generation: stopped.record.generation, pid: WATCHER_PID + 1,
+		}, rejectingOpts());
+		expect(foreignPid).toEqual({ ok: false, changed: false, reason: 'pid_mismatch', record: null });
+		expect(releaseAttempts).toBe(0);
+
+		let submitted;
+		const released = await owner.releaseNonterminal(ctx, {
+			generation: stopped.record.generation, pid: WATCHER_PID,
+		}, authorityOpts({
+			...driver,
+			watchOwnerReleaseNonterminal: input => {
+				submitted = input;
+				return { ok: true, changed: true, reason: 'released', row: null };
+			},
+		}));
+		expect(released).toEqual({ ok: true, changed: true, reason: 'released', record: null });
+		expect(submitted.expectedSnapshot).toEqual(toSnakeRow(stopped.record));
+	});
+
+	test('rejects idempotent migration gates newer than the submitted checkpoint', async () => {
+		const result = await owner.publishMigrationQuarantine({ updatedAt: NOW }, authorityOpts({
+			...driver,
+			watchGatePublishQuarantine: () => ({
+				ok: true, changed: false, reason: 'idempotent',
+				gate: {
+					singleton: 1, state: 'quarantined', snapshot_hash: null,
+					conflict_code: null, updated_at: LATER,
+				},
+			}),
+		}));
+
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
+	});
 });
