@@ -281,9 +281,9 @@ describe('watch owner SQLite authority', () => {
 		['recheckLegacyBlocked', {
 			input: {
 				generation: 'generation-77', action: 'complete', legacyEvidenceHash: OTHER_HASH,
-				pid: 101, terminalReceiptId: 'receipt-77', updatedAt: NOW,
+				terminalReceiptId: 'receipt-77', updatedAt: NOW,
 			},
-			awaitKind: 'pid-and-receipt', pidResult: false,
+			awaitKind: 'receipt',
 			blocked: true,
 		}],
 		['importLegacyComplete', {
@@ -1202,7 +1202,7 @@ describe('watch owner SQLite authority', () => {
 				await owner.completeMigrationGate({ snapshotHash: HASH, updatedAt: LATER }, { driver });
 				return true;
 			},
-		})).toMatchObject({ ok: false, changed: false, reason: 'gate_mismatch' });
+		})).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
 		expect(await owner.readOwner(gateRaceCtx, { driver })).toMatchObject({ ok: true, reason: 'absent' });
 		await driver.exec(`UPDATE kernel_pr_watch_migration_gate
 			SET state = 'conflict', conflict_code = 'legacy_owner_conflict'`);
@@ -1621,6 +1621,9 @@ describe('watch owner SQLite authority', () => {
 		expect(await attempt()).toMatchObject({ ok: false, changed: false, reason: 'pid_mismatch' });
 		expect(checkedPids).toEqual([]);
 		expect(await attempt(999)).toMatchObject({ ok: false, changed: false, reason: 'pid_mismatch' });
+		expect(checkedPids).toEqual([]);
+		expect(await attempt('562')).toMatchObject({ ok: false, changed: false, reason: 'pid_mismatch' });
+		expect(await attempt(true)).toMatchObject({ ok: false, changed: false, reason: 'pid_mismatch' });
 		expect(checkedPids).toEqual([]);
 		expect(await attempt(562)).toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
 		expect(checkedPids).toEqual([562]);
@@ -2413,6 +2416,100 @@ describe('watch owner successful-result postcondition validation', () => {
 		expect(unhandled).toBe(0);
 	});
 
+	test('binds initial acquisition to the captured absent owner', async () => {
+		const ctx = { repo: 'acme/forge', pr: 958 };
+		const prior = await seedLifecycle(ctx, 'starting');
+		let submitted;
+		const result = await owner.reserveStarting(ctx, {
+			controllerPid: RECOVERY_PID, startedAt: LATER,
+		}, authorityOpts({
+			...driver,
+			watchOwnerReserveStarting: input => {
+				submitted = input;
+				return {
+					ok: true, changed: true, reason: 'acquired',
+					row: {
+						...toSnakeRow(prior.record), generation: 'forged-generation',
+						controller_pid: RECOVERY_PID, started_at: LATER, updated_at: LATER,
+					},
+				};
+			},
+		}));
+		expect(submitted.expectedSnapshot).toEqual(toSnakeRow(prior.record));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+	});
+
+	test('rejects an acquisition race after reading an absent owner', async () => {
+		const ctx = { repo: 'acme/forge', pr: 960 };
+		let raced = false;
+		const result = await owner.reserveStarting(ctx, {
+			controllerPid: CONTROLLER_PID, startedAt: NOW,
+		}, authorityOpts({
+			...driver,
+			watchOwnerReserveStarting: input => {
+				if (!raced) {
+					raced = true;
+					driver.watchOwnerReserveStarting({
+						repo: ctx.repo, pr: ctx.pr, controllerPid: RECOVERY_PID, now: NOW,
+					});
+				}
+				return driver.watchOwnerReserveStarting(input);
+			},
+		}));
+		expect(result).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
+		expect(await owner.readOwner(ctx, { driver }))
+			.toMatchObject({ ok: true, record: { controllerPid: RECOVERY_PID } });
+	});
+
+	test.each([
+		['markLegacyBlocked', 'watchOwnerMarkLegacyBlocked', (ctx, opts) => owner.markLegacyBlocked(ctx, {
+			blockReason: 'legacy_lossy', snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH, startedAt: NOW,
+		}, opts)],
+		['importLegacyStarting', 'watchOwnerImportLegacyStarting', (ctx, opts) => owner.importLegacyStarting(ctx, {
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH, legacyPid: LEGACY_PID,
+			controllerPid: CONTROLLER_PID, providerEvidence: { state: 'OPEN' }, startedAt: NOW,
+		}, opts)],
+		['importLegacyComplete', 'watchOwnerImportLegacyComplete', (ctx, opts) => owner.importLegacyComplete(ctx, {
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
+			terminalReceiptId: RECEIPT_ID, startedAt: NOW,
+		}, opts)],
+	])('%s submits the exact quarantined gate to the owner mutation', async (_name, method, act) => {
+		const ctx = { repo: 'acme/forge', pr: 961 };
+		const gate = Object.freeze({
+			singleton: 1, state: 'quarantined', snapshot_hash: HASH,
+			conflict_code: null, updated_at: NOW,
+		});
+		let submitted;
+		const injected = {
+			...driver,
+			watchGateRead: () => ({ ok: true, changed: false, reason: 'read', gate }),
+			[method]: input => {
+				submitted = input;
+				return { ok: false, changed: false, reason: 'probe', row: null };
+			},
+		};
+		await act(ctx, authorityOpts(injected));
+		expect(submitted.expectedGate).toEqual(gate);
+		expect(Object.isFrozen(submitted.expectedGate)).toBe(true);
+	});
+
+	test('rejects a completed migration-gate race before importing a legacy terminal row', async () => {
+		const ctx = { repo: 'acme/forge', pr: 962 };
+		await seedGate(ctx);
+		const result = await owner.importLegacyComplete(ctx, {
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
+			terminalReceiptId: RECEIPT_ID, startedAt: LATER,
+		}, {
+			driver,
+			verifyTerminalReceipt: async () => {
+				await owner.completeMigrationGate({ snapshotHash: HASH, updatedAt: NEXT }, { driver });
+				return true;
+			},
+		});
+		expect(result).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
+		expect(await owner.readOwner(ctx, { driver })).toMatchObject({ ok: true, reason: 'absent' });
+	});
+
 	test('consumes rejected async enumeration promises without crashing the host', async () => {
 		let unhandled = 0;
 		const onUnhandled = () => { unhandled += 1; };
@@ -2551,6 +2648,23 @@ describe('watch owner successful-result postcondition validation', () => {
 		}));
 		expect(result.gate).toBeNull();
 		expect(result.ok).toBe(false);
+	});
+
+	test('rejects a gate timestamp regression before calling the mutation adapter', async () => {
+		await owner.publishMigrationQuarantine({ updatedAt: NOW }, authorityOpts());
+		await owner.bindMigrationSnapshot({ snapshotHash: HASH, updatedAt: LATER }, authorityOpts());
+		let mutationAttempts = 0;
+		const result = await owner.publishMigrationConflict({
+			snapshotHash: HASH, conflictCode: 'legacy_owner_conflict', updatedAt: NOW,
+		}, authorityOpts({
+			...driver,
+			watchGatePublishConflict: () => {
+				mutationAttempts += 1;
+				return { ok: false, changed: false, reason: 'probe', gate: null };
+			},
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'stale_evidence', gate: null });
+		expect(mutationAttempts).toBe(0);
 	});
 
 	test('never exposes converted records from failed enumeration envelopes', async () => {
@@ -3140,16 +3254,19 @@ describe('watch owner successful-result postcondition validation', () => {
 	test('rejects idempotent owner results submitted before retained owner timestamps', async () => {
 		const ctx = { repo: 'acme/forge', pr: 991 };
 		const stopped = await seedLifecycle(ctx, 'stop_requested');
+		let mutationAttempts = 0;
 		const result = await owner.requestStop(ctx, {
 			generation: stopped.generation, pid: WATCHER_PID, updatedAt: NOW,
 		}, authorityOpts({
 			...driver,
-			watchOwnerRequestStop: () => ({
-				ok: true, changed: false, reason: 'idempotent', row: toSnakeRow(stopped.record),
-			}),
+			watchOwnerRequestStop: () => {
+				mutationAttempts += 1;
+				return { ok: true, changed: false, reason: 'idempotent', row: toSnakeRow(stopped.record) };
+			},
 		}));
 
-		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+		expect(result).toEqual({ ok: false, changed: false, reason: 'stale_evidence', record: null });
+		expect(mutationAttempts).toBe(0);
 	});
 
 	test('binds nonterminal release to a captured stopped owner', async () => {
@@ -3250,6 +3367,7 @@ describe('watch owner successful-result postcondition validation', () => {
 
 	test('rejects changed blocked imports over an existing owner', async () => {
 		const ctx = { repo: 'acme/forge', pr: 988 };
+		await seedGate(ctx);
 		await seedLifecycle(ctx, 'running');
 		const result = await owner.markLegacyBlocked(ctx, {
 			blockReason: 'legacy_lossy', snapshotHash: HASH,
@@ -3294,6 +3412,24 @@ describe('watch owner successful-result postcondition validation', () => {
 			},
 		}));
 		expect(result).toEqual({ ok: false, changed: false, reason: 'invalid_transition', record: null });
+		expect(mutationAttempts).toBe(0);
+	});
+
+	test('rejects a PID supplied for a non-live blocked owner before mutation', async () => {
+		const ctx = { repo: 'acme/forge', pr: 993 };
+		const blocked = await seedBlocked(ctx, false);
+		let mutationAttempts = 0;
+		const result = await owner.recheckLegacyBlocked(ctx, {
+			generation: blocked.generation, action: 'complete', legacyEvidenceHash: OTHER_HASH,
+			pid: LEGACY_PID, terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
+		}, authorityOpts({
+			...driver,
+			watchOwnerRecheckLegacyBlocked: () => {
+				mutationAttempts += 1;
+				return { ok: true, changed: true, reason: 'complete', row: toSnakeRow(blocked.record) };
+			},
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'pid_mismatch', record: null });
 		expect(mutationAttempts).toBe(0);
 	});
 });

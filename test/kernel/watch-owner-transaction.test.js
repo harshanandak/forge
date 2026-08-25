@@ -162,7 +162,7 @@ describe('watch owner dedicated SQLite transaction', () => {
 		const results = await Promise.all(runtimes.map((runtime, index) => runContender(runtime, databasePath, 1_000 + index)));
 		expect(results.filter(result => result.ok && result.changed)).toHaveLength(1);
 		expect(results.filter(result => !result.changed && !(
-			result.ok === false && ['busy', 'authority_unavailable'].includes(result.reason)
+			result.ok === false && ['busy', 'stale_evidence', 'authority_unavailable'].includes(result.reason)
 		))).toEqual([]);
 		const rows = await driver.queryAll('SELECT repo, pr, generation FROM kernel_pr_watch_owners');
 		expect(rows).toHaveLength(1);
@@ -437,7 +437,10 @@ describe('watch owner dedicated SQLite transaction', () => {
 		expect(owner.transition).toBeUndefined();
 		expect(await owner.reserveStarting({ repo: 'acme/forge', pr: 80 }, {
 			controllerPid: 4_000, startedAt: NOW,
-		}, { driver: { watchOwnerReserveStarting: async () => ({ ok: true }) } }))
+		}, { driver: {
+			watchOwnerRead: () => ({ ok: true, changed: false, reason: 'absent', row: null }),
+			watchOwnerReserveStarting: async () => ({ ok: true }),
+		} }))
 			.toEqual({ ok: false, changed: false, reason: 'invalid_operation', record: null });
 	});
 
@@ -704,6 +707,33 @@ describe('watch owner dedicated SQLite transaction', () => {
 		expect(result).toMatchObject({ ok: true, changed: true, gate: {
 			state: 'conflict', snapshot_hash: HASH, conflict_code: 'legacy_owner_conflict', updated_at: LATER,
 		} });
+	});
+
+	test('atomically fences initial acquisition to an absent owner snapshot', () => {
+		const current = driver.watchOwnerReserveStarting({
+			repo: 'acme/forge', pr: 115, controllerPid: 7_115, now: NOW,
+		});
+		const raced = driver.watchOwnerReserveStarting({
+			repo: 'acme/forge', pr: 115, controllerPid: 8_115, now: LATER,
+			expectedSnapshot: null,
+		});
+		expect(raced).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
+		expect(driver.watchOwnerRead({ repo: 'acme/forge', pr: 115 })).toMatchObject({ row: current.row });
+	});
+
+	test('atomically fences a legacy owner import to the captured migration gate', () => {
+		driver.watchGatePublishQuarantine({ now: NOW });
+		const bound = driver.watchGateBindSnapshot({ snapshotHash: HASH, now: NOW });
+		driver.watchGateCompleteMigration({ snapshotHash: HASH, now: LATER });
+		const result = driver.watchOwnerImportLegacyComplete({
+			repo: 'acme/forge', pr: 118, now: LATER,
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
+			terminalReceiptId: 'receipt-118', expectedSnapshot: null,
+			expectedGate: bound.gate,
+		});
+		expect(result).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
+		expect(driver.watchOwnerRead({ repo: 'acme/forge', pr: 118 }))
+			.toMatchObject({ ok: true, changed: false, reason: 'absent', row: null });
 	});
 
 	test('uses one prepared identity for evidence checks and deletion', async () => {
