@@ -2398,6 +2398,27 @@ describe('watch owner successful-result postcondition validation', () => {
 		expect(result.ok).toBe(false);
 	});
 
+	test('rejects failed gate reads that still carry authoritative state', async () => {
+		const gate = {
+			singleton: 1, state: 'complete', snapshot_hash: HASH,
+			conflict_code: null, updated_at: NOW,
+		};
+		let mutationAttempts = 0;
+		const injected = authorityOpts({
+			...driver,
+			watchGateRead: () => ({ ok: false, changed: false, reason: 'absent', gate }),
+			watchGatePublishQuarantine: () => {
+				mutationAttempts += 1;
+				return { ok: true, changed: true, reason: 'quarantined', gate };
+			},
+		});
+		expect(await owner.readMigrationGate({}, injected))
+			.toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
+		expect(await owner.publishMigrationQuarantine({ updatedAt: LATER }, injected))
+			.toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
+		expect(mutationAttempts).toBe(0);
+	});
+
 	test('consumes rejected async adapter promises without crashing the host', async () => {
 		let unhandled = 0;
 		const onUnhandled = () => { unhandled += 1; };
