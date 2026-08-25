@@ -2164,6 +2164,14 @@ describe('watch owner successful-result postcondition validation', () => {
 			if (spec.replay) {
 				const replayed = await spec.act(happyCtx, prior, authorityOpts());
 				expect(replayed).toEqual({ ok: true, changed: false, reason: 'idempotent', record: happy.record });
+				const changedReplayDriver = {
+					...driver,
+					[spec.driverMethod]: () => ({
+						ok: true, changed: true, reason: spec.expect.reason, row: toSnakeRow(happy.record),
+					}),
+				};
+				const changedReplay = await spec.act(happyCtx, prior, authorityOpts(changedReplayDriver));
+				expect(changedReplay).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
 			}
 
 			if (spec.forbidIdempotent) {
@@ -3015,6 +3023,21 @@ describe('watch owner successful-result postcondition validation', () => {
 			watchOwnerRequestStop: () => ({
 				ok: true, changed: false, reason: 'idempotent',
 				row: { ...toSnakeRow(stopped.record), updated_at: FINAL },
+			}),
+		}));
+
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+	});
+
+	test('rejects idempotent owner results submitted before retained owner timestamps', async () => {
+		const ctx = { repo: 'acme/forge', pr: 991 };
+		const stopped = await seedLifecycle(ctx, 'stop_requested');
+		const result = await owner.requestStop(ctx, {
+			generation: stopped.generation, pid: WATCHER_PID, updatedAt: NOW,
+		}, authorityOpts({
+			...driver,
+			watchOwnerRequestStop: () => ({
+				ok: true, changed: false, reason: 'idempotent', row: toSnakeRow(stopped.record),
 			}),
 		}));
 
