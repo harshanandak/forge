@@ -59,7 +59,7 @@ The Kernel schema DSL and DDL renderer are extended with a table-level `primaryK
 
 There is no generic transition or clear. The module exposes only `reserveStarting`, `reserveReopened`, `bindRunning`, `heartbeat`, `requestStop`, `recordTerminal`, `completeTerminal`, `abortStarting`, `releaseNonterminal`, `recoverDeadStarting`, `recoverDeadWatcher`, `markLegacyBlocked`, `recheckLegacyBlocked`, `importLegacyComplete`, and gate-bound `importLegacyStarting`. Imported legacy provenance is preserved through later lifecycle transitions.
 
-The separate migration-gate surface exposes only `readMigrationGate`, `publishMigrationQuarantine`, `bindMigrationSnapshot`, `publishMigrationConflict`, and `completeMigrationGate`. Reading never creates or mutates the gate; launch is permitted only after a valid read returns exactly `complete`.
+The separate migration-gate surface exposes only `readMigrationGate`, `publishMigrationQuarantine`, `bindMigrationSnapshot`, `publishMigrationConflict`, `retryMigrationConflict`, and `completeMigrationGate`. `retryMigrationConflict` rebinds a `conflict` gate to `quarantined` under an exact `(snapshot_hash, conflict_code)` CAS with a different replacement hash. Reading never creates or mutates the gate; launch is permitted only after a valid read returns exactly `complete`.
 
 Every API returns `{ ok, changed, reason, record }`. Invalid input, missing Kernel authority, busy timeout, corrupt rows, unknown versions, and ambiguous migration evidence return tagged fail-closed envelopes and never fall back to filesystem authority.
 

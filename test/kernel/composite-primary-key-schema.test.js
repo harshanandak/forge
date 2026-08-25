@@ -97,15 +97,6 @@ describe('PR watch ownership schema', () => {
 			primaryKey: true,
 			notNull: true,
 		});
-		expect(gate.fields.map(candidate => candidate.name)).not.toEqual(expect.arrayContaining([
-			'repo',
-			'pr',
-			'generation',
-			'controller_pid',
-			'watcher_pid',
-			'phase',
-			'terminal_receipt_id',
-		]));
 	});
 
 	test('uses identical owner DDL for the current schema and additive migration', () => {

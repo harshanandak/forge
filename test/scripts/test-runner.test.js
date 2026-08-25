@@ -291,6 +291,7 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.testTargets).toContain('test/kernel/watch-owner-transaction.test.js');
     expect(plan.runFullSuite).toBe(true);
     expect(plan.mode).toBe('full');
+    expect(plan.reason).toBe('shared authority changes require full unit coverage');
   });
 
   test('classifyPushTests maps upgrade safety docs and support modules without forcing a full suite', () => {
@@ -423,6 +424,7 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.runFullSuite).toBe(true);
     expect(plan.runTestEnv).toBe(true);
     expect(plan.runE2E).toBe(true);
+    expect(plan.reason).toBe('package-level changes detected');
   });
 
   test('classifyPushTests falls back to full suite for unmapped pushed files', () => {
