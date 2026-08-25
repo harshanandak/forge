@@ -280,18 +280,24 @@ describe('scripts/test pre-push runner', () => {
   });
 
   test('classifyPushTests forces the full suite when a shared driver and mapped consumer change together', () => {
-    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+    let diffCalls = 0;
+    const execFileSync = makeExecFileSync({
       changedFiles: [
         'lib/kernel/sqlite-driver.js',
         'test/kernel/watch-owner-transaction.test.js',
       ].join('\n'),
-    }));
+    });
+    const plan = classifyPushTests(repoRoot, (command, args, options) => {
+      if (command === 'git' && args[0] === 'diff') diffCalls += 1;
+      return execFileSync(command, args, options);
+    });
 
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toContain('test/kernel/watch-owner-transaction.test.js');
     expect(plan.runFullSuite).toBe(true);
     expect(plan.mode).toBe('full');
     expect(plan.reason).toBe('shared authority changes require full unit coverage');
+    expect(diffCalls).toBe(1);
   });
 
   test('classifyPushTests maps upgrade safety docs and support modules without forcing a full suite', () => {

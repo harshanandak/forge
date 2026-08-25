@@ -278,7 +278,10 @@ function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync,
     sinceUpstream: options.sinceUpstream !== false,
   };
   const changedFiles = getChangedFiles(execFileSync, diffOptions);
-  const affectedTestTargets = getAffectedTestFiles(projectRoot, execFileSync, fs, diffOptions);
+  const affectedTestTargets = getAffectedTestFiles(projectRoot, execFileSync, fs, {
+    ...diffOptions,
+    changedFiles,
+  });
 
   let runFullSuite = false;
   let runTestEnv = false;

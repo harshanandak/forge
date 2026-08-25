@@ -736,6 +736,44 @@ describe('watch owner dedicated SQLite transaction', () => {
 			.toMatchObject({ ok: true, changed: false, reason: 'absent', row: null });
 	});
 
+	test('preserves a non-enumerable stale owner snapshot for destructive release CAS', () => {
+		const starting = driver.watchOwnerReserveStarting({
+			repo: 'acme/forge', pr: 119, controllerPid: 7_119, now: NOW,
+		});
+		const running = driver.watchOwnerBindRunning({
+			repo: 'acme/forge', pr: 119, generation: starting.row.generation,
+			controllerPid: 7_119, watcherPid: 8_119, now: LATER,
+		});
+		const stopped = driver.watchOwnerRequestStop({
+			repo: 'acme/forge', pr: 119, generation: running.row.generation,
+			watcherPid: 8_119, now: LATER,
+		});
+		const input = {
+			repo: 'acme/forge', pr: 119, generation: stopped.row.generation, watcherPid: 8_119,
+		};
+		Object.defineProperty(input, 'expectedSnapshot', { value: running.row, enumerable: false });
+
+		expect(driver.watchOwnerReleaseNonterminal(input))
+			.toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
+		expect(driver.watchOwnerRead({ repo: 'acme/forge', pr: 119 }))
+			.toMatchObject({ ok: true, row: stopped.row });
+	});
+
+	test('preserves a non-enumerable stale gate snapshot for legacy import CAS', () => {
+		const published = driver.watchGatePublishQuarantine({ now: NOW });
+		driver.watchGateBindSnapshot({ snapshotHash: HASH, now: LATER });
+		const input = {
+			repo: 'acme/forge', pr: 120, now: LATER, controllerPid: 7_120,
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH, expectedSnapshot: null,
+		};
+		Object.defineProperty(input, 'expectedGate', { value: published.gate, enumerable: false });
+
+		expect(driver.watchOwnerImportLegacyStarting(input))
+			.toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
+		expect(driver.watchOwnerRead({ repo: 'acme/forge', pr: 120 }))
+			.toMatchObject({ ok: true, changed: false, reason: 'absent', row: null });
+	});
+
 	test('uses one prepared identity for evidence checks and deletion', async () => {
 		const starting = driver.watchOwnerReserveStarting({
 			repo: 'acme/forge', pr: 116, controllerPid: 7_116, now: NOW,
