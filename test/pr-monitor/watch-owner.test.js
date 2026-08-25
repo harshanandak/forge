@@ -56,7 +56,8 @@ function injectedOwnerSuccess(operation, row, input) {
 	case 'watchOwnerMarkLegacyBlocked':
 		return {
 			ok: true, changed: true, reason: 'blocked',
-			row: { ...base, phase: 'blocked', controller_pid: null, watcher_pid: input.watcherPid ?? null,
+			row: { ...base, generation: freshGeneration, phase: 'blocked', controller_pid: null,
+				watcher_pid: input.watcherPid ?? null, started_at: now, updated_at: now,
 				heartbeat_at: null, terminal_receipt_id: input.terminalReceiptId ?? null,
 				block_reason: input.blockReason, legacy_evidence_hash: input.legacyEvidenceHash },
 		};
@@ -385,6 +386,7 @@ describe('watch owner SQLite authority', () => {
 			abortStarting: 'starting',
 			completeTerminal: 'terminal_pending',
 			reserveReopened: 'complete',
+			markLegacyBlocked: 'absent',
 			importLegacyStarting: 'absent',
 			importLegacyComplete: 'absent',
 		};
@@ -3025,5 +3027,86 @@ describe('watch owner successful-result postcondition validation', () => {
 		}));
 
 		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
+	});
+
+	test('accepts an already-running bind only as an exact same-PID replay', async () => {
+		const ctx = { repo: 'acme/forge', pr: 987 };
+		const running = await seedLifecycle(ctx, 'running');
+		let bindAttempts = 0;
+		const changedAdapter = authorityOpts({
+			...driver,
+			watchOwnerBindRunning: input => {
+				bindAttempts += 1;
+				return {
+					ok: true, changed: true, reason: 'bound',
+					row: {
+						...toSnakeRow(running.record), watcher_pid: input.watcherPid,
+						updated_at: FINAL, heartbeat_at: FINAL,
+					},
+				};
+			},
+		});
+		const foreignPid = await owner.bindRunning(ctx, {
+			generation: running.generation, controllerPid: CONTROLLER_PID,
+			pid: WATCHER_PID + 1, updatedAt: FINAL,
+		}, changedAdapter);
+		expect(foreignPid).toEqual({ ok: false, changed: false, reason: 'pid_mismatch', record: null });
+		expect(bindAttempts).toBe(0);
+
+		const changedReplay = await owner.bindRunning(ctx, {
+			generation: running.generation, controllerPid: CONTROLLER_PID,
+			pid: WATCHER_PID, updatedAt: FINAL,
+		}, changedAdapter);
+		expect(changedReplay).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+		expect(bindAttempts).toBe(1);
+	});
+
+	test('rejects changed blocked imports over an existing owner', async () => {
+		const ctx = { repo: 'acme/forge', pr: 988 };
+		await seedLifecycle(ctx, 'running');
+		const result = await owner.markLegacyBlocked(ctx, {
+			blockReason: 'legacy_lossy', snapshotHash: HASH,
+			legacyEvidenceHash: OTHER_HASH, startedAt: FINAL,
+		}, authorityOpts({
+			...driver,
+			watchOwnerMarkLegacyBlocked: () => ({
+				ok: true, changed: true, reason: 'blocked',
+				row: {
+					repo: ctx.repo, pr: ctx.pr, version: 1, generation: 'replacement-generation',
+					phase: 'blocked', controller_pid: null, watcher_pid: null,
+					started_at: FINAL, updated_at: FINAL, heartbeat_at: null,
+					terminal_receipt_id: null, block_reason: 'legacy_lossy',
+					legacy_evidence_hash: OTHER_HASH,
+				},
+			}),
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+	});
+
+	test.each([
+		['legacy_conflict', 989],
+		['legacy_unreadable', 990],
+		['legacy_lossy', 991],
+		['legacy_receipt_unverified', 992],
+	])('rejects alternate-adapter release of a %s blocked owner', async (blockReason, pr) => {
+		const ctx = { repo: 'acme/forge', pr };
+		await seedGate(ctx);
+		const blocked = await owner.markLegacyBlocked(ctx, {
+			blockReason, snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH, startedAt: LATER,
+			...(blockReason === 'legacy_receipt_unverified' ? { terminalReceiptId: RECEIPT_ID } : {}),
+		}, authorityOpts());
+		let mutationAttempts = 0;
+		const result = await owner.recheckLegacyBlocked(ctx, {
+			generation: blocked.record.generation, action: 'release',
+			legacyEvidenceHash: OTHER_HASH, updatedAt: FINAL,
+		}, authorityOpts({
+			...driver,
+			watchOwnerRecheckLegacyBlocked: () => {
+				mutationAttempts += 1;
+				return { ok: true, changed: true, reason: 'released', row: null };
+			},
+		}));
+		expect(result).toEqual({ ok: false, changed: false, reason: 'invalid_transition', record: null });
+		expect(mutationAttempts).toBe(0);
 	});
 });
