@@ -1308,6 +1308,7 @@ describe('watch owner SQLite authority', () => {
 			let calls = 0;
 			const result = await scenario.call(scenario.input, {
 				driver: {
+					watchGateRead: () => ({ ok: false, changed: false, reason: 'absent', gate: null }),
 					[scenario.method]: () => {
 						calls += 1;
 						return { ok: true, changed: true, reason: 'spoofed', gate: scenario.gate };
@@ -1316,6 +1317,80 @@ describe('watch owner SQLite authority', () => {
 			});
 			expect(result, scenario.label).toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
 			expect(calls, scenario.label).toBe(1);
+		}
+	});
+
+	test('binds every gate mutation to its captured prior state', async () => {
+		const complete = {
+			singleton: 1, state: 'complete', snapshot_hash: HASH,
+			conflict_code: null, updated_at: NOW,
+		};
+		const quarantined = {
+			singleton: 1, state: 'quarantined', snapshot_hash: HASH,
+			conflict_code: null, updated_at: NOW,
+		};
+		const conflict = {
+			singleton: 1, state: 'conflict', snapshot_hash: HASH,
+			conflict_code: 'legacy_owner_conflict', updated_at: NOW,
+		};
+		const cases = [
+			{
+				label: 'quarantine over complete', method: 'watchGatePublishQuarantine',
+				call: owner.publishMigrationQuarantine, input: { updatedAt: LATER }, prior: complete,
+				result: {
+					ok: true, changed: true, reason: 'quarantined',
+					gate: { ...quarantined, snapshot_hash: null, updated_at: LATER },
+				},
+			},
+			{
+				label: 'bind over absence', method: 'watchGateBindSnapshot',
+				call: owner.bindMigrationSnapshot,
+				input: { snapshotHash: HASH, updatedAt: LATER }, prior: null,
+				result: {
+					ok: true, changed: true, reason: 'bound',
+					gate: { ...quarantined, updated_at: LATER },
+				},
+			},
+			{
+				label: 'conflict over complete', method: 'watchGatePublishConflict',
+				call: owner.publishMigrationConflict,
+				input: { snapshotHash: HASH, conflictCode: 'legacy_owner_conflict', updatedAt: LATER },
+				prior: complete,
+				result: { ok: true, changed: true, reason: 'conflict', gate: { ...conflict, updated_at: LATER } },
+			},
+			{
+				label: 'retry over quarantine', method: 'watchGateRetryConflict',
+				call: owner.retryMigrationConflict,
+				input: {
+					expectedSnapshotHash: HASH, expectedConflictCode: 'legacy_owner_conflict',
+					replacementSnapshotHash: OTHER_HASH, updatedAt: LATER,
+				},
+				prior: quarantined,
+				result: {
+					ok: true, changed: true, reason: 'retry_bound',
+					gate: { ...quarantined, snapshot_hash: OTHER_HASH, updated_at: LATER },
+				},
+			},
+			{
+				label: 'complete over conflict', method: 'watchGateCompleteMigration',
+				call: owner.completeMigrationGate,
+				input: { snapshotHash: HASH, updatedAt: LATER }, prior: conflict,
+				result: { ok: true, changed: true, reason: 'complete', gate: { ...complete, updated_at: LATER } },
+			},
+		];
+
+		for (const scenario of cases) {
+			let submitted;
+			const driverOverride = {
+				watchGateRead: () => scenario.prior
+					? { ok: true, changed: false, reason: 'read', gate: scenario.prior }
+					: { ok: false, changed: false, reason: 'absent', gate: null },
+				[scenario.method]: input => { submitted = input; return scenario.result; },
+			};
+			const result = await scenario.call(scenario.input, { driver: driverOverride });
+			expect(result, scenario.label)
+				.toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
+			expect(submitted.expectedGate, scenario.label).toEqual(scenario.prior);
 		}
 	});
 
@@ -2959,6 +3034,39 @@ describe('watch owner successful-result postcondition validation', () => {
 			}),
 		}));
 		expect(completed).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+	});
+
+	test.each([
+		['requestStop', 992, 'watchOwnerRequestStop', 'stop_requested'],
+		['recordTerminal', 993, 'watchOwnerRecordTerminal', 'terminal_pending'],
+	])('rejects %s results that rewrite the captured heartbeat', async (_label, pr, method, phase) => {
+		const ctx = { repo: 'acme/forge', pr };
+		const running = await seedLifecycle(ctx, 'running');
+		const result = method === 'watchOwnerRequestStop'
+			? await owner.requestStop(ctx, {
+				generation: running.generation, pid: WATCHER_PID, updatedAt: FINAL,
+			}, authorityOpts({
+				...driver,
+				[method]: () => ({
+					ok: true, changed: true, reason: phase,
+					row: { ...toSnakeRow(running.record), phase, heartbeat_at: NOW, updated_at: FINAL },
+				}),
+			}))
+			: await owner.recordTerminal(ctx, {
+				generation: running.generation, pid: WATCHER_PID,
+				terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
+			}, authorityOpts({
+				...driver,
+				[method]: () => ({
+					ok: true, changed: true, reason: phase,
+					row: {
+						...toSnakeRow(running.record), phase, heartbeat_at: NOW,
+						terminal_receipt_id: RECEIPT_ID, updated_at: FINAL,
+					},
+				}),
+			}));
+
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
 	});
 
 	test('rejects blocked completion that rewrites its original start timestamp', async () => {

@@ -1141,6 +1141,20 @@ describe('watch owner dedicated SQLite transaction', () => {
 		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_migration_gate')).toEqual([]);
 	});
 
+	test('rejects a gate mutation when the captured gate changed before the transaction', async () => {
+		const published = driver.watchGatePublishQuarantine({ now: NOW });
+		expect(published.ok).toBe(true);
+		expect(driver.watchGateBindSnapshot({ snapshotHash: HASH, now: LATER }).ok).toBe(true);
+		const before = await driver.queryAll('SELECT * FROM kernel_pr_watch_migration_gate');
+
+		const result = driver.watchGateCompleteMigration({
+			snapshotHash: HASH, now: LATER, expectedGate: published.gate,
+		});
+
+		expect(result).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_migration_gate')).toEqual(before);
+	});
+
 	test('validates constructed legacy rows before insert', async () => {
 		await owner.publishMigrationQuarantine({ updatedAt: NOW }, { driver });
 		await owner.bindMigrationSnapshot({ snapshotHash: HASH, updatedAt: NOW }, { driver });
