@@ -2734,6 +2734,62 @@ describe('watch owner successful-result postcondition validation', () => {
 		expect(recoveryAttempts).toBe(0);
 	});
 
+	test('does not recover a watcher after cooperative stop is requested', async () => {
+		const ctx = { repo: 'acme/forge', pr: 989 };
+		const running = await seedLifecycle(ctx, 'running');
+		const stopped = await owner.requestStop(ctx, {
+			generation: running.generation, pid: WATCHER_PID, updatedAt: NEXT,
+		}, authorityOpts());
+		let recoveryAttempts = 0;
+
+		const result = await owner.recoverDeadWatcher(ctx, {
+			generation: stopped.record.generation, pid: WATCHER_PID,
+			recoveryControllerPid: RECOVERY_PID, providerEvidence: { state: 'OPEN' }, updatedAt: FINAL,
+		}, authorityOpts({
+			...driver,
+			isPidAlive: async () => false,
+			verifyProviderEvidence: async () => true,
+			watchOwnerRecoverDeadWatcher: () => {
+				recoveryAttempts += 1;
+				return { ok: true, changed: true, reason: 'recovered', row: null };
+			},
+		}));
+
+		expect(result).toEqual({ ok: false, changed: false, reason: 'generation_mismatch', record: null });
+		expect(recoveryAttempts).toBe(0);
+		expect(await owner.readOwner(ctx, authorityOpts())).toMatchObject({
+			ok: true, record: { phase: 'stop_requested', generation: stopped.record.generation },
+		});
+	});
+
+	test('rejects contradictory changed failure envelopes from owner and gate adapters', async () => {
+		const ownerResult = await owner.reserveStarting({ repo: 'acme/forge', pr: 990 }, {
+			controllerPid: CONTROLLER_PID, startedAt: NOW,
+		}, authorityOpts({
+			...driver,
+			watchOwnerReserveStarting: () => ({ ok: false, changed: true, reason: 'busy', row: null }),
+		}));
+		const gateResult = await owner.publishMigrationQuarantine({ updatedAt: NOW }, authorityOpts({
+			...driver,
+			watchGatePublishQuarantine: () => ({ ok: false, changed: true, reason: 'busy', gate: null }),
+		}));
+		const evidenceResult = await owner.heartbeat({ repo: 'acme/forge', pr: 991 }, {
+			generation: 'generation-991', pid: WATCHER_PID, updatedAt: NOW,
+		}, authorityOpts({
+			...driver,
+			watchOwnerRead: () => ({ ok: false, changed: true, reason: 'busy', row: null }),
+		}));
+		const listResult = await owner.enumerateOwners(null, authorityOpts({
+			...driver,
+			watchOwnerList: () => ({ ok: false, changed: true, reason: 'busy', rows: [] }),
+		}));
+
+		expect(ownerResult).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+		expect(gateResult).toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
+		expect(evidenceResult).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+		expect(listResult).toEqual({ ok: false, changed: false, reason: 'corrupt', records: [] });
+	});
+
 	test('rejects idempotent conflict-retry claims the builtin driver cannot produce', async () => {
 		await seedGate({ repo: 'acme/forge', pr: 972 });
 		await owner.publishMigrationConflict({
