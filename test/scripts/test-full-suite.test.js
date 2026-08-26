@@ -658,7 +658,7 @@ describe('scripts/test-full-suite.js', () => {
     expect(maxActive).toBe(2);
   });
 
-  test('default scheduling keeps resource-aware overlap when no explicit shard count is given', async () => {
+  test('default scheduling caps mixed resource lanes at the computed worker budget', async () => {
     let active = 0;
     let maxActive = 0;
     const spawn = (_command, args) => {
@@ -679,16 +679,21 @@ describe('scripts/test-full-suite.js', () => {
     };
 
     const status = await runFullSuiteInParallel({}, {
-      allTests: ['test/a.test.js', 'test/spawn-a.test.js'],
+      allTests: [
+        'test/a.test.js',
+        'test/spawn-a.test.js',
+        'test/spawn-b.test.js',
+        'test/spawn-c.test.js',
+      ],
       classify: (file) => (file.indexOf('spawn') !== -1 ? 'subprocess' : 'unit'),
       durationMap: new Map(),
-      cpuCount: 1,
+      cpuCount: 4,
       processTree: fakeProcessTree(),
       spawn,
     });
 
     expect(status).toBe(0);
-    expect(maxActive).toBeGreaterThan(1);
+    expect(maxActive).toBe(3);
   });
 
   test('runLaneSchedule propagates deferred-lane failures instead of masking them', async () => {

@@ -849,7 +849,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
         scheduleCancelled = true;
         processTree.cleanup('SIGKILL');
       }, {
-        workerBudget: Number.isInteger(args.shards) && args.shards > 0 ? args.shards : null,
+        workerBudget: shardTotal,
       });
     } catch (error) {
       console.error('Full suite shard execution failed:', error);
