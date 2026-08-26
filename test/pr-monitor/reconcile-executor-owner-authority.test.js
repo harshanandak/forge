@@ -290,4 +290,54 @@ describe('reconcile executor owner-row authority', () => {
 		expect(await execute([action], { authority })).toMatchObject({ ok: true, changed: true });
 		expect(attempts).toBe(2);
 	});
+
+	test('recovers the terminal receipt before releasing a blocked legacy owner', async () => {
+		const blocked = {
+			...RECORD, phase: 'blocked', blockReason: 'legacy_live_pid', controllerPid: null,
+			watcherPid: 44, heartbeatAt: null, terminalReceiptId: null,
+			legacyEvidenceHash: 'a'.repeat(64),
+		};
+		const action = { type: 'recheckLegacyBlocked', owner: blocked, providerState: 'terminal' };
+		const inputs = [];
+		const authority = {
+			recheckLegacyBlocked: async (_ctx, input) => {
+				inputs.push(input);
+				return { ok: true, changed: true, reason: input.action, record: null };
+			},
+		};
+
+		// The legacy watcher wrote its terminal receipt after the migration snapshot,
+		// so it is on disk even though the imported row never carried it.
+		const recovered = await execute([action], {
+			authority,
+			controllerPid: 12,
+			readLegacySnapshot: () => ({
+				corrupt: false,
+				entries: [{ repo: PR.repo, pr: PR.number, terminalReceiptId: 'receipt-late' }],
+				sources: [],
+			}),
+		});
+		expect(recovered).toMatchObject({ ok: true, changed: true });
+		expect(inputs).toHaveLength(1);
+		expect(inputs[0]).toMatchObject({ action: 'complete', terminalReceiptId: 'receipt-late' });
+
+		// No recoverable receipt must fail closed: the row stays blocked rather than
+		// being released with its terminal evidence silently lost.
+		inputs.length = 0;
+		const failedClosed = await execute([action], {
+			authority,
+			controllerPid: 12,
+			readLegacySnapshot: () => ({ corrupt: false, entries: [], sources: [] }),
+		});
+		expect(failedClosed).toMatchObject({ ok: false, changed: false });
+		expect(failedClosed.results[0].result).toMatchObject({ ok: false, reason: 'terminal_receipt_unrecovered' });
+		expect(inputs).toHaveLength(0);
+
+		// An open PR still releases the stale legacy row exactly as before.
+		const released = await execute([{ ...action, providerState: 'open' }], {
+			authority, controllerPid: 12, readLegacySnapshot: () => ({ corrupt: false, entries: [], sources: [] }),
+		});
+		expect(released).toMatchObject({ ok: true, changed: true });
+		expect(inputs[0]).toMatchObject({ action: 'release' });
+	});
 });
