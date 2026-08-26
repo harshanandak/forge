@@ -1,5 +1,7 @@
 "use strict";
 
+// forge-test-resource: exclusive
+
 const { afterEach, describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
 const os = require("node:os");

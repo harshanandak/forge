@@ -354,6 +354,26 @@ describe('forge test command', () => {
 			expect(affected).toEqual(targets);
 		});
 
+		test('runs the full suite when a shared authority file changes with a mapped test', async () => {
+			const spawnSpy = makeSpawnSync();
+			let diffCalls = 0;
+			const execFileSync = makeExecFileSync({
+				mergeBaseOutput: 'abc123',
+				gitDiffOutput: 'lib/kernel/sqlite-driver.js\ntest/commands/test.test.js\n',
+			});
+			await testCommand.handler([], { affected: true }, '/fake/root', {
+				fs: makeFsStub({ existingPaths: ['/fake/root/test/commands/test.test.js'] }),
+				execFileSync: (command, args, options) => {
+					if (command === 'git' && args[0] === 'diff') diffCalls += 1;
+					return execFileSync(command, args, options);
+				},
+				spawnSync: spawnSpy,
+			});
+
+			expect(spawnSpy.calls[0].args).toEqual(['run', 'test']);
+			expect(diffCalls).toBe(1);
+		});
+
 		test('maps upgrade safety support files to targeted tests', async () => {
 			const spawnSpy = makeSpawnSync();
 			await testCommand.handler([], { affected: true }, '/fake/root', {

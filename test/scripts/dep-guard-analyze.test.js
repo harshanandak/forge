@@ -5,6 +5,7 @@ const { spawnSync } = require('node:child_process');
 const { afterEach, describe, expect, test } = require('bun:test');
 
 const SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'dep-guard-analyze.js');
+const NODE_EXECUTABLE = process.env.FORGE_TEST_NODE_EXECUTABLE || process.execPath;
 
 const tempDirs = [];
 
@@ -78,7 +79,7 @@ Expected output: import detection finds downstream consumers.
 		});
 
 		const result = spawnSync(
-			process.execPath,
+			NODE_EXECUTABLE,
 			[
 				SCRIPT,
 				path.join(repositoryRoot, 'current.json'),
@@ -156,7 +157,7 @@ Expected output: import detection finds downstream consumers.
 		};
 
 		const result = spawnSync(
-			process.execPath,
+			NODE_EXECUTABLE,
 			[SCRIPT, '--stdin'],
 			{
 				cwd: repositoryRoot,

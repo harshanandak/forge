@@ -1,5 +1,7 @@
 'use strict';
 
+// forge-test-resource: exclusive
+
 const { describe, test, expect } = require('bun:test');
 
 const hooks = require('../lib/commands/hooks');
@@ -29,21 +31,27 @@ describe('forge hooks session-start (context hook — memory push)', () => {
 
   test('runs independent project reads concurrently', async () => {
     const starts = [];
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
     const slow = name => async () => {
       starts.push(name);
-      await new Promise(resolve => setTimeout(resolve, 30));
+      await gate;
       return [];
     };
-    const startedAt = Date.now();
-    await run(['session-start', '--harness', 'claude'], {
+    const operation = run(['session-start', '--harness', 'claude'], {
       loadDispatchText: () => '',
       fetchNotes: slow('notes'),
       fetchIssues: async (_root, kind) => slow(kind)(),
       fetchInbox: slow('inbox'),
       sessionStartDeadlineMs: 200,
     });
-    expect(starts.sort()).toEqual(['in_progress', 'inbox', 'notes', 'ready']);
-    expect(Date.now() - startedAt).toBeLessThan(90);
+    try {
+      await Promise.resolve();
+      expect(starts.sort()).toEqual(['in_progress', 'inbox', 'notes', 'ready']);
+    } finally {
+      release();
+    }
+    await operation;
   });
 
   test('fails open by its internal deadline while preserving dispatch bootstrap', async () => {

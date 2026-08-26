@@ -1,3 +1,5 @@
+// forge-test-resource: exclusive
+
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -53,7 +55,8 @@ describe('Test Quality Dashboard', () => {
       timestamp: '2026-04-17T12:00:00.000Z',
     }, null, 2));
 
-    const output = execFileSync('node', [dashboardScriptPath, '--json', '--profiles-dir', profilesDir], {
+    const nodeExecutable = process.env.FORGE_TEST_NODE_EXECUTABLE || 'node';
+    const output = execFileSync(nodeExecutable, [dashboardScriptPath, '--json', '--profiles-dir', profilesDir], {
       cwd: rootDir,
       encoding: 'utf-8',
       timeout: 30000,

@@ -41,6 +41,23 @@ describe('CI Workflow Configuration', () => {
       expect(workflowContent.includes('mode=${effectiveMode}')).toBe(true);
     });
 
+    // A `mode=full` fallback means the whole unit suite has to run on this lane.
+    // Running it as one raw `bun test test/` puts every subprocess-heavy file into
+    // a single long-lived bun process with no resource-lane separation and no
+    // worker budget. The Windows lane died there (run 32925444514) on a spawn that
+    // failed 5ms in, while the full matrix — which routes the same files through
+    // scripts/test-full-suite.js — passed at that same SHA. The fallback has to use
+    // the same lane-aware runner, so assert it instead of trusting habit.
+    test('full-suite fallback routes through the lane-aware runner, not a raw whole-directory bun test', () => {
+      const lines = workflowContent.split('\n');
+      const stepIndex = lines.findIndex((line) => line.includes('name: Run single-platform unit suite fallback'));
+      expect(stepIndex).toBeGreaterThan(-1);
+      const stepBody = lines.slice(stepIndex, stepIndex + 4).join('\n');
+
+      expect(stepBody.includes('node scripts/test-full-suite.js')).toBe(true);
+      expect(/bun test[^\n]*[ '"]test\//.test(stepBody)).toBe(false);
+    });
+
     test('followup-tests still runs targeted, fallback, e2e, and edge-case steps', () => {
       expect(workflowContent.includes('name: Run targeted unit tests')).toBe(true);
       expect(workflowContent.includes('name: Run single-platform unit suite fallback')).toBe(true);
@@ -85,6 +102,15 @@ describe('CI Workflow Configuration', () => {
       expect(workflowContent.includes("if: ${{ needs.changes.outputs.os_sensitive == 'true' }}")).toBe(true);
       expect(workflowContent.includes('os: [ubuntu-latest, macos-latest, windows-latest]')).toBe(true);
       expect(workflowContent.includes('node-version: [22, 24]')).toBe(true);
+    });
+
+    test('full matrix uses the resource-aware suite runner', () => {
+      const start = workflowContent.indexOf('  full-matrix:');
+      const end = workflowContent.indexOf('  unit-shard:');
+      const fullMatrix = workflowContent.slice(start, end);
+
+      expect(fullMatrix).toContain('node scripts/test-full-suite.js --timeout 15000 --label-prefix full-matrix-${{ matrix.os }}-node${{ matrix.node-version }}');
+      expect(fullMatrix).not.toContain('bun test --timeout 15000 test/');
     });
 
     test('changes classifier always demands the full matrix off pull requests', () => {

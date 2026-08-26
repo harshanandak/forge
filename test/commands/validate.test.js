@@ -8,6 +8,7 @@ const {
 	runLint,
 	runSecurityScan,
 	runAllTests,
+	parseTestCounts,
 	scanForConflictMarkers,
 	executeValidate,
 	executeDebugMode,
@@ -39,11 +40,16 @@ describe('Validate Command - Validation Orchestration', () => {
 		});
 
 		test('should handle ESLint errors', async () => {
-			const result = await runLint();
-			expect(typeof result.success).toBe('boolean');
-			if (!result.success) {
-				expect(result.errors > 0 || typeof result.message === 'string').toBe(true);
-			}
+			let invocations = 0;
+			const result = await runLint(() => {
+				invocations += 1;
+				const error = new Error('ESLint failed');
+				error.stdout = '2 problems (2 errors, 0 warnings)';
+				throw error;
+			});
+
+			expect(invocations).toBe(1);
+			expect(result).toMatchObject({ success: false, errors: 2, warnings: 0 });
 		});
 	});
 
@@ -86,9 +92,8 @@ describe('Validate Command - Validation Orchestration', () => {
 			const source = fs.readFileSync(path.join(__dirname, '..', '..', 'lib', 'commands', 'validate.js'), 'utf8');
 			expect(source).toMatch(/VALIDATION_COMMAND_TIMEOUT_MS\s*=\s*600000/);
 			expect(source).toMatch(/timeout:\s*VALIDATION_COMMAND_TIMEOUT_MS/);
-			// runAllTests takes an injectable exec (default execFileSync); assert the
-			// bun invocation + timeout arg without coupling to the local param name.
-			expect(source).toMatch(/\(\s*'bun'\s*,\s*\[\s*'test'\s*,\s*'--timeout'\s*,\s*'30000'/);
+			// External repositories retain the raw Bun fallback and its per-test timeout.
+			expect(source).toMatch(/\[\s*'test'\s*,\s*'--timeout'\s*,\s*'30000'\s*\]/);
 			expect(source).not.toContain('timed out after 2 minutes');
 		});
 	});
@@ -545,6 +550,132 @@ describe('Validate Command - Validation Orchestration', () => {
 			expect(result.skipped).toBe(true);
 			expect(getCheckStatus(result)).toBe('SKIPPED');
 			expect(result.message).toMatch(/bun|test runner/i);
+		});
+
+		test('uses the repository full-suite runner and its final aggregate', async () => {
+			const rootDir = path.resolve(__dirname, '..', '..');
+			const calls = [];
+			const result = await runAllTests((...args) => {
+				calls.push(args);
+				return [
+					'Full suite aggregate: status=FAIL tests=2 assertions=2 passed=1 failed=1 errors=0 skipped=0',
+					'Full suite aggregate: status=PASS tests=7 assertions=9 passed=6 failed=0 errors=0 skipped=1',
+				].join('\n');
+			}, rootDir);
+
+			expect(calls).toHaveLength(1);
+			expect(calls[0][0]).toBe('node');
+			expect(calls[0][1]).toEqual(['scripts/test-full-suite.js']);
+			expect(calls[0][2].cwd).toBe(rootDir);
+			expect(result).toMatchObject({ success: true, passed: 6, failed: 0, skipped: 1, total: 7 });
+		});
+
+		test('falls back to raw Bun outside Forge even when the script path exists', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-bun-fallback-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'external-project',
+					bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
+				const calls = [];
+				await runAllTests((...args) => {
+					calls.push(args);
+					return '1 pass\n0 fail\nRan 1 tests across 1 file.';
+				}, rootDir);
+
+				expect(calls[0][0]).toBe('bun');
+				expect(calls[0][1]).toEqual(['test', '--timeout', '30000']);
+				expect(calls[0][2].cwd).toBe(rootDir);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('uses the full-suite runner from a Forge checkout outside the CLI install path', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-checkout-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'forge-workflow',
+					bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
+				const calls = [];
+				await runAllTests((...args) => {
+					calls.push(args);
+					return 'Full suite aggregate: status=PASS tests=1 assertions=1 passed=1 failed=0 errors=0 skipped=0';
+				}, rootDir);
+
+				expect(calls[0][0]).toBe('node');
+				expect(calls[0][1]).toEqual(['scripts/test-full-suite.js']);
+				expect(calls[0][2].cwd).toBe(rootDir);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('keeps a non-zero full-suite exit failed when the aggregate reports zero failures', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-full-suite-exit-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
+				const exec = () => {
+					const error = new Error('full suite exited 1');
+					error.stdout = 'Full suite aggregate: status=FAIL tests=10 assertions=12 passed=10 failed=0 errors=0 skipped=0';
+					throw error;
+				};
+
+				const result = await runAllTests(exec, rootDir);
+				expect(result).toMatchObject({ success: false, testsFound: true, passed: 10, failed: 1, total: 10 });
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('parses the final full-suite aggregate before Bun shard summaries', () => {
+			const result = parseTestCounts([
+				'99 pass',
+				'Full suite aggregate: status=FAIL tests=4 assertions=5 passed=3 failed=1 errors=0 skipped=0',
+				'Full suite aggregate: status=PASS tests=8 assertions=10 passed=7 failed=0 errors=0 skipped=1',
+			].join('\n'));
+			expect(result).toMatchObject({ status: 'PASS', passed: 7, failed: 0, errors: 0, skipped: 1, total: 8 });
+		});
+
+		test('treats an INCOMPLETE full-suite aggregate as a failed run', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-incomplete-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
+				const result = await runAllTests(
+					() => '99 pass\nFull suite aggregate: status=INCOMPLETE tests=8 assertions=10 passed=7 failed=0 errors=0 skipped=1',
+					rootDir,
+				);
+				expect(result).toMatchObject({ success: false, testsFound: true, passed: 7, failed: 0, total: 8 });
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('executeValidate forwards rootDir to the test runner', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-root-'));
+			try {
+				fs.writeFileSync(
+					path.join(rootDir, 'root-dir.test.js'),
+					"import { expect, test } from 'bun:test'; test('rootDir', () => { console.log('1 pass\\n0 fail\\nRan 1 tests across 1 file.'); expect(true).toBe(true); });\n",
+				);
+				const result = await executeValidate({
+					rootDir,
+					skip: ['conflictMarkers', 'typeCheck', 'lint', 'security'],
+				});
+				expect(result.success).toBe(true);
+				expect(result.checks.tests).toMatchObject({ testsFound: true, passed: 1, total: 1 });
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
 		});
 	});
 });

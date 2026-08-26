@@ -100,10 +100,10 @@ function result(state, effects = [], modelTurns = 0) {
   return { state, effects, modelTurns };
 }
 
-function terminating(state, terminalState, terminalReason, extra = {}) {
+function terminating(state, terminalState, terminalReason, extra = {}, mutate = false) {
   const undelivered = [...state.pending, ...state.deferred];
-  return result({
-    ...state,
+  const next = mutate ? state : { ...state };
+  Object.assign(next, {
     ...extra,
     lifecycle: "TERMINATING",
     terminalState,
@@ -111,7 +111,8 @@ function terminating(state, terminalState, terminalReason, extra = {}) {
     undeliveredCursor: undelivered.length === 0
       ? undefined
       : Math.min(...undelivered.map((item) => item.sequence)),
-  }, [{ type: "CLEANUP_PROCESS" }, { type: "CLEANUP_LEASE" }]);
+  });
+  return result(next, [{ type: "CLEANUP_PROCESS" }, { type: "CLEANUP_LEASE" }]);
 }
 
 function validateObservation(spec, event) {
@@ -200,7 +201,7 @@ function cloneIdentityMap(source) {
   return clone;
 }
 
-function reduceObservation(spec, state, event) {
+function reduceObservation(spec, state, event, mutate = false) {
   validateObservation(spec, event);
   const payload = event.payload;
   const seen = Object.hasOwn(state.seenEvents, payload.event_id)
@@ -216,8 +217,8 @@ function reduceObservation(spec, state, event) {
     throw new MonitorRuntimeError("OUT_OF_ORDER", "MonitorEvent sequence is not monotonic");
   }
 
-  const next = structuredClone(state);
-  next.seenEvents = cloneIdentityMap(state.seenEvents);
+  const next = mutate ? state : structuredClone(state);
+  if (!mutate) next.seenEvents = cloneIdentityMap(state.seenEvents);
   Object.defineProperty(next.seenEvents, payload.event_id, {
     value: { sequence: payload.sequence, contentHash: event.content_hash },
     enumerable: true,
@@ -256,7 +257,7 @@ function reduceObservation(spec, state, event) {
   );
   if (terminal) {
     const terminalState = nextValue === "FAIL" ? "FAIL" : "PASS";
-    return terminating(next, terminalState, "terminal predicate satisfied");
+    return terminating(next, terminalState, "terminal predicate satisfied", {}, mutate);
   }
   if (payload.actionability === "advisory") return result(next);
   if (next.pending.length >= spec.maxPending) {
@@ -281,7 +282,7 @@ function reduceObservation(spec, state, event) {
   }], 1);
 }
 
-function reduceAcknowledgement(spec, state, event) {
+function reduceAcknowledgement(spec, state, event, mutate = false) {
   if (!Number.isInteger(event.sequence) || event.sequence < state.acknowledgementCursor || event.sequence > state.lastSequence) {
     throw new MonitorRuntimeError("INVALID_ACKNOWLEDGEMENT", "Invalid acknowledgement cursor");
   }
@@ -289,7 +290,7 @@ function reduceAcknowledgement(spec, state, event) {
   if (!state.pending.some((item) => item.sequence === event.sequence)) {
     throw new MonitorRuntimeError("INVALID_ACKNOWLEDGEMENT", "Invalid acknowledgement cursor");
   }
-  const next = structuredClone(state);
+  const next = mutate ? state : structuredClone(state);
   next.acknowledgementCursor = event.sequence;
   next.pending = next.pending.filter((item) => item.sequence > event.sequence);
   for (const sequence of Object.keys(next.retryCounts)) {
@@ -309,16 +310,16 @@ function reduceAcknowledgement(spec, state, event) {
   return result(next, effects, effects.length);
 }
 
-function reduceDeliveryFailure(spec, state, event) {
+function reduceDeliveryFailure(spec, state, event, mutate = false) {
   if (!Number.isInteger(event.sequence) || !state.pending.some((item) => item.sequence === event.sequence)) {
     throw new MonitorRuntimeError("INVALID_RETRY", "Retry does not reference pending delivery");
   }
-  const next = structuredClone(state);
+  const next = mutate ? state : structuredClone(state);
   const attempts = (next.retryCounts[event.sequence] ?? 0) + 1;
   next.retryCounts[event.sequence] = attempts;
-  if (attempts > spec.maxRetries) return terminating(next, "INCOMPLETE", "delivery retries exhausted");
+  if (attempts > spec.maxRetries) return terminating(next, "INCOMPLETE", "delivery retries exhausted", {}, mutate);
   const delayMs = spec.retryBaseMs * (2 ** (attempts - 1));
-  if (!Number.isSafeInteger(delayMs)) return terminating(next, "INCOMPLETE", "delivery retry delay overflow");
+  if (!Number.isSafeInteger(delayMs)) return terminating(next, "INCOMPLETE", "delivery retry delay overflow", {}, mutate);
   return result(next, [{
     type: "RETRY_DELIVERY",
     sequence: event.sequence,
@@ -328,47 +329,55 @@ function reduceDeliveryFailure(spec, state, event) {
   }]);
 }
 
-function reduceActive(spec, state, event) {
+function reduceActive(spec, state, event, mutate = false) {
   switch (event.kind) {
-    case "observation": return reduceObservation(spec, state, event.event);
-    case "acknowledge": return reduceAcknowledgement(spec, state, event);
-    case "delivery-failed": return reduceDeliveryFailure(spec, state, event);
-    case "cancel-requested":
-      return result({ ...state, cancellationRequested: true }, [{ type: "CANCEL_SOURCE" }]);
+    case "observation": return reduceObservation(spec, state, event.event, mutate);
+    case "acknowledge": return reduceAcknowledgement(spec, state, event, mutate);
+    case "delivery-failed": return reduceDeliveryFailure(spec, state, event, mutate);
+    case "cancel-requested": {
+      const next = mutate ? state : { ...state };
+      next.cancellationRequested = true;
+      return result(next, [{ type: "CANCEL_SOURCE" }]);
+    }
     case "cancel-acknowledged":
       if (!state.cancellationRequested) {
         throw new MonitorRuntimeError("UNREQUESTED_CANCELLATION_ACK", "Invalid cancellation acknowledgement");
       }
-      return terminating(state, "CANCELLED", "cancellation acknowledged", { cancellationAcknowledged: true });
+      return terminating(state, "CANCELLED", "cancellation acknowledged", { cancellationAcknowledged: true }, mutate);
     case "deadline":
       return Date.parse(nonEmptyString(event.observedAt, "observedAt")) < Date.parse(spec.deadline)
         ? result(state)
-        : terminating(state, "INCOMPLETE", "deadline exceeded");
+        : terminating(state, "INCOMPLETE", "deadline exceeded", {}, mutate);
     case "session-ended":
-      return spec.lifetime === "session" ? terminating(state, "CANCELLED", "session lifetime ended") : result(state);
+      return spec.lifetime === "session"
+        ? terminating(state, "CANCELLED", "session lifetime ended", {}, mutate)
+        : result(state);
     case "run-terminal": {
       if (spec.lifetime !== "run") return result(state);
       if (!TERMINAL_STATES.has(event.terminalState)) {
         throw new MonitorRuntimeError("INVALID_TERMINAL_STATE", "Invalid terminal state");
       }
-      return terminating(state, event.terminalState, "owner run terminal");
+      return terminating(state, event.terminalState, "owner run terminal", {}, mutate);
     }
     case "subject-terminal": {
       if (!TERMINAL_STATES.has(event.terminalState)) {
         throw new MonitorRuntimeError("INVALID_TERMINAL_STATE", "Invalid terminal state");
       }
-      return terminating(state, event.terminalState, "subject terminal");
+      return terminating(state, event.terminalState, "subject terminal", {}, mutate);
     }
-    case "lease-lost": return terminating(state, "INCOMPLETE", "lease lost");
+    case "lease-lost": return terminating(state, "INCOMPLETE", "lease lost", {}, mutate);
     default: throw new MonitorRuntimeError("UNKNOWN_EVENT", `Unsupported monitor event: ${event.kind}`);
   }
 }
 
-function reduceMonitor(spec, state, event) {
-  validateSpec(spec);
+function validateMonitorState(spec, state) {
   if (!state || state.monitorId !== spec.monitorId || state.ownerRunId !== spec.ownerRunId) {
     throw new MonitorRuntimeError("STATE_MISMATCH", "Monitor state does not match MonitorSpec");
   }
+}
+
+function reduceMonitorValidated(spec, state, event, mutate = false) {
+  validateMonitorState(spec, state);
   if (!event || typeof event !== "object" || Array.isArray(event)) throw new MonitorRuntimeError("INVALID_EVENT", "Monitor event is invalid");
   if (state.lifecycle === "TERMINAL") throw new MonitorRuntimeError("POST_TERMINAL_EVENT", "Monitor rejects post-terminal events");
   if (state.lifecycle === "TERMINATING") {
@@ -376,14 +385,37 @@ function reduceMonitor(spec, state, event) {
     if (!event.processCleanup || typeof event.processCleanup !== "object" || !event.leaseCleanup || typeof event.leaseCleanup !== "object") {
       throw new MonitorRuntimeError("INVALID_CLEANUP", "Cleanup proof is required");
     }
-    return result({
-      ...state,
-      lifecycle: "TERMINAL",
-      processCleanup: structuredClone(event.processCleanup),
-      leaseCleanup: structuredClone(event.leaseCleanup),
-    }, [{ type: "ISSUE_MONITOR_RECEIPT" }]);
+    const next = mutate ? state : { ...state };
+    next.lifecycle = "TERMINAL";
+    next.processCleanup = structuredClone(event.processCleanup);
+    next.leaseCleanup = structuredClone(event.leaseCleanup);
+    return result(next, [{ type: "ISSUE_MONITOR_RECEIPT" }]);
   }
-  return reduceActive(spec, state, event);
+  return reduceActive(spec, state, event, mutate);
+}
+
+function reduceMonitor(spec, state, event) {
+  validateSpec(spec);
+  return reduceMonitorValidated(spec, state, event);
+}
+
+function reduceMonitorBatch(spec, state, events) {
+  validateSpec(spec);
+  validateMonitorState(spec, state);
+  if (!Array.isArray(events) || events.length > MAX_HISTORY) {
+    throw new TypeError(`events must be an array with at most ${MAX_HISTORY} items`);
+  }
+
+  const next = structuredClone(state);
+  next.seenEvents = cloneIdentityMap(state.seenEvents);
+  const effects = [];
+  let modelTurns = 0;
+  for (const event of events) {
+    const transition = reduceMonitorValidated(spec, next, event, true);
+    effects.push(...transition.effects);
+    modelTurns += transition.modelTurns;
+  }
+  return result(next, effects, modelTurns);
 }
 
 function createMonitorReceipt(spec, state, options = {}) {
@@ -419,4 +451,10 @@ function createMonitorReceipt(spec, state, options = {}) {
   return receipt;
 }
 
-module.exports = { MonitorRuntimeError, createMonitorReceipt, createMonitorState, reduceMonitor };
+module.exports = {
+  MonitorRuntimeError,
+  createMonitorReceipt,
+  createMonitorState,
+  reduceMonitor,
+  reduceMonitorBatch,
+};

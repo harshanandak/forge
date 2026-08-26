@@ -1,3 +1,4 @@
+// forge-test-resource: exclusive
 'use strict';
 
 const { describe, expect, test } = require('bun:test');

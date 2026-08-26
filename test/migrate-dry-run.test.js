@@ -1,3 +1,4 @@
+// forge-test-resource: exclusive
 const { describe, expect, test } = require('bun:test');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');

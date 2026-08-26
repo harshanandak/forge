@@ -1,3 +1,4 @@
+// forge-test-resource: exclusive
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -10,8 +11,8 @@ const { describe, test, expect } = require('bun:test');
  * The script is a cross-platform wrapper around `commitlint --edit <file>`.
  * It:
  * 1. Requires a commit message file path as argv[2]
- * 2. Detects bun.lock to choose bunx vs npx as the runner
- * 3. Invokes `<runner> commitlint --edit <file>` via spawnSync
+ * 2. Resolves the installed commitlint CLI entrypoint
+ * 3. Invokes that entrypoint via process.execPath and spawnSync
  * 4. Exits with status 1 if no file arg is provided
  * 5. Exits with commitlint's exit code on validation failure
  */
@@ -74,6 +75,26 @@ describe('scripts/commitlint.js', () => {
     test('prints error message when no commit message file is provided', () => {
       const result = runWithNoArgs();
       expect(result.stderr).toContain('No commit message file provided');
+    });
+
+    test('treats a signaled commitlint child as a failure', () => {
+      const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'commitlint-signal-'));
+      const preload = path.join(fixture, 'patch-child-process.js');
+      const message = path.join(fixture, 'COMMIT_EDITMSG');
+      fs.writeFileSync(preload, [
+        "const childProcess = require('node:child_process');",
+        "childProcess.spawnSync = () => ({ status: null, signal: 'SIGTERM' });",
+      ].join('\n'));
+      fs.writeFileSync(message, 'fix: interrupted validation');
+      try {
+        const result = spawnSync(process.execPath, ['--require', preload, SCRIPT, message], {
+          cwd: PROJECT_ROOT,
+          encoding: 'utf-8',
+        });
+        expect(result.status).not.toBe(0);
+      } finally {
+        fs.rmSync(fixture, { force: true, recursive: true });
+      }
     });
   });
 
@@ -222,9 +243,9 @@ describe('scripts/commitlint.js', () => {
       expect(content).toContain('spawnSync');
     });
 
-    test('script detects bun.lock to choose runner', () => {
+    test('script resolves the installed commitlint CLI entrypoint', () => {
       const content = fs.readFileSync(SCRIPT, 'utf-8');
-      expect(content).toContain('bun.lock');
+      expect(content).toContain("require.resolve('@commitlint/cli/cli.js')");
     });
 
     test('script passes --edit flag to commitlint', () => {
@@ -232,10 +253,12 @@ describe('scripts/commitlint.js', () => {
       expect(content).toContain('--edit');
     });
 
-    test('script uses shell:true on Windows for .cmd extension resolution', () => {
+    test('script executes the absolute CLI entrypoint without a shell', () => {
       const content = fs.readFileSync(SCRIPT, 'utf-8');
-      expect(content).toContain('shell');
-      expect(content).toContain('isWindows');
+      expect(content).toContain('process.execPath');
+      expect(content).toContain('shell: false');
+      expect(content).not.toContain("'bunx'");
+      expect(content).not.toContain("'npx'");
     });
   });
 });

@@ -162,12 +162,35 @@ describe('watch owner dedicated SQLite transaction', () => {
 		const results = await Promise.all(runtimes.map((runtime, index) => runContender(runtime, databasePath, 1_000 + index)));
 		expect(results.filter(result => result.ok && result.changed)).toHaveLength(1);
 		expect(results.filter(result => !result.changed && !(
-			result.ok === false && ['busy', 'authority_unavailable'].includes(result.reason)
+			result.ok === false && ['busy', 'stale_evidence', 'authority_unavailable'].includes(result.reason)
 		))).toEqual([]);
 		const rows = await driver.queryAll('SELECT repo, pr, generation FROM kernel_pr_watch_owners');
 		expect(rows).toHaveLength(1);
 		expect(rows[0].generation).toBe(results.find(result => result.ok && result.changed).record.generation);
 	}, 20_000);
+
+	test('direct recovery preserves a watcher after cooperative stop is requested', () => {
+		const repo = 'acme/forge';
+		const pr = 76;
+		const controllerPid = 976;
+		const watcherPid = 1_976;
+		const started = driver.watchOwnerReserveStarting({ repo, pr, controllerPid, now: NOW });
+		const running = driver.watchOwnerBindRunning({
+			repo, pr, generation: started.row.generation, controllerPid, watcherPid, now: LATER,
+		});
+		driver.watchOwnerRequestStop({
+			repo, pr, generation: running.row.generation, watcherPid, now: '2026-08-19T08:00:02.000Z',
+		});
+		const before = driver.watchOwnerRead({ repo, pr }).row;
+
+		const result = driver.watchOwnerRecoverDeadWatcher({
+			repo, pr, generation: before.generation, watcherPid, controllerPid: 2_976,
+			now: '2026-08-19T08:00:03.000Z', expectedSnapshot: before,
+		});
+
+		expect(result).toEqual({ ok: false, changed: false, reason: 'phase_mismatch', row: before });
+		expect(driver.watchOwnerRead({ repo, pr }).row).toEqual(before);
+	});
 
 	test('N-process legacy starting import converges on one provenance row', async () => {
 		await owner.publishMigrationQuarantine({ updatedAt: NOW }, { driver });
@@ -414,7 +437,10 @@ describe('watch owner dedicated SQLite transaction', () => {
 		expect(owner.transition).toBeUndefined();
 		expect(await owner.reserveStarting({ repo: 'acme/forge', pr: 80 }, {
 			controllerPid: 4_000, startedAt: NOW,
-		}, { driver: { watchOwnerReserveStarting: async () => ({ ok: true }) } }))
+		}, { driver: {
+			watchOwnerRead: () => ({ ok: true, changed: false, reason: 'absent', row: null }),
+			watchOwnerReserveStarting: async () => ({ ok: true }),
+		} }))
 			.toEqual({ ok: false, changed: false, reason: 'invalid_operation', record: null });
 	});
 
@@ -451,6 +477,46 @@ describe('watch owner dedicated SQLite transaction', () => {
 		expect(await driver.queryAll('SELECT repo, pr FROM kernel_pr_watch_owners WHERE pr IN (102, 103)')).toEqual([]);
 		expect(malformedRepo).toEqual({ ok: false, changed: false, reason: 'invalid_input', row: null });
 		expect(malformedNow).toEqual({ ok: false, changed: false, reason: 'invalid_input', row: null });
+	});
+
+	test('fails closed for throwing enumeration and accessor-backed owner inputs', async () => {
+		const throwingEnumeration = new Proxy({
+			repo: 'acme/forge', pr: 105, controllerPid: 7_005, now: NOW,
+		}, {
+			ownKeys() {
+				throw new Error('enumeration must not escape');
+			},
+		});
+		const throwingGetter = {};
+		Object.defineProperties(throwingGetter, {
+			repo: {
+				enumerable: true,
+				get() {
+					throw new Error('getter must not escape');
+				},
+			},
+			pr: { value: 106, enumerable: true },
+			controllerPid: { value: 7_006, enumerable: true },
+			now: { value: NOW, enumerable: true },
+		});
+
+		let enumerationResult;
+		let getterResult;
+		let readResult;
+		expect(() => {
+			readResult = driver.watchOwnerRead(throwingGetter);
+		}).not.toThrow();
+		expect(() => {
+			enumerationResult = driver.watchOwnerReserveStarting(throwingEnumeration);
+		}).not.toThrow();
+		expect(() => {
+			getterResult = driver.watchOwnerReserveStarting(throwingGetter);
+		}).not.toThrow();
+
+		expect(enumerationResult).toEqual({ ok: false, changed: false, reason: 'invalid_input', row: null });
+		expect(getterResult).toEqual({ ok: false, changed: false, reason: 'invalid_input', row: null });
+		expect(readResult).toEqual({ ok: false, changed: false, reason: 'invalid_input', row: null });
+		expect(await driver.queryAll('SELECT repo, pr FROM kernel_pr_watch_owners WHERE pr IN (105, 106)')).toEqual([]);
 	});
 
 	test('does not release a running owner directly', async () => {
@@ -567,6 +633,147 @@ describe('watch owner dedicated SQLite transaction', () => {
 		expect(nestedOutcome).toMatchObject({ ok: true, changed: true, reason: 'acquired' });
 	});
 
+	test.each([
+		['bindRunning', 'watchOwnerBindRunning', 114, 115],
+		['heartbeat', 'watchOwnerHeartbeat', 116, 117],
+		['requestStop', 'watchOwnerRequestStop', 118, 119],
+	])('copies an optional %s snapshot before acquiring the writer transaction', (
+		_label, method, pr, nestedPr,
+	) => {
+		const controllerPid = 7_000 + pr;
+		const watcherPid = 8_000 + pr;
+		const started = driver.watchOwnerReserveStarting({
+			repo: 'acme/forge', pr, controllerPid, now: NOW,
+		});
+		let current = started.row;
+		if (method !== 'watchOwnerBindRunning') {
+			current = driver.watchOwnerBindRunning({
+				repo: 'acme/forge', pr, generation: current.generation,
+				controllerPid, watcherPid, now: LATER,
+			}).row;
+		}
+		const snapshot = driver.watchOwnerRead({ repo: 'acme/forge', pr }).row;
+		let nestedOutcome;
+		let nestedError;
+		const expectedSnapshot = new Proxy(snapshot, {
+			get(target, property, receiver) {
+				if (property === 'repo' && nestedOutcome === undefined && nestedError === undefined) {
+					try {
+						nestedOutcome = driver.watchOwnerReserveStarting(
+							{ repo: 'acme/forge', pr: nestedPr, controllerPid: 7_000 + nestedPr, now: NOW },
+							{ watchOwnerBusyTimeoutMs: 25 },
+						);
+					} catch (error) {
+						nestedError = error;
+					}
+				}
+				return Reflect.get(target, property, receiver);
+			},
+		});
+		const input = method === 'watchOwnerBindRunning'
+			? {
+				repo: 'acme/forge', pr, generation: current.generation,
+				controllerPid, watcherPid, now: LATER, expectedSnapshot,
+			}
+			: {
+				repo: 'acme/forge', pr, generation: current.generation,
+				watcherPid, now: '2026-08-19T08:00:02.000Z', expectedSnapshot,
+			};
+
+		const result = driver[method](input, { watchOwnerBusyTimeoutMs: 25 });
+
+		expect(result).toMatchObject({
+			ok: true, changed: true,
+			reason: method === 'watchOwnerBindRunning'
+				? 'bound'
+				: (method === 'watchOwnerHeartbeat' ? 'heartbeat' : 'stop_requested'),
+		});
+		expect(nestedError).toBeUndefined();
+		expect(nestedOutcome).toMatchObject({ ok: true, changed: true, reason: 'acquired' });
+	});
+
+	test('copies migration gate inputs before acquiring the writer transaction', () => {
+		expect(driver.watchGatePublishQuarantine({ now: NOW })).toMatchObject({ ok: true, changed: true });
+		const reads = { now: 0, snapshotHash: 0, conflictCode: 0 };
+		const input = {
+			get now() { reads.now += 1; return reads.now === 1 ? LATER : 'not-a-timestamp'; },
+			get snapshotHash() { reads.snapshotHash += 1; return reads.snapshotHash === 1 ? HASH : OTHER_HASH; },
+			get conflictCode() { reads.conflictCode += 1; return reads.conflictCode === 1 ? 'legacy_owner_conflict' : 'legacy_snapshot_changed'; },
+		};
+
+		const result = driver.watchGatePublishConflict(input);
+
+		expect(reads).toEqual({ now: 1, snapshotHash: 1, conflictCode: 1 });
+		expect(result).toMatchObject({ ok: true, changed: true, gate: {
+			state: 'conflict', snapshot_hash: HASH, conflict_code: 'legacy_owner_conflict', updated_at: LATER,
+		} });
+	});
+
+	test('atomically fences initial acquisition to an absent owner snapshot', () => {
+		const current = driver.watchOwnerReserveStarting({
+			repo: 'acme/forge', pr: 115, controllerPid: 7_115, now: NOW,
+		});
+		const raced = driver.watchOwnerReserveStarting({
+			repo: 'acme/forge', pr: 115, controllerPid: 8_115, now: LATER,
+			expectedSnapshot: null,
+		});
+		expect(raced).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
+		expect(driver.watchOwnerRead({ repo: 'acme/forge', pr: 115 })).toMatchObject({ row: current.row });
+	});
+
+	test('atomically fences a legacy owner import to the captured migration gate', () => {
+		driver.watchGatePublishQuarantine({ now: NOW });
+		const bound = driver.watchGateBindSnapshot({ snapshotHash: HASH, now: NOW });
+		driver.watchGateCompleteMigration({ snapshotHash: HASH, now: LATER });
+		const result = driver.watchOwnerImportLegacyComplete({
+			repo: 'acme/forge', pr: 118, now: LATER,
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
+			terminalReceiptId: 'receipt-118', expectedSnapshot: null,
+			expectedGate: bound.gate,
+		});
+		expect(result).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
+		expect(driver.watchOwnerRead({ repo: 'acme/forge', pr: 118 }))
+			.toMatchObject({ ok: true, changed: false, reason: 'absent', row: null });
+	});
+
+	test('preserves a non-enumerable stale owner snapshot for destructive release CAS', () => {
+		const starting = driver.watchOwnerReserveStarting({
+			repo: 'acme/forge', pr: 119, controllerPid: 7_119, now: NOW,
+		});
+		const running = driver.watchOwnerBindRunning({
+			repo: 'acme/forge', pr: 119, generation: starting.row.generation,
+			controllerPid: 7_119, watcherPid: 8_119, now: LATER,
+		});
+		const stopped = driver.watchOwnerRequestStop({
+			repo: 'acme/forge', pr: 119, generation: running.row.generation,
+			watcherPid: 8_119, now: LATER,
+		});
+		const input = {
+			repo: 'acme/forge', pr: 119, generation: stopped.row.generation, watcherPid: 8_119,
+		};
+		Object.defineProperty(input, 'expectedSnapshot', { value: running.row, enumerable: false });
+
+		expect(driver.watchOwnerReleaseNonterminal(input))
+			.toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
+		expect(driver.watchOwnerRead({ repo: 'acme/forge', pr: 119 }))
+			.toMatchObject({ ok: true, row: stopped.row });
+	});
+
+	test('preserves a non-enumerable stale gate snapshot for legacy import CAS', () => {
+		const published = driver.watchGatePublishQuarantine({ now: NOW });
+		driver.watchGateBindSnapshot({ snapshotHash: HASH, now: LATER });
+		const input = {
+			repo: 'acme/forge', pr: 120, now: LATER, controllerPid: 7_120,
+			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH, expectedSnapshot: null,
+		};
+		Object.defineProperty(input, 'expectedGate', { value: published.gate, enumerable: false });
+
+		expect(driver.watchOwnerImportLegacyStarting(input))
+			.toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
+		expect(driver.watchOwnerRead({ repo: 'acme/forge', pr: 120 }))
+			.toMatchObject({ ok: true, changed: false, reason: 'absent', row: null });
+	});
+
 	test('uses one prepared identity for evidence checks and deletion', async () => {
 		const starting = driver.watchOwnerReserveStarting({
 			repo: 'acme/forge', pr: 116, controllerPid: 7_116, now: NOW,
@@ -652,6 +859,30 @@ describe('watch owner dedicated SQLite transaction', () => {
 				ok: false, changed: false, reason: 'authority_unavailable', record: null,
 			});
 		}
+	});
+
+	test.each([
+		['owner', 'kernel_pr_watch_owners'],
+		['gate', 'kernel_pr_watch_migration_gate'],
+		['uppercase owner', 'KERNEL_PR_WATCH_OWNERS'],
+		['uppercase gate', 'KERNEL_PR_WATCH_MIGRATION_GATE'],
+	])('fails closed for an unexpected trigger on the %s authority table', async (_label, tableName) => {
+		await driver.exec(`CREATE TRIGGER unexpected_watch_authority_trigger
+			BEFORE INSERT ON ${tableName}
+			BEGIN SELECT RAISE(ABORT, 'unexpected authority trigger'); END;`);
+		let directError;
+		try {
+			driver.watchOwnerRead({ repo: 'acme/forge', pr: 118 });
+		} catch (error) {
+			directError = error;
+		}
+
+		expect(directError?.code).toBe('AUTHORITY_UNAVAILABLE');
+		expect(await owner.reserveStarting({ repo: 'acme/forge', pr: 118 }, {
+			controllerPid: 7_118, startedAt: NOW,
+		}, { driver })).toEqual({
+			ok: false, changed: false, reason: 'authority_unavailable', record: null,
+		});
 	});
 
 	test('rejects updated-at regression for every timestamped owner phase mutation', async () => {
@@ -787,6 +1018,13 @@ describe('watch owner dedicated SQLite transaction', () => {
 			() => driver.watchGateBindSnapshot({ snapshotHash: HASH, now: NOW })],
 		['publish conflict', () => driver.watchGatePublishQuarantine({ now: LATER }),
 			() => driver.watchGatePublishConflict({ snapshotHash: HASH, conflictCode: 'legacy_owner_conflict', now: NOW })],
+		['retry conflict', () => {
+			driver.watchGatePublishQuarantine({ now: NOW });
+			return driver.watchGatePublishConflict({ snapshotHash: HASH, conflictCode: 'legacy_owner_conflict', now: LATER });
+		}, () => driver.watchGateRetryConflict({
+			expectedSnapshotHash: HASH, expectedConflictCode: 'legacy_owner_conflict',
+			replacementSnapshotHash: OTHER_HASH, now: NOW,
+		})],
 		['complete migration', () => {
 			driver.watchGatePublishQuarantine({ now: NOW });
 			return driver.watchGateBindSnapshot({ snapshotHash: HASH, now: LATER });
@@ -951,7 +1189,7 @@ describe('watch owner dedicated SQLite transaction', () => {
 		const gateInput = { snapshotHash: HASH, conflictCode: 'legacy_owner_conflict', now: NOW };
 		for (const method of [
 			'watchGatePublishQuarantine', 'watchGateBindSnapshot',
-			'watchGatePublishConflict', 'watchGateCompleteMigration',
+			'watchGatePublishConflict', 'watchGateRetryConflict', 'watchGateCompleteMigration',
 		]) {
 			expect(driver[method]({ ...gateInput, now: 'not-a-timestamp' })).toEqual({
 				ok: false, changed: false, reason: 'invalid_input', gate: null,
@@ -964,7 +1202,25 @@ describe('watch owner dedicated SQLite transaction', () => {
 				ok: false, changed: false, reason: 'invalid_input', gate: null,
 			});
 		}
+		expect(driver.watchGateRetryConflict({
+			expectedSnapshotHash: 'not-a-hash', expectedConflictCode: 'legacy_owner_conflict',
+			replacementSnapshotHash: OTHER_HASH, now: NOW,
+		})).toEqual({ ok: false, changed: false, reason: 'invalid_input', gate: null });
 		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_migration_gate')).toEqual([]);
+	});
+
+	test('rejects a gate mutation when the captured gate changed before the transaction', async () => {
+		const published = driver.watchGatePublishQuarantine({ now: NOW });
+		expect(published.ok).toBe(true);
+		expect(driver.watchGateBindSnapshot({ snapshotHash: HASH, now: LATER }).ok).toBe(true);
+		const before = await driver.queryAll('SELECT * FROM kernel_pr_watch_migration_gate');
+
+		const result = driver.watchGateCompleteMigration({
+			snapshotHash: HASH, now: LATER, expectedGate: published.gate,
+		});
+
+		expect(result).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_migration_gate')).toEqual(before);
 	});
 
 	test('validates constructed legacy rows before insert', async () => {
@@ -982,7 +1238,7 @@ describe('watch owner dedicated SQLite transaction', () => {
 		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners WHERE pr IN (96, 97)')).toEqual([]);
 	});
 
-	test('replays an exact blocked legacy import idempotently and rejects mismatches', async () => {
+	test('replays legacy imports independently of the current time and rejects evidence mismatches', async () => {
 		driver.watchGatePublishQuarantine({ now: NOW });
 		driver.watchGateBindSnapshot({ snapshotHash: HASH, now: NOW });
 		const input = {
@@ -991,15 +1247,30 @@ describe('watch owner dedicated SQLite transaction', () => {
 			watcherPid: null, terminalReceiptId: 'receipt-111', expectedSnapshot: null,
 		};
 		const inserted = driver.watchOwnerMarkLegacyBlocked(input);
-		const replayed = driver.watchOwnerMarkLegacyBlocked({ ...input, expectedSnapshot: inserted.row });
+		const replayed = driver.watchOwnerMarkLegacyBlocked({ ...input, now: LATER, expectedSnapshot: inserted.row });
 		const mismatched = driver.watchOwnerMarkLegacyBlocked({
-			...input, terminalReceiptId: 'receipt-other', expectedSnapshot: inserted.row,
+			...input, now: LATER, terminalReceiptId: 'receipt-other', expectedSnapshot: inserted.row,
+		});
+		const startingInput = {
+			repo: 'acme/forge', pr: 112, now: NOW, snapshotHash: HASH,
+			legacyEvidenceHash: OTHER_HASH, controllerPid: 7_112, expectedSnapshot: null,
+		};
+		const starting = driver.watchOwnerImportLegacyStarting(startingInput);
+		const startingReplay = driver.watchOwnerImportLegacyStarting({
+			...startingInput, now: LATER, expectedSnapshot: starting.row,
+		});
+		const startingMismatch = driver.watchOwnerImportLegacyStarting({
+			...startingInput, now: LATER, controllerPid: 8_112, expectedSnapshot: starting.row,
 		});
 
 		expect(inserted).toMatchObject({ ok: true, changed: true, reason: 'blocked' });
 		expect(replayed).toEqual({ ok: true, changed: false, reason: 'idempotent', row: inserted.row });
 		expect(mismatched).toEqual({ ok: false, changed: false, reason: 'owner_conflict', row: inserted.row });
-		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners WHERE pr = 111')).toEqual([inserted.row]);
+		expect(starting).toMatchObject({ ok: true, changed: true, reason: 'imported' });
+		expect(startingReplay).toEqual({ ok: true, changed: false, reason: 'idempotent', row: starting.row });
+		expect(startingMismatch).toEqual({ ok: false, changed: false, reason: 'owner_conflict', row: starting.row });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners WHERE pr IN (111, 112) ORDER BY pr'))
+			.toEqual([inserted.row, starting.row]);
 	});
 
 	test.each([
@@ -1055,6 +1326,43 @@ describe('watch owner dedicated SQLite transaction', () => {
 			{},
 			(_connection, reenter) => reenter(() => ({ ok: true })),
 		)).toThrow(/re-entry/i);
+		database.close();
+	});
+
+	test('validates the authority schema while holding the writer lock', () => {
+		const runtime = selectBuiltinSQLiteRuntime();
+		const database = new Database(databasePath);
+		const attacker = new Database(databasePath);
+		attacker.exec('PRAGMA busy_timeout=0;');
+		const query = database.query.bind(database);
+		let injectionError;
+		database.query = sql => {
+			const statement = query(sql);
+			if (!String(sql).includes("SELECT tbl_name AS tbl_name, sql FROM sqlite_master WHERE type = 'trigger'")) return statement;
+			return {
+				all(...args) {
+					const rows = statement.all(...args);
+					try {
+						attacker.exec(`CREATE TRIGGER raced_watch_authority_trigger
+							BEFORE INSERT ON kernel_pr_watch_owners
+							BEGIN SELECT RAISE(ABORT, 'raced authority trigger'); END;`);
+					} catch (error) {
+						injectionError = error;
+					}
+					return rows;
+				},
+			};
+		};
+
+		const result = transactionInternals.runWatchOwnerTransactionOnConnection(
+			runtime, database, {}, () => ({ ok: true }),
+		);
+		database.query = query;
+
+		expect(result).toEqual({ ok: true });
+		expect(String(injectionError?.message || '')).toMatch(/locked|busy/i);
+		expect(database.query("SELECT name FROM sqlite_master WHERE type = 'trigger'").all()).toEqual([]);
+		attacker.close();
 		database.close();
 	});
 
@@ -1141,5 +1449,129 @@ describe('watch owner dedicated SQLite transaction', () => {
 		expect(result).toEqual({ ok: true, changed: true });
 		expect(restorationAttempts).toBe(1);
 		expect(closes).toBe(1);
+	});
+	test('rejects inbound foreign-key cascades referencing watcher authority rows', async () => {
+		await driver.exec(`
+			CREATE TABLE kernel_pr_watch_owner_extras (
+				extra TEXT NOT NULL PRIMARY KEY,
+				repo TEXT NOT NULL,
+				pr INTEGER NOT NULL,
+				FOREIGN KEY (repo, pr) REFERENCES kernel_pr_watch_owners (repo, pr) ON DELETE CASCADE
+			);
+		`);
+		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 116 }, {
+			controllerPid: 7_116, startedAt: NOW,
+		}, { driver });
+		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
+	});
+
+	test('rejects inbound foreign-key cascades declared with different identifier casing', async () => {
+		await driver.exec(`
+			CREATE TABLE watcher_refs_kernel (
+				extra TEXT NOT NULL PRIMARY KEY,
+				repo TEXT NOT NULL,
+				pr INTEGER NOT NULL,
+				FOREIGN KEY (repo, pr) REFERENCES KERNEL_PR_WATCH_OWNERS (repo, pr) ON DELETE CASCADE
+			);
+		`);
+		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 117 }, {
+			controllerPid: 7_117, startedAt: NOW,
+		}, { driver });
+		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
+	});
+
+	test('rejects outbound foreign keys declared on the authority tables themselves', async () => {
+		await driver.exec('DROP TABLE kernel_pr_watch_owners;');
+		await driver.exec(`
+			CREATE TABLE kernel_pr_watch_parent (
+				id TEXT NOT NULL PRIMARY KEY
+			);
+			CREATE TABLE kernel_pr_watch_owners (
+				repo TEXT NOT NULL REFERENCES kernel_pr_watch_parent (id) ON DELETE CASCADE,
+				pr INTEGER NOT NULL,
+				version INTEGER NOT NULL,
+				generation TEXT NOT NULL,
+				phase TEXT NOT NULL,
+				controller_pid INTEGER,
+				watcher_pid INTEGER,
+				started_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				heartbeat_at TEXT,
+				terminal_receipt_id TEXT,
+				block_reason TEXT,
+				legacy_evidence_hash TEXT,
+				PRIMARY KEY (repo, pr)
+			);
+		`);
+		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 118 }, {
+			controllerPid: 7_118, startedAt: NOW,
+		}, { driver });
+		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
+	});
+
+	test('rejects extra uniqueness constraints on the authority tables', async () => {
+		await driver.exec('DROP TABLE kernel_pr_watch_owners;');
+		await driver.exec(`
+			CREATE TABLE kernel_pr_watch_owners (
+				repo TEXT NOT NULL,
+				pr INTEGER NOT NULL,
+				version INTEGER NOT NULL,
+				generation TEXT NOT NULL,
+				phase TEXT NOT NULL,
+				controller_pid INTEGER,
+				watcher_pid INTEGER,
+				started_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				heartbeat_at TEXT,
+				terminal_receipt_id TEXT,
+				block_reason TEXT,
+				legacy_evidence_hash TEXT,
+				PRIMARY KEY (repo, pr),
+				UNIQUE (repo) ON CONFLICT REPLACE
+			);
+		`);
+		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 119 }, {
+			controllerPid: 7_119, startedAt: NOW,
+		}, { driver });
+		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
+	});
+
+	test('rejects cross-table triggers that write into authority tables', async () => {
+		await driver.exec(`
+			CREATE TABLE kernel_pr_watch_owner_events (
+				event TEXT NOT NULL PRIMARY KEY
+			);
+			CREATE TRIGGER purge_owners_on_event
+			AFTER INSERT ON kernel_pr_watch_owner_events
+			BEGIN
+				DELETE FROM kernel_pr_watch_owners;
+			END;
+		`);
+		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 120 }, {
+			controllerPid: 7_120, startedAt: NOW,
+		}, { driver });
+		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
+	});
+
+	test('rejects cross-table triggers that reference authority tables via quoted identifiers', async () => {
+		await driver.exec(`
+			CREATE TABLE kernel_pr_watch_owner_events (
+				event TEXT NOT NULL PRIMARY KEY
+			);
+			CREATE TRIGGER purge_owners_quoted_on_event
+			AFTER INSERT ON kernel_pr_watch_owner_events
+			BEGIN
+				DELETE FROM "kernel_pr_watch_owners";
+			END;
+		`);
+		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 121 }, {
+			controllerPid: 7_121, startedAt: NOW,
+		}, { driver });
+		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
+		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
 	});
 });

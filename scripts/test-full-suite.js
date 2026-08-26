@@ -10,19 +10,49 @@ const {
   createDurationMap,
   getShardPlan,
   getUnitTestRoots,
+  normalizePath,
   readNewestProfile,
   walkTests,
 } = require('./test-ci-shard');
+const {
+  buildProfile,
+  parseJUnitFiles,
+  parseJUnitTestcases,
+  walk: walkProfileFiles,
+} = require('./test-profile');
 const { createProcessTree, signalExitCode } = require('./process-tree');
 const { stripGitHookEnv } = require('./test');
 
 const rootDir = path.join(__dirname, '..');
 const reportDir = path.join(rootDir, 'test-results');
+const RESOURCE_LANES = new Set(['unit', 'subprocess', 'exclusive']);
+const RESOURCE_LANE_RANK = new Map([
+  ['unit', 0],
+  ['subprocess', 1],
+  ['exclusive', 2],
+]);
+const DEFAULT_SHARD_TIMEOUT_MS = 30000;
+const JS_FAMILY_EXTENSIONS = ['.js', '.cjs', '.mjs', '.jsx', '.ts', '.cts', '.mts', '.tsx'];
+const FORGE_COORDINATION_ENV = new Set([
+  'FORGE_ACTOR',
+  'FORGE_SESSION_ID',
+  'FORGE_WORKTREE_ID',
+  'FORGE_LEASE_TTL_MS',
+]);
+
+function stripFullSuiteChildEnv(env) {
+  const childEnv = stripGitHookEnv(env);
+  for (const key of Object.keys(childEnv)) {
+    if (FORGE_COORDINATION_ENV.has(key.toUpperCase())) delete childEnv[key];
+  }
+  return childEnv;
+}
 
 function parseArgs(argv) {
   const args = {
     labelPrefix: 'local-full',
     shards: null,
+    timeoutMs: DEFAULT_SHARD_TIMEOUT_MS,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -31,9 +61,18 @@ function parseArgs(argv) {
 
     if (current === '--label-prefix') args.labelPrefix = next;
     if (current === '--shards') args.shards = Number.parseInt(next, 10);
+    if (current === '--timeout') args.timeoutMs = parseTimeoutMs(next);
   }
 
   return args;
+}
+
+function parseTimeoutMs(value) {
+  const timeoutMs = Number(value);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('--timeout must be a positive integer');
+  }
+  return timeoutMs;
 }
 
 function getDefaultShardCount(cpuCount = os.cpus().length) {
@@ -129,11 +168,407 @@ function buildShardSpecs(allTests, shardTotal, durationMap = new Map()) {
   return specs;
 }
 
-function buildShardTestArgs({ junitPath, files, root = rootDir }) {
+function strongestResourceLane(left, right) {
+  return RESOURCE_LANE_RANK.get(left) >= RESOURCE_LANE_RANK.get(right) ? left : right;
+}
+
+function tokenizeResourceSyntax(source) {
+  const tokens = [];
+  let index = 0;
+  while (index < source.length) {
+    const current = source[index];
+    if (/\s/.test(current)) {
+      index += 1;
+      continue;
+    }
+    if (current === '/' && source[index + 1] === '/') {
+      index = source.indexOf('\n', index + 2);
+      if (index === -1) break;
+      continue;
+    }
+    if (current === '/' && source[index + 1] === '*') {
+      const end = source.indexOf('*/', index + 2);
+      index = end === -1 ? source.length : end + 2;
+      continue;
+    }
+    if (current === '"' || current === "'") {
+      const quote = current;
+      let value = '';
+      index += 1;
+      while (index < source.length && source[index] !== quote) {
+        if (source[index] === '\\' && index + 1 < source.length) index += 1;
+        value += source[index];
+        index += 1;
+      }
+      index += 1;
+      tokens.push({ type: 'string', value });
+      continue;
+    }
+    if (current === '`') {
+      let dynamic = false;
+      let value = '';
+      index += 1;
+      while (index < source.length && source[index] !== '`') {
+        if (source[index] === '\\' && index + 1 < source.length) {
+          index += 1;
+        } else if (source[index] === '$' && source[index + 1] === '{') {
+          dynamic = true;
+        }
+        value += source[index];
+        index += 1;
+      }
+      index += 1;
+      tokens.push({ type: dynamic ? 'dynamic-string' : 'string', value });
+      continue;
+    }
+    if (/[A-Za-z_$]/.test(current)) {
+      const start = index;
+      index += 1;
+      while (index < source.length && /[A-Za-z0-9_$]/.test(source[index])) index += 1;
+      tokens.push({ type: 'identifier', value: source.slice(start, index) });
+      continue;
+    }
+    tokens.push({ type: 'punctuator', value: current });
+    index += 1;
+  }
+  return tokens;
+}
+
+function inspectTestResourceSource(source, file, classifySource) {
+  const marker = source.match(/^\s*\/\/\s*forge-test-resource:\s*([^\s]+)\s*$/m);
+  let resource = 'unit';
+  if (marker) {
+    if (!RESOURCE_LANES.has(marker[1])) {
+      throw new Error(`Unknown full-suite resource lane ${marker[1]} in ${file}`);
+    }
+    resource = marker[1];
+  }
+  if (classifySource) {
+    const classified = classifySource(source, file);
+    if (!RESOURCE_LANES.has(classified)) {
+      throw new Error(`Unknown full-suite resource lane ${classified} in ${file}`);
+    }
+    resource = strongestResourceLane(resource, classified);
+  }
+
+  const imports = [];
+  const recordImport = (specifier) => {
+    if (specifier === 'child_process' || specifier === 'node:child_process') {
+      resource = strongestResourceLane(resource, 'subprocess');
+    } else if (specifier.startsWith('.')) {
+      imports.push(specifier);
+    }
+  };
+  const tokens = tokenizeResourceSyntax(source);
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const previous = tokens[index - 1];
+    const next = tokens[index + 1];
+    if (token.value === 'Bun'
+      && next?.value === '.'
+      && (tokens[index + 2]?.value === 'spawn' || tokens[index + 2]?.value === 'spawnSync')
+      && tokens[index + 3]?.value === '(') {
+      resource = strongestResourceLane(resource, 'subprocess');
+      continue;
+    }
+    if ((token.value === 'require' || token.value === 'import')
+      && previous?.value !== '.'
+      && next?.value === '(') {
+      const argument = tokens[index + 2];
+      if (argument?.type === 'string' && tokens[index + 3]?.value === ')') {
+        recordImport(argument.value);
+      } else {
+        resource = strongestResourceLane(resource, 'subprocess');
+      }
+      continue;
+    }
+    if (token.value !== 'import' && token.value !== 'export') continue;
+    if (next?.type === 'string') {
+      recordImport(next.value);
+      continue;
+    }
+    for (let cursor = index + 1; cursor < tokens.length && tokens[cursor].value !== ';'; cursor += 1) {
+      if (tokens[cursor].value === 'from' && tokens[cursor + 1]?.type === 'string') {
+        recordImport(tokens[cursor + 1].value);
+        break;
+      }
+    }
+  }
+  return { imports, resource };
+}
+
+function isWithinRoot(root, target) {
+  const relative = path.relative(root, target);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function createTestResourceClassifier(options = {}) {
+  const root = path.resolve(options.root || rootDir);
+  const realRoot = fs.realpathSync(root);
+  const readFile = options.readFile || ((target) => fs.readFileSync(target, 'utf8'));
+  const moduleCache = new Map();
+  const resolutionCache = new Map();
+  const resultCache = new Map();
+
+  const resolveLocalImport = (fromFile, specifier) => {
+    const cacheKey = `${fromFile}\0${specifier}`;
+    if (resolutionCache.has(cacheKey)) return resolutionCache.get(cacheKey);
+    const base = path.resolve(path.dirname(fromFile), specifier);
+    if (!isWithinRoot(realRoot, base)) {
+      resolutionCache.set(cacheKey, null);
+      return null;
+    }
+    const candidates = [
+      base,
+      ...JS_FAMILY_EXTENSIONS.map((extension) => base + extension),
+      ...JS_FAMILY_EXTENSIONS.map((extension) => path.join(base, `index${extension}`)),
+    ];
+    for (const candidate of candidates) {
+      let stats;
+      try {
+        stats = fs.statSync(candidate);
+      } catch {
+        continue;
+      }
+      if (!stats.isFile()) continue;
+      const resolved = fs.realpathSync(candidate);
+      if (!isWithinRoot(realRoot, resolved)) {
+        resolutionCache.set(cacheKey, null);
+        return null;
+      }
+      resolutionCache.set(cacheKey, resolved);
+      return resolved;
+    }
+    resolutionCache.set(cacheKey, null);
+    return null;
+  };
+
+  const inspectModule = (absoluteFile) => {
+    if (moduleCache.has(absoluteFile)) return moduleCache.get(absoluteFile);
+    let inspected;
+    try {
+      const source = readFile(absoluteFile);
+      if (typeof source !== 'string') throw new TypeError('resource source reader must return a string');
+      inspected = inspectTestResourceSource(source, path.relative(root, absoluteFile), options.classifySource);
+    } catch (error) {
+      if (error && /Unknown full-suite resource lane/.test(error.message)) throw error;
+      inspected = { imports: [], resource: 'subprocess' };
+    }
+    moduleCache.set(absoluteFile, inspected);
+    return inspected;
+  };
+
+  const classifyModule = (absoluteFile, visiting) => {
+    if (resultCache.has(absoluteFile)) {
+      return { complete: true, resource: resultCache.get(absoluteFile) };
+    }
+    if (visiting.has(absoluteFile)) return { complete: false, resource: 'unit' };
+
+    visiting.add(absoluteFile);
+    const inspected = inspectModule(absoluteFile);
+    let resource = inspected.resource;
+    let complete = true;
+    if (resource !== 'exclusive') {
+      for (const specifier of inspected.imports) {
+        const resolved = resolveLocalImport(absoluteFile, specifier);
+        if (!resolved) {
+          resource = strongestResourceLane(resource, 'subprocess');
+          continue;
+        }
+        const dependency = classifyModule(resolved, visiting);
+        resource = strongestResourceLane(resource, dependency.resource);
+        complete = complete && dependency.complete;
+        if (resource === 'exclusive') {
+          complete = true;
+          break;
+        }
+      }
+    }
+    visiting.delete(absoluteFile);
+    if (complete) resultCache.set(absoluteFile, resource);
+    return { complete, resource };
+  };
+
+  return (file) => {
+    const absoluteFile = path.resolve(root, file);
+    if (!isWithinRoot(root, absoluteFile)) return 'subprocess';
+    let realFile;
+    try {
+      realFile = fs.realpathSync(absoluteFile);
+    } catch {
+      return 'subprocess';
+    }
+    if (!isWithinRoot(realRoot, realFile)) return 'subprocess';
+    return classifyModule(realFile, new Set()).resource;
+  };
+}
+
+function classifyTestResource(file, options = {}) {
+  return createTestResourceClassifier(options)(file);
+}
+
+async function loadTestResourceMap(allTests, options = {}) {
+  const classify = createTestResourceClassifier(options);
+  const uniqueFiles = [...new Set(allTests)];
+  const entries = uniqueFiles.map((file) => [file, classify(file)]);
+  return new Map(entries);
+}
+
+function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), options = {}) {
+  const classify = options.classify || ((file) => classifyTestResource(file, options));
+  const subprocessShardTotal = Number.isInteger(options.subprocessShardTotal)
+    && options.subprocessShardTotal > 0
+    ? options.subprocessShardTotal
+    : shardTotal;
+  const buckets = {
+    exclusive: [],
+    subprocess: [],
+    unit: [],
+  };
+  for (const file of allTests) {
+    const resource = classify(file);
+    if (!RESOURCE_LANES.has(resource)) {
+      throw new Error(`Unknown full-suite resource lane ${resource} for ${file}`);
+    }
+    buckets[resource].push(file);
+  }
+
+  const lanes = [];
+  const addShardedLane = (name, shardCap, concurrencyCap = shardCap) => {
+    if (buckets[name].length === 0) return;
+    const shardCount = Math.min(shardCap, shardTotal, buckets[name].length);
+    lanes.push({
+      concurrency: Math.min(concurrencyCap, shardCount),
+      name,
+      shards: buildShardSpecs(buckets[name], shardCount, durationMap),
+    });
+  };
+  addShardedLane('unit', 4);
+  if (buckets.subprocess.length > 0) {
+    const shardCount = Math.min(subprocessShardTotal, buckets.subprocess.length);
+    lanes.push({
+      concurrency: Math.min(3, shardCount),
+      name: 'subprocess',
+      // Extra shards improve tail balancing without increasing the worker budget.
+      shards: buildShardSpecs(buckets.subprocess, shardCount, durationMap),
+    });
+  }
+  if (buckets.exclusive.length > 0) {
+    lanes.push({
+      concurrency: 1,
+      name: 'exclusive',
+      shards: buckets.exclusive.map((file) => ({ files: [file], source: 'exclusive' })),
+    });
+  }
+
+  let nextIndex = 0;
+  for (const lane of lanes) {
+    for (const shard of lane.shards) {
+      shard.index = nextIndex;
+      nextIndex += 1;
+    }
+  }
+  assertExactShardAssignment(allTests, lanes.flatMap((lane) => lane.shards));
+  return lanes;
+}
+
+async function runLaneSchedule(lanes, execute, cancel = () => {}, options = {}) {
+  const runLane = async (lane, concurrency = lane.concurrency, schedule = { stopped: false }) => {
+    const laneResults = new Array(lane.shards.length);
+    let nextIndex = 0;
+    let stopped = false;
+    const worker = async () => {
+      while (!stopped && !schedule.stopped) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= lane.shards.length) return;
+        try {
+          laneResults[index] = await execute(lane.shards[index], lane);
+        } catch (error) {
+          stopped = true;
+          if (!schedule.stopped) {
+            schedule.stopped = true;
+            cancel(error);
+          }
+          throw error;
+        }
+      }
+    };
+    const workers = Array.from(
+      { length: Math.min(concurrency, lane.shards.length) },
+      () => worker(),
+    );
+    const settled = await Promise.allSettled(workers);
+    const failure = settled.find((result) => result.status === 'rejected');
+    if (failure) throw failure.reason;
+    return laneResults;
+  };
+
+  const resultsByLane = new Map();
+  const sharedLanes = lanes.filter((lane) => lane.name !== 'exclusive');
+  const overlapsSubprocess = sharedLanes.some((lane) => lane.name === 'subprocess');
+  const sharedSchedule = { stopped: false };
+  // An explicit shard count is an operator-imposed cap on total concurrent
+  // children; reserve the budget for heavier subprocess workers first and
+  // defer leftover lanes until capacity frees instead of exceeding it.
+  const workerBudget = Number.isInteger(options.workerBudget) && options.workerBudget > 0
+    ? options.workerBudget
+    : null;
+  const grants = new Map();
+  if (workerBudget !== null) {
+    let reservedWorkers = 0;
+    const grantWorkers = (want) => {
+      const grant = Math.min(want, Math.max(0, workerBudget - reservedWorkers));
+      reservedWorkers += grant;
+      return grant;
+    };
+    for (const lane of [...sharedLanes].sort((a, b) => (a.name === 'subprocess' ? 0 : 1) - (b.name === 'subprocess' ? 0 : 1))) {
+      const base = overlapsSubprocess && lane.name === 'unit' ? 1 : lane.concurrency;
+      grants.set(lane, grantWorkers(base));
+    }
+  }
+  const deferredLanes = grants.size > 0
+    ? sharedLanes.filter((lane) => grants.get(lane) === 0)
+    : [];
+  const immediateLanes = grants.size > 0
+    ? sharedLanes.filter((lane) => (grants.get(lane) ?? lane.concurrency) > 0)
+    : sharedLanes;
+  const settledSharedLanes = await Promise.allSettled(immediateLanes.map(async (lane) => {
+    // One unit worker fills otherwise-idle CPU without recreating broad process pressure.
+    const concurrency = workerBudget === null && overlapsSubprocess && lane.name === 'unit'
+      ? 1
+      : (grants.get(lane) ?? lane.concurrency);
+    resultsByLane.set(lane, await runLane(lane, concurrency, sharedSchedule));
+  }));
+  const sharedFailure = settledSharedLanes.find((result) => result.status === 'rejected');
+  if (sharedFailure) throw sharedFailure.reason;
+  // Budget-exhausted lanes start only after reserved capacity has been released.
+  const settledDeferredLanes = await Promise.allSettled(deferredLanes.map(async (lane) => {
+    resultsByLane.set(lane, await runLane(lane, Math.min(lane.concurrency, workerBudget), sharedSchedule));
+  }));
+  const deferredFailure = settledDeferredLanes.find((result) => result.status === 'rejected');
+  if (deferredFailure) throw deferredFailure.reason;
+
+  for (const lane of lanes.filter((candidate) => candidate.name === 'exclusive')) {
+    resultsByLane.set(lane, await runLane(lane));
+  }
+  return lanes.flatMap((lane) => {
+    const laneResults = resultsByLane.get(lane);
+    if (!laneResults) throw new Error(`Missing results for resource lane ${lane.name}`);
+    return laneResults;
+  });
+}
+
+function buildShardTestArgs({
+  junitPath,
+  files,
+  root = rootDir,
+  timeoutMs = DEFAULT_SHARD_TIMEOUT_MS,
+}) {
   return [
     'test',
     '--timeout',
-    '30000',
+    String(parseTimeoutMs(timeoutMs)),
     '--reporter=junit',
     '--reporter-outfile',
     junitPath,
@@ -169,6 +604,42 @@ function parseShardReceipt(output) {
   const passed = tests - failed - errors - skipped;
   if (tests === 0 || passed < 0) return null;
   return { assertions, errors, failed, passed, skipped, tests };
+}
+
+function extractFailedTestCases(output, limit = 20) {
+  const failures = [];
+  for (const { attrs, body } of parseJUnitTestcases(output)) {
+    const type = body.match(/<(failure|error)\b/)?.[1];
+    if (!type) continue;
+    failures.push({
+      file: attrs.file || attrs.classname || 'unknown',
+      line: attrs.line || '',
+      name: attrs.name || 'unknown',
+      type,
+    });
+    if (failures.length >= limit) break;
+  }
+  return failures;
+}
+
+function writeDurationProfile({ allTests, label, outputPath, runReportDir }) {
+  const files = walkProfileFiles(runReportDir, '.xml');
+  if (files.length === 0) return false;
+  const metrics = parseJUnitFiles(files);
+  const measured = new Set(metrics.allFileDurations.map((entry) => normalizePath(entry.file)));
+  if (!allTests.every((file) => measured.has(normalizePath(file)))) return false;
+
+  const profile = buildProfile({ integrationSkipped: false, label: label || 'local-full' }, metrics);
+  const target = path.resolve(outputPath);
+  const temporary = `${target}.tmp-${process.pid}`;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(profile, null, 2));
+    fs.renameSync(temporary, target);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+  return true;
 }
 
 function aggregateShardReceipts(receipts, expectedCount) {
@@ -254,6 +725,7 @@ function spawnShard(shard, options = {}) {
       child = spawn(bunCommand, buildShardTestArgs({
         junitPath,
         files: shard.files,
+        timeoutMs: options.timeoutMs,
       }), {
         cwd: rootDir,
         env,
@@ -305,6 +777,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
   const processTree = deps.processTree || createProcessTree({ env, platform });
   let signal = null;
   let completed = false;
+  let scheduleCancelled = false;
   const removeSignalHandlers = processTree.installSignalHandlers((received) => {
     signal = received;
   });
@@ -314,9 +787,23 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const shardTotal = Number.isInteger(args.shards) && args.shards > 0
       ? args.shards
       : getDefaultShardCount(deps.cpuCount);
+    const subprocessShardTotal = Number.isInteger(args.shards) && args.shards > 0
+      ? shardTotal
+      : Math.max(6, shardTotal);
     const profile = deps.profile || readNewestProfile(reportDir);
     const durationMap = deps.durationMap || createDurationMap(profile);
-    const shardSpecs = buildShardSpecs(allTests, shardTotal, durationMap);
+    const resourceMap = deps.classify
+      ? null
+      : await loadTestResourceMap(allTests, {
+        classifySource: deps.classifySource,
+        readFile: deps.readFile,
+        root: deps.root || rootDir,
+      });
+    const lanePlan = buildResourceLanePlan(allTests, shardTotal, durationMap, {
+      classify: deps.classify || ((file) => resourceMap.get(file)),
+      subprocessShardTotal,
+    });
+    const shardSpecs = lanePlan.flatMap((lane) => lane.shards);
 
     if (shardSpecs.length === 0) {
       const exitCode = signal ? signalExitCode(signal) : 1;
@@ -330,20 +817,40 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const runReportDir = fs.mkdtempSync(path.join(reportDir, 'full-suite-'));
 
     console.log(`Running local full suite in ${shardSpecs.length} shard(s)`);
-    const childEnv = stripGitHookEnv(
+    for (const lane of lanePlan) {
+      console.log(`Resource lane ${lane.name}: files=${lane.shards.reduce((total, shard) => total + shard.files.length, 0)} shards=${lane.shards.length} concurrency=${lane.concurrency}`);
+    }
+    const childEnv = stripFullSuiteChildEnv(
       typeof processTree.envFor === 'function' ? processTree.envFor(env) : env,
     );
     let results;
     try {
-      results = await Promise.all(shardSpecs.map((shard) => spawnShard(shard, {
-        bunCommand: deps.bunCommand,
-        env: childEnv,
-        labelPrefix: args.labelPrefix,
-        reportDirectory: runReportDir,
-        spawn: deps.spawn,
-        platform,
-        processTree,
-      })));
+      const nodeExecutable = deps.nodeExecutable ?? (
+        process.versions.bun ? globalThis.Bun?.which?.('node') : process.execPath
+      );
+      if (typeof nodeExecutable !== 'string' || !path.isAbsolute(nodeExecutable)) {
+        throw new Error('Full suite requires an absolute Node executable');
+      }
+      childEnv.FORGE_TEST_NODE_EXECUTABLE = nodeExecutable;
+      results = await runLaneSchedule(lanePlan, async (shard, lane) => ({
+        ...await spawnShard(shard, {
+          bunCommand: deps.bunCommand,
+          env: childEnv,
+          labelPrefix: args.labelPrefix,
+          reportDirectory: runReportDir,
+          spawn: deps.spawn,
+          platform,
+          processTree,
+          timeoutMs: args.timeoutMs,
+        }),
+        resource: lane.name,
+      }), () => {
+        if (scheduleCancelled) return;
+        scheduleCancelled = true;
+        processTree.cleanup('SIGKILL');
+      }, {
+        workerBudget: shardTotal,
+      });
     } catch (error) {
       console.error('Full suite shard execution failed:', error);
       const exitCode = signal ? signalExitCode(signal) : 1;
@@ -352,9 +859,30 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
       return exitCode;
     }
 
+    const nonzeroShards = results.filter((result) => result.code !== 0);
+    if (nonzeroShards.length > 0) {
+      console.error(`Full suite non-zero shards: ${nonzeroShards.map((result) => `${result.index}:${result.resource}:exit=${result.code}`).join(', ')}`);
+      const failedTests = nonzeroShards.flatMap((result) => extractFailedTestCases(result.output));
+      if (failedTests.length > 0) {
+        console.error(`Full suite failing tests: ${failedTests.map((failure) => `${failure.file}${failure.line ? `:${failure.line}` : ''} (${failure.name})`).join(', ')}`);
+      }
+    }
     const aggregate = aggregateShardReceipts(results, shardSpecs.length);
     const exitCode = signal ? signalExitCode(signal) : aggregate.exitCode;
     if (signal) aggregate.status = 'INCOMPLETE';
+    if (aggregate.status !== 'INCOMPLETE') {
+      const labelPrefix = args.labelPrefix || 'local-full';
+      try {
+        (deps.writeDurationProfile || writeDurationProfile)({
+          allTests,
+          label: labelPrefix,
+          outputPath: deps.profileOutputPath || path.join(reportDir, `${labelPrefix}.profile.json`),
+          runReportDir,
+        });
+      } catch (error) {
+        console.warn(`Full suite profile was not updated: ${error.message}`);
+      }
+    }
     if (aggregate.status === 'PASS' && exitCode === 0) {
       fs.rmSync(runReportDir, { force: true, recursive: true });
     }
@@ -364,7 +892,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     return exitCode;
   } finally {
     removeSignalHandlers();
-    processTree.cleanup(signal || !completed ? 'SIGKILL' : 'SIGTERM');
+    if (!scheduleCancelled) processTree.cleanup(signal || !completed ? 'SIGKILL' : 'SIGTERM');
   }
 }
 
@@ -386,13 +914,19 @@ if (require.main === module) {
 module.exports = {
   aggregateShardReceipts,
   assertExactShardAssignment,
+  buildResourceLanePlan,
   buildShardTestArgs,
   buildShardSpecs,
+  classifyTestResource,
+  extractFailedTestCases,
   getDefaultShardCount,
   listAllFullSuiteTests,
+  loadTestResourceMap,
   main,
   parseArgs,
+  runLaneSchedule,
   runFullSuiteInParallel,
   spawnShard,
   walkAllTests,
+  writeDurationProfile,
 };

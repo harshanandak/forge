@@ -7,6 +7,7 @@ const {
   createMonitorReceipt,
   createMonitorState,
   reduceMonitor,
+  reduceMonitorBatch,
 } = require("./src/monitor-runtime");
 const { EfficiencySupervisor } = require("./src/efficiency-supervisor");
 const { SkillRuntime } = require("./src/skill-runtime");
@@ -108,5 +109,6 @@ module.exports = {
   createWorkPacketExecutor,
   reduceBoundedLoop,
   reduceMonitor,
+  reduceMonitorBatch,
   reduceProcessLifecycle,
 };

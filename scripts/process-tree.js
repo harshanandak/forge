@@ -356,7 +356,8 @@ function createProcessTree(options = {}) {
   const existing = readProcessManifest(manifestPath, fsApi, processApi);
   // An environment-provided path may belong to another run. Treat that as
   // unverifiable and fail closed; never overwrite or reap another run's marker.
-  const inheritedManifestVerified = !environmentManifestPath
+  const inheritedManifestVerified = explicitManifestPath
+    || !environmentManifestPath
     || Boolean(inheritedToken && existing?.token === inheritedToken);
   const usable = inheritedManifestVerified
     && (!markerExists || (existing && existing.token === token));
