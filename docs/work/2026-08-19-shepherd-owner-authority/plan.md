@@ -61,7 +61,7 @@ There is no generic transition or clear. The module exposes only `reserveStartin
 
 The separate migration-gate surface exposes only `readMigrationGate`, `publishMigrationQuarantine`, `bindMigrationSnapshot`, `publishMigrationConflict`, `retryMigrationConflict`, and `completeMigrationGate`. `retryMigrationConflict` rebinds a `conflict` gate to `quarantined` under an exact `(snapshot_hash, conflict_code)` CAS with a different replacement hash. Reading never creates or mutates the gate; launch is permitted only after a valid read returns exactly `complete`.
 
-Every owner API returns `{ ok, changed, reason, record }`; every migration-gate API returns `{ ok, changed, reason, gate }`. Invalid input, missing Kernel authority, busy timeout, corrupt rows, unknown versions, and ambiguous migration evidence return tagged fail-closed envelopes and never fall back to filesystem authority.
+Every single-row owner API returns `{ ok, changed, reason, record }`; `enumerateOwners` returns `{ ok, changed, reason, records }`; every migration-gate API returns `{ ok, changed, reason, gate }`. Invalid input, missing Kernel authority, busy timeout, corrupt rows, unknown versions, and ambiguous migration evidence return tagged fail-closed envelopes and never fall back to filesystem authority.
 
 ## Transaction contract
 
