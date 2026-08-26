@@ -382,9 +382,14 @@ jobs:
           ${{ steps.affected.outputs.targets }}
           EOF
           bun test --timeout 15000 "${test_targets[@]}" --reporter=junit --reporter-outfile test-results/followup-targeted.xml
+      # Route the full-suite case through the same lane-aware, worker-budgeted
+      # runner the full matrix uses. A raw `bun test test/` runs every
+      # subprocess-heavy file inside one long-lived bun process with no
+      # resource-lane separation, which is where the Windows lane's spawns start
+      # failing outright.
       - name: Run single-platform unit suite fallback
         if: steps.affected.outputs.mode == 'full'
-        run: bun test --timeout 15000 test/ --reporter=junit --reporter-outfile test-results/followup-full.xml
+        run: node scripts/test-full-suite.js --timeout 15000 --label-prefix followup-full-${{ matrix.label }}
       - name: Run affected e2e tests
         if: steps.affected.outputs.run_e2e == 'true'
         run: bun test --timeout 15000 test/e2e/ --reporter=junit --reporter-outfile test-results/followup-e2e.xml
