@@ -575,6 +575,11 @@ describe('Validate Command - Validation Orchestration', () => {
 			try {
 				fs.mkdirSync(path.join(rootDir, 'scripts'));
 				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'external-project',
+					bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
 				const calls = [];
 				await runAllTests((...args) => {
 					calls.push(args);
@@ -583,6 +588,30 @@ describe('Validate Command - Validation Orchestration', () => {
 
 				expect(calls[0][0]).toBe('bun');
 				expect(calls[0][1]).toEqual(['test', '--timeout', '30000']);
+				expect(calls[0][2].cwd).toBe(rootDir);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('uses the full-suite runner from a Forge checkout outside the CLI install path', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-checkout-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'forge-workflow',
+					bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
+				const calls = [];
+				await runAllTests((...args) => {
+					calls.push(args);
+					return 'Full suite aggregate: status=PASS tests=1 assertions=1 passed=1 failed=0 errors=0 skipped=0';
+				}, rootDir);
+
+				expect(calls[0][0]).toBe('node');
+				expect(calls[0][1]).toEqual(['scripts/test-full-suite.js']);
 				expect(calls[0][2].cwd).toBe(rootDir);
 			} finally {
 				fs.rmSync(rootDir, { recursive: true, force: true });
