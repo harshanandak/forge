@@ -81,6 +81,28 @@ describe('shepherd-lease', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe(malformed);
   });
 
+  // Regression: the daemon acquires WITHOUT preserveLegacy and only migrates
+  // afterwards, so an opt-in guard let acquisition delete unreadable legacy
+  // lease bytes before migration could ever read them. Preservation must live at
+  // the shared acquisition boundary so daemon and one-shot callers both get it.
+  test('unreadable legacy lease bytes are never deleted by acquisition, even without preserveLegacy', () => {
+    const file = lease.lockFilePath(null, { gitCommonDir });
+    const malformed = '{"pid":100,"watchers":[7]';
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, malformed);
+
+    const res = lease.acquire(null, opts({ pid: 200, isAlive: () => false, now: () => 1000 }));
+
+    expect(res).toMatchObject({
+      ok: false,
+      held: null,
+      legacyMigrationPending: true,
+      reason: 'legacy-lease-unreadable',
+    });
+    expect(fs.existsSync(file)).toBe(true);
+    expect(fs.readFileSync(file, 'utf8')).toBe(malformed);
+  });
+
   test('(3) wedged holder (heartbeat older than STALE_MS) is reclaimed', () => {
     lease.acquire(null, opts({ pid: 100, isAlive: alive, now: () => 0 }));
     const res = lease.acquire(null, opts({ pid: 200, isAlive: alive, now: () => lease.STALE_MS + 1 }));
