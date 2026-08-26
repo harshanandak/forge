@@ -161,6 +161,29 @@ async function seedExternalPlanTail(store) {
   return { markerId, markerSequence, template };
 }
 
+function uuidFrom(seed) {
+  const hex = crypto.createHash('sha256').update(seed).digest('hex').slice(0, 32).split('');
+  hex[12] = '4';
+  hex[16] = ['8', '9', 'a', 'b'][Number.parseInt(hex[16], 16) % 4];
+  return `${hex.slice(0, 8).join('')}-${hex.slice(8, 12).join('')}-${hex.slice(12, 16).join('')}-${hex.slice(16, 20).join('')}-${hex.slice(20).join('')}`;
+}
+
+function checkpointAt(template, sequence, revision) {
+  const event = structuredClone(template);
+  const record = event.payload.bounded_payload.record;
+  const key = crypto.createHash('sha256').update(`checkpoint:${revision}`).digest('hex');
+  record.seq = sequence;
+  record.key = key;
+  event.payload.sequence = sequence;
+  event.payload.bounded_payload.snapshot.diagnosticRevision = revision;
+  event.payload.bounded_payload.snapshot._snapshotIdentity = key;
+  const seed = `${event.payload.monitor_id}:${sequence}:${record.type}:${key}`;
+  event.payload.event_id = crypto.createHash('sha256').update(seed).digest('hex');
+  event.object_id = uuidFrom(`event-object:${seed}`);
+  event.content_hash = computeContentHash(event);
+  return event;
+}
+
 describe('Flow-backed PR monitor authority', () => {
   test('persists through public Memory before legacy journal delivery and ignores legacy snapshot authority', async () => {
     const store = durableStore();
@@ -1267,7 +1290,15 @@ describe('Flow-backed PR monitor authority', () => {
     const ctx = context(store, async () => snapshot({ diagnosticRevision: revision }), async record => delivered.push(record));
     await runFlowMonitorPass(ctx);
 
-    for (revision = 1; revision <= 130; revision += 1) await runFlowMonitorPass(ctx);
+    revision = 1;
+    await runFlowMonitorPass(ctx);
+    const checkpoint = store.events.at(-1);
+    for (let sequence = 3; sequence <= 130; sequence += 1) {
+      store.events.push(checkpointAt(checkpoint, sequence, sequence - 1));
+    }
+    store.setCursor('legacy-journal', 130);
+    revision = 130;
+    await runFlowMonitorPass(ctx);
 
     const delivery = await store.readDeliveryState(ctx.monitorId);
     expect(delivery.cursors).toContainEqual(expect.objectContaining({

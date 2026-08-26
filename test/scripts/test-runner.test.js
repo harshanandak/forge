@@ -250,6 +250,56 @@ describe('scripts/test pre-push runner', () => {
     ]);
   });
 
+  test.each([
+    // Schema is shared by every kernel authority and must stay on the full-suite lane.
+    ['lib/kernel/schema.js', []],
+    ['lib/kernel/migrations.js', [
+    ]],
+    ['lib/kernel/sqlite-driver.js', []],
+    ['lib/pr-monitor/watch-owner.js', [
+      'test/kernel/watch-owner-transaction.test.js',
+      'test/pr-monitor/watch-owner.test.js',
+    ]],
+  ])('classifyPushTests targets the owner-authority suites for %s', (source, targets) => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: `${source}\n`,
+    }));
+
+    expect(plan.runFullSuite).toBe(
+      source === 'lib/kernel/schema.js'
+        || source === 'lib/kernel/sqlite-driver.js'
+        || source === 'lib/kernel/migrations.js'
+    );
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual(
+      source === 'lib/kernel/schema.js'
+        || source === 'lib/kernel/sqlite-driver.js'
+        || source === 'lib/kernel/migrations.js'
+      ? []
+      : [...targets, ...riskTargets]);
+  });
+
+  test('classifyPushTests forces the full suite when a shared driver and mapped consumer change together', () => {
+    let diffCalls = 0;
+    const execFileSync = makeExecFileSync({
+      changedFiles: [
+        'lib/kernel/sqlite-driver.js',
+        'test/kernel/watch-owner-transaction.test.js',
+      ].join('\n'),
+    });
+    const plan = classifyPushTests(repoRoot, (command, args, options) => {
+      if (command === 'git' && args[0] === 'diff') diffCalls += 1;
+      return execFileSync(command, args, options);
+    });
+
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toContain('test/kernel/watch-owner-transaction.test.js');
+    expect(plan.runFullSuite).toBe(true);
+    expect(plan.mode).toBe('full');
+    expect(plan.reason).toBe('shared authority changes require full unit coverage');
+    expect(diffCalls).toBe(1);
+  });
+
   test('classifyPushTests maps upgrade safety docs and support modules without forcing a full suite', () => {
     const plan = classifyPushTests(repoRoot, makeExecFileSync({
       changedFiles: [
@@ -380,6 +430,7 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.runFullSuite).toBe(true);
     expect(plan.runTestEnv).toBe(true);
     expect(plan.runE2E).toBe(true);
+    expect(plan.reason).toBe('package-level changes detected');
   });
 
   test('classifyPushTests falls back to full suite for unmapped pushed files', () => {

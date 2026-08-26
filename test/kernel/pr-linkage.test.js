@@ -68,6 +68,7 @@ describe('kernel migration 009 — pr linkage table', () => {
 			'009_kernel_pr_linkage',
 			'010_memory_monitor_durability',
 			'011_memory_usage_evidence',
+			'012_kernel_pr_watch_ownership',
 		]);
 		expect(plan.apply).toContain(
 			'CREATE INDEX IF NOT EXISTS idx_pr_common_dir_state_repo_number ON kernel_pr (git_common_dir, state, repo, number);',
@@ -144,6 +145,7 @@ describe('kernel migration 009 — broker application', () => {
 			'009_kernel_pr_linkage',
 			'010_memory_monitor_durability',
 			'011_memory_usage_evidence',
+			'012_kernel_pr_watch_ownership',
 		]);
 		const migratedShape = await prTableShape();
 

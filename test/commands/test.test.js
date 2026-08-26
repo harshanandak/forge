@@ -292,6 +292,50 @@ describe('forge test command', () => {
 			expect(call.args).toContain('test/bar.test.js');
 		});
 
+		test.each([
+			// Schema is shared by every kernel authority and must stay on the full-suite lane.
+			['lib/kernel/schema.js', []],
+			// Migrations have consumers across the kernel; an empty mapping deliberately
+			// selects the full-suite lane, matching the shared SQLite driver.
+			['lib/kernel/migrations.js', []],
+			// The shared driver deliberately has no bounded direct list; scripts/test.js
+			// uses the empty mapping to force the full-suite fallback.
+			['lib/kernel/sqlite-driver.js', []],
+			['lib/pr-monitor/watch-owner.js', [
+				'test/kernel/watch-owner-transaction.test.js',
+				'test/pr-monitor/watch-owner.test.js',
+			]],
+		])('maps %s to all direct owner-authority tests', (source, targets) => {
+			const existingPaths = targets.map(target => `/fake/root/${target}`);
+			const affected = testCommand.getAffectedTestFiles(
+				'/fake/root',
+				makeExecFileSync({ mergeBaseOutput: 'abc123', gitDiffOutput: `${source}\n` }),
+				makeFsStub({ existingPaths }),
+			);
+
+			expect(affected).toEqual(targets);
+		});
+
+		test('runs the full suite when a shared authority file changes with a mapped test', async () => {
+			const spawnSpy = makeSpawnSync();
+			let diffCalls = 0;
+			const execFileSync = makeExecFileSync({
+				mergeBaseOutput: 'abc123',
+				gitDiffOutput: 'lib/kernel/sqlite-driver.js\ntest/commands/test.test.js\n',
+			});
+			await testCommand.handler([], { affected: true }, '/fake/root', {
+				fs: makeFsStub({ existingPaths: ['/fake/root/test/commands/test.test.js'] }),
+				execFileSync: (command, args, options) => {
+					if (command === 'git' && args[0] === 'diff') diffCalls += 1;
+					return execFileSync(command, args, options);
+				},
+				spawnSync: spawnSpy,
+			});
+
+			expect(spawnSpy.calls[0].args).toEqual(['run', 'test']);
+			expect(diffCalls).toBe(1);
+		});
+
 		test('maps upgrade safety support files to targeted tests', async () => {
 			const spawnSpy = makeSpawnSync();
 			await testCommand.handler([], { affected: true }, '/fake/root', {

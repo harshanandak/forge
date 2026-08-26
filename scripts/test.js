@@ -23,6 +23,7 @@ const fs = require('node:fs');
 const {
   getAffectedTestFiles,
   getChangedFiles,
+  isFullSuiteRequiredFile,
 } = require('../lib/commands/test');
 const { createProcessTree, signalExitCode } = require('./process-tree');
 
@@ -58,6 +59,10 @@ const KNOWN_TARGETABLE_FILES = new Set([
   '.coderabbit.yaml',
   'CODING_STANDARDS.md',
   '.claude-plugin/marketplace.json',
+  'lib/kernel/schema.js',
+  'lib/kernel/migrations.js',
+  'lib/kernel/sqlite-driver.js',
+  'lib/pr-monitor/watch-owner.js',
 ]);
 
 const ALWAYS_RUN_RISK_TEST_TARGETS = [
@@ -273,17 +278,28 @@ function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync,
     sinceUpstream: options.sinceUpstream !== false,
   };
   const changedFiles = getChangedFiles(execFileSync, diffOptions);
-  const affectedTestTargets = getAffectedTestFiles(projectRoot, execFileSync, fs, diffOptions);
+  const affectedTestTargets = getAffectedTestFiles(projectRoot, execFileSync, fs, {
+    ...diffOptions,
+    changedFiles,
+  });
 
   let runFullSuite = false;
   let runTestEnv = false;
   let runE2E = false;
   let runWorkflowTests = includesWorkflowTarget(affectedTestTargets);
   let hasUnmappedFiles = false;
+  let hasFullSuiteRequiredFiles = false;
+  let hasPackageLevelChanges = false;
   const hasUnknownChangedFiles = changedFiles.length === 0 && affectedTestTargets.length === 0;
 
   for (const file of changedFiles) {
+    if (isFullSuiteRequiredFile(file)) {
+      hasFullSuiteRequiredFiles = true;
+      runFullSuite = true;
+    }
+
     if (PACKAGE_LEVEL_PATHS.has(file) || file.startsWith('packages/')) {
+      hasPackageLevelChanges = true;
       runFullSuite = true;
       runTestEnv = true;
       runE2E = true;
@@ -334,8 +350,10 @@ function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync,
       ? 'changed files could not be resolved safely'
       : hasZeroResolvedTests
         ? 'known changes did not resolve runnable tests'
-      : runFullSuite
+      : hasPackageLevelChanges
         ? 'package-level changes detected'
+      : hasFullSuiteRequiredFiles
+        ? 'shared authority changes require full unit coverage'
         : 'known changes mapped to targeted tests';
 
   return {
