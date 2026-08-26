@@ -553,32 +553,28 @@ describe('Validate Command - Validation Orchestration', () => {
 		});
 
 		test('uses the repository full-suite runner and its final aggregate', async () => {
-			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-full-suite-'));
+			const rootDir = path.resolve(__dirname, '..', '..');
+			const calls = [];
+			const result = await runAllTests((...args) => {
+				calls.push(args);
+				return [
+					'Full suite aggregate: status=FAIL tests=2 assertions=2 passed=1 failed=1 errors=0 skipped=0',
+					'Full suite aggregate: status=PASS tests=7 assertions=9 passed=6 failed=0 errors=0 skipped=1',
+				].join('\n');
+			}, rootDir);
+
+			expect(calls).toHaveLength(1);
+			expect(calls[0][0]).toBe('node');
+			expect(calls[0][1]).toEqual(['scripts/test-full-suite.js']);
+			expect(calls[0][2].cwd).toBe(rootDir);
+			expect(result).toMatchObject({ success: true, passed: 6, failed: 0, skipped: 1, total: 7 });
+		});
+
+		test('falls back to raw Bun outside Forge even when the script path exists', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-bun-fallback-'));
 			try {
 				fs.mkdirSync(path.join(rootDir, 'scripts'));
 				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
-				const calls = [];
-				const result = await runAllTests((...args) => {
-					calls.push(args);
-					return [
-						'Full suite aggregate: status=FAIL tests=2 assertions=2 passed=1 failed=1 errors=0 skipped=0',
-						'Full suite aggregate: status=PASS tests=7 assertions=9 passed=6 failed=0 errors=0 skipped=1',
-					].join('\n');
-				}, rootDir);
-
-				expect(calls).toHaveLength(1);
-				expect(calls[0][0]).toBe('node');
-				expect(calls[0][1]).toEqual(['scripts/test-full-suite.js']);
-				expect(calls[0][2].cwd).toBe(rootDir);
-				expect(result).toMatchObject({ success: true, passed: 6, failed: 0, skipped: 1, total: 7 });
-			} finally {
-				fs.rmSync(rootDir, { recursive: true, force: true });
-			}
-		});
-
-		test('falls back to raw Bun tests outside the Forge repository', async () => {
-			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-bun-fallback-'));
-			try {
 				const calls = [];
 				await runAllTests((...args) => {
 					calls.push(args);
@@ -635,13 +631,12 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
-		test('executeValidate forwards rootDir to the repository full-suite runner', async () => {
+		test('executeValidate forwards rootDir to the test runner', async () => {
 			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-root-'));
 			try {
-				fs.mkdirSync(path.join(rootDir, 'scripts'));
 				fs.writeFileSync(
-					path.join(rootDir, 'scripts', 'test-full-suite.js'),
-					"console.log('Full suite aggregate: status=PASS tests=1 assertions=1 passed=1 failed=0 errors=0 skipped=0');\n",
+					path.join(rootDir, 'root-dir.test.js'),
+					"import { expect, test } from 'bun:test'; test('rootDir', () => { console.log('1 pass\\n0 fail\\nRan 1 tests across 1 file.'); expect(true).toBe(true); });\n",
 				);
 				const result = await executeValidate({
 					rootDir,
