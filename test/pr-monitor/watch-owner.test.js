@@ -712,6 +712,46 @@ describe('watch owner SQLite authority', () => {
 		expect(recovered).toMatchObject({ ok: true, record: { phase: 'starting', controllerPid: 109 } });
 	});
 
+	test('recovers a dead watcher left in stop_requested by a failed release', async () => {
+		const ctx = { repo: 'acme/forge', pr: 59 };
+		const base = { driver, now: LATER };
+		const start = await owner.reserveStarting(ctx, { controllerPid: 112, startedAt: NOW }, base);
+		await owner.bindRunning(ctx, {
+			generation: start.record.generation, controllerPid: 112, pid: 212, updatedAt: LATER,
+		}, base);
+		// requestStop() lands, releaseNonterminal() never does (the watcher dies first),
+		// so the durable row is a dead `stop_requested` one.
+		const stopped = await owner.requestStop(ctx, {
+			generation: start.record.generation, pid: 212, updatedAt: LATER,
+		}, base);
+		expect(stopped).toMatchObject({ ok: true, record: { phase: 'stop_requested' } });
+
+		const recovered = await owner.recoverDeadWatcher(ctx, {
+			generation: start.record.generation, pid: 212, recoveryControllerPid: 113,
+			providerEvidence: { state: 'OPEN' }, updatedAt: NEXT,
+		}, { ...base, isPidAlive: () => false, verifyProviderEvidence: async () => true });
+		expect(recovered).toMatchObject({
+			ok: true, changed: true, reason: 'recovered',
+			record: { phase: 'starting', controllerPid: 113, watcherPid: null },
+		});
+		expect(recovered.record.generation).not.toBe(start.record.generation);
+
+		// A LIVE watcher PID still blocks recovery of a stop_requested row.
+		const live = { repo: 'acme/forge', pr: 60 };
+		const liveStart = await owner.reserveStarting(live, { controllerPid: 114, startedAt: NOW }, base);
+		await owner.bindRunning(live, {
+			generation: liveStart.record.generation, controllerPid: 114, pid: 214, updatedAt: LATER,
+		}, base);
+		await owner.requestStop(live, {
+			generation: liveStart.record.generation, pid: 214, updatedAt: LATER,
+		}, base);
+		expect(await owner.recoverDeadWatcher(live, {
+			generation: liveStart.record.generation, pid: 214, recoveryControllerPid: 115,
+			providerEvidence: { state: 'OPEN' }, updatedAt: NEXT,
+		}, { ...base, isPidAlive: () => true, verifyProviderEvidence: async () => true }))
+			.toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
+	});
+
 	test('recovers a starting row whose controller PID was reused, and fails closed without that proof', async () => {
 		const ctx = { repo: 'acme/forge', pr: 58 };
 		const base = { driver, now: LATER };
@@ -3042,7 +3082,7 @@ describe('watch owner successful-result postcondition validation', () => {
 		expect(recoveryAttempts).toBe(0);
 	});
 
-	test('does not recover a watcher after cooperative stop is requested', async () => {
+	test('recovers a dead watcher after cooperative stop is requested', async () => {
 		const ctx = { repo: 'acme/forge', pr: 989 };
 		const running = await seedLifecycle(ctx, 'running');
 		const stopped = await owner.requestStop(ctx, {
@@ -3063,8 +3103,11 @@ describe('watch owner successful-result postcondition validation', () => {
 			},
 		}));
 
-		expect(result).toEqual({ ok: false, changed: false, reason: 'generation_mismatch', record: null });
-		expect(recoveryAttempts).toBe(0);
+		// The dead watcher IS recoverable from `stop_requested` (a failed
+		// releaseNonterminal leaves exactly this row), so the transaction is reached;
+		// the adapter's row-less success envelope is what fails the postcondition.
+		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+		expect(recoveryAttempts).toBe(1);
 		expect(await owner.readOwner(ctx, authorityOpts())).toMatchObject({
 			ok: true, record: { phase: 'stop_requested', generation: stopped.record.generation },
 		});
