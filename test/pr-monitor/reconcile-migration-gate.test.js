@@ -1094,6 +1094,39 @@ describe('one-release watcher authority migration gate', () => {
 		expect(api.rows.size).toBe(0);
 	});
 
+	test('never writes an owner row after the lease is reclaimed mid-migration', async () => {
+		// The lease is live through evidence collection and the snapshot bind, then a
+		// concurrent trigger reclaims it. Every owner-row mutation must be gated on
+		// ownership BEFORE it runs, so this controller writes nothing at all.
+		const mutations = ['starting:', 'complete:', 'blocked:'];
+		const api = authorityHarness();
+		let leaseChecks = 0;
+		const result = await run(api, snapshot([entry('acme/repo', 7), entry('acme/repo', 8)]), {
+			token: 'lease-token',
+			gitCommonDir: '/repo/.git',
+			stampLease: () => true,
+			ownsLease: () => { leaseChecks += 1; return leaseChecks <= 2; },
+		});
+		expect(result).toMatchObject({ ok: false, state: 'quarantined', reason: 'lease_lost' });
+		expect(api.calls).toContain('bind');
+		expect(api.calls.filter(value => mutations.some(prefix => value.startsWith(prefix)))).toEqual([]);
+		expect(api.calls).not.toContain('complete-gate');
+		expect(api.rows.size).toBe(0);
+
+		// And a lease lost before the bind never binds the snapshot either.
+		const earlier = authorityHarness();
+		let earlierChecks = 0;
+		const earlierResult = await run(earlier, snapshot([entry('acme/repo', 7)]), {
+			token: 'lease-token',
+			gitCommonDir: '/repo/.git',
+			stampLease: () => true,
+			ownsLease: () => { earlierChecks += 1; return earlierChecks <= 1; },
+		});
+		expect(earlierResult).toMatchObject({ ok: false, state: 'quarantined', reason: 'lease_lost' });
+		expect(earlier.calls).not.toContain('bind');
+		expect(earlier.rows.size).toBe(0);
+	});
+
 	test('treats a legacy PID whose process started after the legacy marker as reused, not live', async () => {
 		const api = authorityHarness();
 		const legacy = snapshot([entry('acme/repo', 7, { pid: 107, startedAt: '2026-08-19T00:00:00.000Z' })]);
