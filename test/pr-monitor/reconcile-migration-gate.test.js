@@ -1127,7 +1127,7 @@ describe('one-release watcher authority migration gate', () => {
 		expect(earlier.rows.size).toBe(0);
 	});
 
-	test('treats a legacy PID whose process started after the legacy marker as reused, not live', async () => {
+	test('recovers an open PR whose legacy PID is proven reused instead of blocking it', async () => {
 		const api = authorityHarness();
 		const legacy = snapshot([entry('acme/repo', 7, { pid: 107, startedAt: '2026-08-19T00:00:00.000Z' })]);
 		const result = await run(api, legacy, {
@@ -1136,10 +1136,15 @@ describe('one-release watcher authority migration gate', () => {
 			// legacy watcher recorded startedAt — the original watcher is long gone and
 			// this is an unrelated process that inherited the number.
 			pidStartedAt: async () => Date.parse('2026-08-19T02:00:00.000Z'),
+			controllerPid: 9001,
 		});
 		expect(result).toMatchObject({ ok: true, state: 'complete' });
 		expect(api.calls).not.toContain('blocked:acme/repo#7:legacy_live_pid');
-		expect(api.rows.get('acme/repo#7')).toMatchObject({ phase: 'blocked', blockReason: 'legacy_lossy' });
+		// Proven reuse means the legacy watcher is DEAD, so the open PR must import as a
+		// recoverable starting row. blocked/legacy_lossy would be permanent — only
+		// legacy_live_pid blocks are ever rechecked — and would suppress inline passes.
+		expect(api.calls).not.toContain('blocked:acme/repo#7:legacy_lossy');
+		expect(api.rows.get('acme/repo#7')).toMatchObject({ phase: 'starting', controllerPid: 9001 });
 	});
 
 	test('still imports a genuinely live legacy PID as blocked/legacy_live_pid', async () => {

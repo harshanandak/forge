@@ -6,6 +6,7 @@ const {
 	gatherObserved,
 	convergeOnce,
 } = require('../../lib/pr-monitor/reconcile-executor');
+const { decideLifecycle } = require('../../lib/pr-monitor/reconcile');
 
 const NOW = '2026-08-19T00:00:00.000Z';
 const PR = { repo: 'acme/project', number: 7, branch: 'topic', headSha: 'abc' };
@@ -80,6 +81,87 @@ describe('reconcile executor owner-row authority', () => {
 		expect(order).toEqual(['enumerate', 'pid:44']);
 		expect(result.ownerRows[0]).toMatchObject({ watcherAlive: true });
 		expect(result.migrationGate).toMatchObject({ state: 'complete' });
+	});
+
+	test('treats a reused watcher PID as dead and carries the reuse proof into recovery', async () => {
+		const gather = pidStartedAt => gatherObserved('/repo/.git', null, {
+			broker: { listOpenPrs: async () => [] },
+			authority: {
+				enumerateOwners: async () => ({ ok: true, records: [RECORD] }),
+				readMigrationGate: async () => ({ ok: true, gate: { state: 'complete', snapshot_hash: 'a'.repeat(64) } }),
+			},
+			isAlive: () => true,
+			pidStartedAt,
+			now: () => Date.parse(NOW),
+		});
+
+		// PID 44 exists, but the process holding it booted an hour after the watcher
+		// wrote this row's heartbeat, so it cannot be that watcher.
+		const reused = await gather(async () => Date.parse('2026-08-19T01:00:00.000Z'));
+		expect(reused.ownerRows[0]).toMatchObject({ watcherAlive: false, watcherPidReuseProven: true });
+
+		// An unknown process start time (every non-Linux platform today) keeps the
+		// previous bare-PID behaviour exactly.
+		const unknown = await gather(async () => null);
+		expect(unknown.ownerRows[0]).toMatchObject({ watcherAlive: true });
+		expect(unknown.ownerRows[0].watcherPidReuseProven).toBeUndefined();
+
+		const inputs = [];
+		await execute([{ type: 'recoverWatcher', owner: reused.ownerRows[0], pr: PR, providerState: 'open' }], {
+			authority: {
+				recoverDeadWatcher: async (_ctx, input) => {
+					inputs.push(input);
+					return { ok: true, changed: true, record: { ...RECORD, phase: 'starting', controllerPid: 12 } };
+				},
+				bindRunning: async () => ({ ok: true, changed: true, record: RECORD }),
+			},
+			controllerPid: 12,
+			spawnWatcher: () => ({ started: true, pid: 55 }),
+		});
+		expect(inputs[0]).toMatchObject({ pid: 44, recoveryControllerPid: 12, pidReuseProven: true });
+	});
+
+	test('recovers a starting row whose controller PID was reused instead of deferring to it', async () => {
+		const starting = {
+			...RECORD, phase: 'starting', controllerPid: 33, watcherPid: null, heartbeatAt: null,
+		};
+		const observed = await gatherObserved('/repo/.git', null, {
+			broker: { listOpenPrs: async () => [] },
+			authority: {
+				enumerateOwners: async () => ({ ok: true, records: [starting] }),
+				readMigrationGate: async () => ({ ok: true, gate: { state: 'complete', snapshot_hash: 'a'.repeat(64) } }),
+			},
+			isAlive: () => true,
+			// PID 33 exists, but its process booted after the controller wrote this row.
+			pidStartedAt: async () => Date.parse('2026-08-19T01:00:00.000Z'),
+			now: () => Date.parse(NOW),
+		});
+		const row = observed.ownerRows[0];
+		expect(row).toMatchObject({ controllerAlive: false, controllerPidReuseProven: true });
+
+		// A foreign reused controller PID must not leave the PR unwatched: reconciliation
+		// recovers the abandoned start rather than deferring to the live stranger.
+		const decided = decideLifecycle({
+			openPrs: [PR], controllerPid: 12, listingOk: true, repositoryOk: true, gitCommonDir: '/repo/.git',
+		}, {
+			ownerRows: [row], ownerRowsOk: true, prRows: [],
+			migrationGate: { state: 'complete', snapshot_hash: 'a'.repeat(64) },
+		});
+		expect(decided.actions).toContainEqual({ type: 'recoverStarting', owner: row, pr: PR });
+
+		const inputs = [];
+		await execute(decided.actions.filter(action => action.type === 'recoverStarting'), {
+			authority: {
+				recoverDeadStarting: async (_ctx, input) => {
+					inputs.push(input);
+					return { ok: true, changed: true, record: { ...starting, controllerPid: 12 } };
+				},
+				bindRunning: async () => ({ ok: true, changed: true, record: RECORD }),
+			},
+			controllerPid: 12,
+			spawnWatcher: () => ({ started: true, pid: 55 }),
+		});
+		expect(inputs[0]).toMatchObject({ controllerPid: 33, recoveryControllerPid: 12, pidReuseProven: true });
 	});
 
 	test('converges without reading or publishing lease watcher arrays', async () => {

@@ -676,6 +676,67 @@ describe('watch owner SQLite authority', () => {
 		expect(owner.importLegacy).toBeUndefined();
 	});
 
+	test('recovers a dead watcher whose PID was reused, and fails closed without that proof', async () => {
+		const ctx = { repo: 'acme/forge', pr: 57 };
+		const base = { driver, now: LATER };
+		const start = await owner.reserveStarting(ctx, { controllerPid: 108, startedAt: NOW }, base);
+		await owner.bindRunning(ctx, {
+			generation: start.record.generation, controllerPid: 108, pid: 208, updatedAt: LATER,
+		}, base);
+		await owner.heartbeat(ctx, {
+			generation: start.record.generation, pid: 208, updatedAt: LATER,
+		}, base);
+		const input = {
+			generation: start.record.generation, pid: 208, recoveryControllerPid: 109,
+			providerEvidence: { state: 'OPEN' }, updatedAt: NEXT,
+		};
+		// PID 208 exists, but its process booted an hour after the watcher wrote this
+		// row's heartbeat, so it is an unrelated process that inherited the number.
+		const live = {
+			...base,
+			isPidAlive: () => true,
+			verifyProviderEvidence: async () => true,
+			pidStartedAt: async () => Date.parse('2026-08-19T09:00:00.000Z'),
+		};
+
+		// Without the evidence input a live PID still blocks recovery.
+		expect(await owner.recoverDeadWatcher(ctx, input, live))
+			.toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
+		// And the claim alone is never enough: an unknown process start time keeps the
+		// live PID authoritative.
+		expect(await owner.recoverDeadWatcher(ctx, { ...input, pidReuseProven: true }, {
+			...live, pidStartedAt: async () => null,
+		})).toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
+
+		const recovered = await owner.recoverDeadWatcher(ctx, { ...input, pidReuseProven: true }, live);
+		expect(recovered).toMatchObject({ ok: true, record: { phase: 'starting', controllerPid: 109 } });
+	});
+
+	test('recovers a starting row whose controller PID was reused, and fails closed without that proof', async () => {
+		const ctx = { repo: 'acme/forge', pr: 58 };
+		const base = { driver, now: LATER };
+		const start = await owner.reserveStarting(ctx, { controllerPid: 110, startedAt: NOW }, base);
+		const input = {
+			generation: start.record.generation, controllerPid: 110,
+			recoveryControllerPid: 111, updatedAt: LATER,
+		};
+		// PID 110 exists, but its process booted after this controller wrote the row.
+		const live = {
+			...base,
+			isPidAlive: () => true,
+			pidStartedAt: async () => Date.parse('2026-08-19T09:00:00.000Z'),
+		};
+
+		expect(await owner.recoverDeadStarting(ctx, input, live))
+			.toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
+		expect(await owner.recoverDeadStarting(ctx, { ...input, pidReuseProven: true }, {
+			...live, pidStartedAt: async () => null,
+		})).toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
+
+		const recovered = await owner.recoverDeadStarting(ctx, { ...input, pidReuseProven: true }, live);
+		expect(recovered).toMatchObject({ ok: true, record: { phase: 'starting', controllerPid: 111 } });
+	});
+
 	test('rejects dead-watcher recovery when a heartbeat changes the evidence snapshot', async () => {
 		const ctx = { repo: 'acme/forge', pr: 56 };
 		const base = { driver, now: LATER };
