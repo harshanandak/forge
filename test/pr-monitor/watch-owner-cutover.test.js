@@ -54,7 +54,7 @@ describe('watch owner production cutover', () => {
 		]));
 		expect(result).toEqual(expect.objectContaining({
 			started: true, pid: 202, generation: 'generation-1', repository: 'harshanandak/forge',
-	}));
+		}));
 	});
 
 	test('spawns from an exact pre-reserved recovery envelope without reserving twice', async () => {

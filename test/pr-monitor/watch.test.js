@@ -103,57 +103,57 @@ describe('runWatchPass', () => {
 });
 
 describe('watchLoop owner rows', () => {
-	test('heartbeats during a long provider pass and clears the independent timer', async () => {
-		let fireHeartbeat;
-		let clearCount = 0;
-		let heartbeatCalls = 0;
-		let finishPass;
-		const timerReady = new Promise(resolve => {
-			fireHeartbeat = callback => { resolve(); return callback; };
-		});
-		const providerPass = new Promise(resolve => { finishPass = resolve; });
-		let scheduled;
-		const running = watchLoop({
-			...ownerContext({ owner: {
-				heartbeat: async () => { heartbeatCalls += 1; return { ok: true }; },
-			} }),
-			runMonitorPass: async () => providerPass,
-			maxPasses: 1,
-			emit: () => {},
-			setInterval: callback => {
-				scheduled = fireHeartbeat(callback);
-				return 17;
-			},
-			clearInterval: timer => { expect(timer).toBe(17); clearCount += 1; },
-		});
-		await timerReady;
-		await scheduled();
-		expect(heartbeatCalls).toBe(1);
-		finishPass({ events: [] });
-		await running;
-		expect(heartbeatCalls).toBe(2);
-		expect(clearCount).toBe(1);
-	});
+  test('heartbeats during a long provider pass and clears the independent timer', async () => {
+    let fireHeartbeat;
+    let clearCount = 0;
+    let heartbeatCalls = 0;
+    let finishPass;
+    const timerReady = new Promise(resolve => {
+      fireHeartbeat = callback => { resolve(); return callback; };
+    });
+    const providerPass = new Promise(resolve => { finishPass = resolve; });
+    let scheduled;
+    const running = watchLoop({
+      ...ownerContext({ owner: {
+        heartbeat: async () => { heartbeatCalls += 1; return { ok: true }; },
+      } }),
+      runMonitorPass: async () => providerPass,
+      maxPasses: 1,
+      emit: () => {},
+      setInterval: callback => {
+        scheduled = fireHeartbeat(callback);
+        return 17;
+      },
+      clearInterval: timer => { expect(timer).toBe(17); clearCount += 1; },
+    });
+    await timerReady;
+    await scheduled();
+    expect(heartbeatCalls).toBe(1);
+    finishPass({ events: [] });
+    await running;
+    expect(heartbeatCalls).toBe(2);
+    expect(clearCount).toBe(1);
+  });
 
-	test('contains an independent heartbeat failure and exits after the active pass', async () => {
-		let scheduled;
-		let finishPass;
-		const providerPass = new Promise(resolve => { finishPass = resolve; });
-		const running = watchLoop({
-			...ownerContext({ owner: {
-				heartbeat: async () => ({ ok: false, reason: 'stale_generation' }),
-			} }),
-			runMonitorPass: async () => providerPass,
-			maxPasses: 2,
-			emit: () => {},
-			setInterval: callback => { scheduled = callback; return 19; },
-			clearInterval: () => {},
-		});
-		while (!scheduled) await Promise.resolve();
-		await scheduled();
-		finishPass({ events: [] });
-		expect(await running).toMatchObject({ started: true, passes: 1, reason: 'stale_generation' });
-	});
+  test('contains an independent heartbeat failure and exits after the active pass', async () => {
+    let scheduled;
+    let finishPass;
+    const providerPass = new Promise(resolve => { finishPass = resolve; });
+    const running = watchLoop({
+      ...ownerContext({ owner: {
+        heartbeat: async () => ({ ok: false, reason: 'stale_generation' }),
+      } }),
+      runMonitorPass: async () => providerPass,
+      maxPasses: 2,
+      emit: () => {},
+      setInterval: callback => { scheduled = callback; return 19; },
+      clearInterval: () => {},
+    });
+    while (!scheduled) await Promise.resolve();
+    await scheduled();
+    finishPass({ events: [] });
+    expect(await running).toMatchObject({ started: true, passes: 1, reason: 'stale_generation' });
+  });
 
   test('streams a confirmed failed check', async () => {
     const green = snap({ checks: [{ name: 'ci', class: 'green' }] });
