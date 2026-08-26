@@ -2460,6 +2460,35 @@ describe('watch owner successful-result postcondition validation', () => {
 		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
 	});
 
+	test('captures one immutable identity for both the evidence read and the mutation', async () => {
+		let repoReads = 0;
+		const ctx = {
+			get repo() {
+				repoReads += 1;
+				return repoReads === 1 ? 'acme/two' : 'acme/one';
+			},
+			pr: 962,
+		};
+		const reads = [];
+		let submitted;
+		const result = await owner.reserveStarting(ctx, {
+			controllerPid: CONTROLLER_PID, startedAt: NOW,
+		}, authorityOpts({
+			...driver,
+			watchOwnerRead: input => {
+				reads.push(input.repo);
+				return { ok: true, changed: false, reason: 'absent', row: null };
+			},
+			watchOwnerReserveStarting: input => {
+				submitted = input;
+				return driver.watchOwnerReserveStarting(input);
+			},
+		}));
+		expect(repoReads).toBe(1);
+		expect(reads).toEqual([submitted.repo]);
+		expect(result).toMatchObject({ ok: true, changed: true, reason: 'acquired' });
+	});
+
 	test('rejects an acquisition race after reading an absent owner', async () => {
 		const ctx = { repo: 'acme/forge', pr: 960 };
 		let raced = false;
