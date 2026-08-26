@@ -1051,4 +1051,46 @@ describe('one-release watcher authority migration gate', () => {
 		expect(second).toMatchObject({ ok: true, state: 'complete' });
 		expect(cleanupCalls).toBe(2);
 	});
+
+	test('refreshes the daemon lease between legacy provider verifications', async () => {
+		const api = authorityHarness();
+		const legacy = snapshot([entry('acme/repo', 7), entry('acme/repo', 8), entry('acme/repo', 9)]);
+		let verifications = 0;
+		const stamps = [];
+		const result = await run(api, legacy, {
+			token: 'lease-token',
+			gitCommonDir: '/repo/.git',
+			stampLease: (root, leaseOpts) => {
+				stamps.push({ root, token: leaseOpts.token, at: verifications });
+				return true;
+			},
+			ownsLease: () => true,
+			readProviderState: async identity => {
+				verifications += 1;
+				return identity.providerState;
+			},
+		});
+		expect(result).toMatchObject({ ok: true, state: 'complete' });
+		// One slow provider read must never starve the heartbeat for the next one:
+		// the lease is stamped before and after every entry, so a 3-entry migration
+		// can never span the 90s lease TTL without a refresh.
+		expect(stamps.every(value => value.root === '/repo' && value.token === 'lease-token')).toBe(true);
+		expect(new Set(stamps.map(value => value.at)).size).toBe(verifications + 1);
+		expect(verifications).toBe(3);
+	});
+
+	test('refuses to commit legacy migration once the lease has been reclaimed', async () => {
+		const api = authorityHarness();
+		const result = await run(api, snapshot([entry('acme/repo', 7)]), {
+			token: 'lease-token',
+			gitCommonDir: '/repo/.git',
+			stampLease: () => false,
+			ownsLease: (_root, leaseOpts) => leaseOpts.token === 'reclaimed-by-someone-else',
+		});
+		expect(result).toMatchObject({ ok: false, state: 'quarantined', reason: 'lease_lost' });
+		expect(api.calls).not.toContain('bind');
+		expect(api.calls).not.toContain('complete-gate');
+		expect(api.calls.some(value => value.startsWith('conflict:'))).toBe(false);
+		expect(api.rows.size).toBe(0);
+	});
 });
