@@ -1093,4 +1093,41 @@ describe('one-release watcher authority migration gate', () => {
 		expect(api.calls.some(value => value.startsWith('conflict:'))).toBe(false);
 		expect(api.rows.size).toBe(0);
 	});
+
+	test('treats a legacy PID whose process started after the legacy marker as reused, not live', async () => {
+		const api = authorityHarness();
+		const legacy = snapshot([entry('acme/repo', 7, { pid: 107, startedAt: '2026-08-19T00:00:00.000Z' })]);
+		const result = await run(api, legacy, {
+			isAlive: () => true,
+			// PID 107 is alive, but the process holding it booted two hours AFTER the
+			// legacy watcher recorded startedAt — the original watcher is long gone and
+			// this is an unrelated process that inherited the number.
+			pidStartedAt: async () => Date.parse('2026-08-19T02:00:00.000Z'),
+		});
+		expect(result).toMatchObject({ ok: true, state: 'complete' });
+		expect(api.calls).not.toContain('blocked:acme/repo#7:legacy_live_pid');
+		expect(api.rows.get('acme/repo#7')).toMatchObject({ phase: 'blocked', blockReason: 'legacy_lossy' });
+	});
+
+	test('still imports a genuinely live legacy PID as blocked/legacy_live_pid', async () => {
+		const api = authorityHarness();
+		const legacy = snapshot([entry('acme/repo', 7, { pid: 107, startedAt: '2026-08-19T00:00:00.000Z' })]);
+		const result = await run(api, legacy, {
+			isAlive: () => true,
+			pidStartedAt: async () => Date.parse('2026-08-18T23:59:00.000Z'),
+		});
+		expect(result).toMatchObject({ ok: true, state: 'complete' });
+		expect(api.rows.get('acme/repo#7')).toMatchObject({ phase: 'blocked', blockReason: 'legacy_live_pid' });
+	});
+
+	test('keeps a live legacy PID blocked when its process start time is unknown', async () => {
+		const api = authorityHarness();
+		const legacy = snapshot([entry('acme/repo', 7, { pid: 107, startedAt: '2026-08-19T00:00:00.000Z' })]);
+		const result = await run(api, legacy, {
+			isAlive: () => true,
+			pidStartedAt: async () => null,
+		});
+		expect(result).toMatchObject({ ok: true, state: 'complete' });
+		expect(api.rows.get('acme/repo#7')).toMatchObject({ phase: 'blocked', blockReason: 'legacy_live_pid' });
+	});
 });
