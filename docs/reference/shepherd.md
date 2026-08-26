@@ -22,13 +22,15 @@ There are two ways to run the shepherd, both under the single `forge shepherd`
 verb:
 
 - **`forge shepherd daemon` — the singleton reconcile daemon, the default
-  ownership model.** It acquires the machine-wide shepherd lease for this repo
+  coordinator.** It acquires the machine-wide election lease for this repo
   (exiting immediately as a clean no-op if a live daemon already owns it),
   heartbeats, and converges the *entire* PR world every ~60s: self-registering
-  hand-opened PRs, restarting killed watchers, reaping verified orphan watchers,
+  hand-opened PRs, recovering dead watcher generations, requesting cooperative
+  stops,
   converging CI check state into kernel verdicts, and retiring merged/closed PRs.
-  It **self-retires** — releases the lease, kills its verified children, exits —
-  once no PRs remain open. Forge wakes it automatically after a successful
+  It **self-retires** — releases the election lease and exits — once no PRs
+  remain open. Per-PR ownership is never stored in that lease. Forge wakes it
+  automatically after a successful
   supported session start, every successful push, and every successful
   non-dry-run ship. These are the only automatic firing seams; ordinary commands
   do not launch it. Once running, an agent does not poll: the daemon owns the
@@ -38,7 +40,8 @@ verb:
   bounded deltas/receipts, and exits. The point-in-time surface for a single PR
   (see *Bounded-pass model* below).
 - **`forge shepherd watch <pr>` / `watch --adopt`** — foreground streaming watch of
-  one PR, or (`--adopt`) adopt every currently-open PR into the watcher set.
+  one PR, or (`--adopt`) reserve owner rows and start watchers for every
+  currently-open PR.
 - **`forge shepherd events <pr> --since <seq>`** — the event deltas for a PR since a
   cursor; **`forge shepherd <pr> --pull --json` / `--bundle`** read the kernel verdict
   + rollup without taking any action.
@@ -48,6 +51,12 @@ an executable harness background-shell capability, Forge uses it so the process 
 bare CLI use falls back to a detached launch from the stable common repository
 root, never a disposable worktree cwd. No liveness check is needed first — the
 O_EXCL singleton lease makes a duplicate start a clean no-op.
+
+The daemon never kills watcher PIDs. A stop is a generation-conditional
+`running -> stop_requested` transition in the Kernel; the matching watcher sees
+that state, exits its loop, and releases only its own generation. A dead watcher
+is recovered only after fresh PID and provider evidence is gathered outside the
+transaction and the exact owner-row snapshot still matches inside it.
 
 Embedding boundary:
 
@@ -201,6 +210,13 @@ same verb (or `forge shepherd events`) on its own cadence.
 - **HEAD-changed abort.** Before any mutating action it re-reads the head SHA; if
   HEAD moved during the pass, the action aborts. The `shepherd:active` marker is
   advisory only — it is not mutual exclusion.
+- **One per-PR authority.** `kernel_pr_watch_owners` is the sole watcher owner
+  record. The daemon lease elects one reconciler but contains no watcher list;
+  journals and legacy PID/marker files cannot authorize a transition.
+- **Fail-closed evidence.** Kernel unavailability, corrupt owner rows, stale
+  generations, changed provider/PID/receipt evidence, and an incomplete legacy
+  migration gate block mutation and are retried. No unlocked or filesystem
+  fallback becomes authority.
 - **Auth taxonomy.** 401 (expiry) pauses and surfaces; 403 insufficient-scope is
   a hard-stop; 403 with `Retry-After` honors the delay and resumes next pass.
 
@@ -260,12 +276,29 @@ neutral `forge/pr-monitor` check.
 
 ## State
 
-Public Memory is the durable monitor authority; public Flow reducers replay its
-bounded event and watcher-process checkpoints after restart. The per-PR journal
-under `.forge/pr-monitor/<repo>-<pr>/` is retained as a compatibility delivery
-surface for `forge shepherd watch` and `events --since`, not as authority.
-Merged/closed evidence records one idempotent terminal MonitorReceipt that drives
-cleanup and the `verify` handoff; incomplete or conflicting replay fails closed.
+The shared Kernel database stores one versioned `kernel_pr_watch_owners` row per
+canonical `(repo, pr)`. Its generation-conditional phases are `starting`,
+`running`, `stop_requested`, `terminal_pending`, `complete`, and `blocked`.
+Starts reserve a store-minted generation before spawning; the child binds its
+PID to that exact generation; heartbeats, stop requests, terminal receipts,
+recovery, release, and reopen are narrow compare-and-swap transitions. Provider,
+PID, and receipt checks happen outside the short SQLite transaction, followed by
+an exact snapshot check inside it.
+
+Public Memory and the per-PR journal under
+`.forge/pr-monitor/<repo>-<pr>/` remain durable delivery and replay surfaces for
+monitor events, verdicts, `forge shepherd watch`, and `events --since`; neither
+is watcher ownership authority. A terminal receipt first moves the owner row to
+`terminal_pending`; a later transaction completes it only after the watcher PID
+is confirmed dead and the receipt/provider evidence still matches.
+
+Upgrade from the retired filesystem model is fenced by the repository-local
+`kernel_pr_watch_migration_gate`. The importer publishes `quarantined`, obtains
+two identical bounded snapshots of the old lease/PID/marker evidence, binds that
+snapshot hash before importing one PR per transaction, durably rereads the rows
+and source, and then completes the exact gate/hash. Corrupt, changed, live-PID,
+or unmappable evidence stays fail-closed as `blocked` or `conflict`. After the
+gate is complete, legacy evidence is cleanup-only and never regains authority.
 
 For 0.1, no receipt grants continuing lease authority. Consequential paths
 re-probe live ownership, while canonical LeaseReceipt epoch/scope and the

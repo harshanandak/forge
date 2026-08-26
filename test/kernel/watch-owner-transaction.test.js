@@ -169,7 +169,7 @@ describe('watch owner dedicated SQLite transaction', () => {
 		expect(rows[0].generation).toBe(results.find(result => result.ok && result.changed).record.generation);
 	}, 20_000);
 
-	test('direct recovery preserves a watcher after cooperative stop is requested', () => {
+	test('direct recovery accepts a dead watcher after cooperative stop is requested', () => {
 		const repo = 'acme/forge';
 		const pr = 76;
 		const controllerPid = 976;
@@ -188,8 +188,15 @@ describe('watch owner dedicated SQLite transaction', () => {
 			now: '2026-08-19T08:00:03.000Z', expectedSnapshot: before,
 		});
 
-		expect(result).toEqual({ ok: false, changed: false, reason: 'phase_mismatch', row: before });
-		expect(driver.watchOwnerRead({ repo, pr }).row).toEqual(before);
+		// A watcher that exits after requestStop() lands but before releaseNonterminal()
+		// succeeds leaves exactly this row. It recovers into a fresh starting row like
+		// any other dead nonterminal watcher; refusing it strands the PR unwatched.
+		expect(result).toMatchObject({
+			ok: true, changed: true, reason: 'recovered',
+			row: { phase: 'starting', controller_pid: 2_976, watcher_pid: null, heartbeat_at: null },
+		});
+		expect(result.row.generation).not.toBe(before.generation);
+		expect(driver.watchOwnerRead({ repo, pr }).row).toEqual(result.row);
 	});
 
 	test('N-process legacy starting import converges on one provenance row', async () => {

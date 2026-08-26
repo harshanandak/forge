@@ -16,14 +16,30 @@ function fakeChild(pid = 4242) {
   };
 }
 
+function ownerHarness(reservation = {}) {
+  const record = {
+    repo: 'harshanandak/forge', pr: 42, generation: 'generation-1', phase: 'starting',
+    controllerPid: process.pid, watcherPid: null, startedAt: '2026-08-19T12:00:00.000Z',
+    updatedAt: '2026-08-19T12:00:00.000Z', heartbeatAt: null,
+    terminalReceiptId: null, blockReason: null, legacyEvidenceHash: null,
+  };
+  return {
+    readMigrationGate: async () => ({ ok: true, changed: false, reason: 'read', gate: { state: 'complete' } }),
+    reserveStarting: async () => ({ ok: true, changed: true, reason: 'acquired', record, ...reservation }),
+    abortStarting: async () => ({ ok: true, changed: true, reason: 'aborted', record: null }),
+  };
+}
+
 describe('startPrWatcherDetached', () => {
-  test('spawns a detached, unref\'d `shepherd watch <pr>` and returns synchronously', () => {
+  test('spawns a detached, unref\'d `shepherd watch <pr>` without running the loop inline', async () => {
     const calls = [];
     const child = fakeChild(999);
     const start = Date.now();
-    const res = startPrWatcherDetached({
+    const res = await startPrWatcherDetached({
       prNumber: 42,
       cwd: '/repo',
+      repository: 'harshanandak/forge',
+      owner: ownerHarness(),
       resolveSlug: () => null, // skip the idempotency probe → straight to spawn
       spawn: (bin, args, opts) => { calls.push({ bin, args, opts }); return child; },
     });
@@ -40,61 +56,65 @@ describe('startPrWatcherDetached', () => {
     expect(child.wasUnrefd()).toBe(true);
   });
 
-  test('is a no-op when a live watcher already owns the PR (spawn not called)', () => {
+  test('is a no-op when an owner row already owns the PR (spawn not called)', async () => {
     let spawned = false;
-    let journalArgs;
-    const res = startPrWatcherDetached({
+    const res = await startPrWatcherDetached({
       prNumber: 7,
       cwd: '/repo/.worktrees/feature',
-      gitCommonDir: '/repo/.GIT',
-      resolveSlug: () => 'forge',
-      journal: {
-        journalDir: (args) => { journalArgs = args; return '/repo/.forge/pr-monitor/forge-7'; },
-        watcherRunning: () => true,
-      },
+      repository: 'harshanandak/forge',
+      owner: ownerHarness({ ok: false, changed: false, reason: 'busy', record: { phase: 'running' } }),
       spawn: () => { spawned = true; return fakeChild(); },
     });
     expect(res.started).toBe(false);
-    expect(res.reason).toBe('already-running');
+    expect(res.reason).toBe('busy');
     expect(spawned).toBe(false);
-    expect(journalArgs.gitCommonDir).toBe('/repo/.GIT');
   });
 
-  test('spawns when the slug resolves but no watcher is live yet', () => {
+  test('spawns when the owner reservation succeeds', async () => {
     let spawned = false;
-    const res = startPrWatcherDetached({
+    const res = await startPrWatcherDetached({
       prNumber: 8,
       cwd: '/repo',
-      resolveGitCommonDir: () => '/repo/.git',
-      resolveSlug: () => 'forge',
-      journal: {
-        journalDir: () => '/repo/.forge/pr-monitor/forge-8',
-        watcherRunning: () => false,
-      },
+      repository: 'harshanandak/forge',
+      owner: ownerHarness(),
       spawn: () => { spawned = true; return fakeChild(1234); },
     });
     expect(spawned).toBe(true);
     expect(res.started).toBe(true);
   });
 
-  test('attaches an error listener so an ASYNC spawn error never crashes ship', () => {
+  test('attaches an error listener so an ASYNC spawn error never crashes ship', async () => {
     // spawn() can emit 'error' (ENOENT/EACCES) AFTER returning; on an EventEmitter
     // with no 'error' listener that emit THROWS (would be an unhandled exception in
     // the ship process). The no-op listener we attach must absorb it.
     const child = new EventEmitter();
     child.pid = 555;
     child.unref = () => {};
-    const res = startPrWatcherDetached({ prNumber: 3, cwd: '/repo', resolveSlug: () => null, spawn: () => child });
+    let abortRejectionConsumed = false;
+    const owner = ownerHarness();
+    owner.abortStarting = () => ({
+      then(_resolve, reject) {
+        abortRejectionConsumed = true;
+        reject(new Error('owner authority unavailable'));
+      },
+    });
+    const res = await startPrWatcherDetached({
+      prNumber: 3, cwd: '/repo', repository: 'harshanandak/forge', owner, spawn: () => child,
+    });
     expect(res.started).toBe(true);
     expect(child.listenerCount('error')).toBe(1);
     // With the listener present, a post-return async error is absorbed, not thrown.
     expect(() => child.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }))).not.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(abortRejectionConsumed).toBe(true);
   });
 
-  test('never throws when spawn fails — degrades to not-started', () => {
-    const res = startPrWatcherDetached({
+  test('never throws when spawn fails — degrades to not-started', async () => {
+    const res = await startPrWatcherDetached({
       prNumber: 9,
       cwd: '/repo',
+      repository: 'harshanandak/forge',
+      owner: ownerHarness(),
       resolveSlug: () => null,
       spawn: () => { throw new Error('spawn EACCES'); },
     });
@@ -102,9 +122,9 @@ describe('startPrWatcherDetached', () => {
     expect(res.reason).toMatch(/spawn EACCES/);
   });
 
-  test('returns not-started (no spawn) when no PR number is given', () => {
+  test('returns not-started (no spawn) when no PR number is given', async () => {
     let spawned = false;
-    const res = startPrWatcherDetached({ prNumber: undefined, spawn: () => { spawned = true; return fakeChild(); } });
+    const res = await startPrWatcherDetached({ prNumber: undefined, spawn: () => { spawned = true; return fakeChild(); } });
     expect(res.started).toBe(false);
     expect(res.reason).toBe('no-pr');
     expect(spawned).toBe(false);
@@ -112,14 +132,14 @@ describe('startPrWatcherDetached', () => {
 });
 
 describe('defaultResolveSlug', () => {
-  test('extracts the bare repo name from an SSH remote url', () => {
+  test('extracts the canonical repository from an SSH remote url', () => {
     const slug = defaultResolveSlug({ cwd: '/repo', exec: () => 'git@github.com:harshanandak/forge.git\n' });
-    expect(slug).toBe('forge');
+    expect(slug).toBe('harshanandak/forge');
   });
 
-  test('extracts the bare repo name from an HTTPS remote url', () => {
+  test('extracts the canonical repository from an HTTPS remote url', () => {
     const slug = defaultResolveSlug({ cwd: '/repo', exec: () => 'https://github.com/harshanandak/forge\n' });
-    expect(slug).toBe('forge');
+    expect(slug).toBe('harshanandak/forge');
   });
 
   test('returns null when the git command fails', () => {

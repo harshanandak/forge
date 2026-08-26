@@ -1,252 +1,180 @@
 'use strict';
 
-const { describe, test, expect } = require('bun:test');
+const { describe, expect, test } = require('bun:test');
 const fs = require('node:fs');
+const path = require('node:path');
 const { reconcile, decideLifecycle, LIFECYCLE_STATUS } = require('../../lib/pr-monitor/reconcile');
 
-// W-S4a §1/§6: the reconciler is a PURE diff of desired (GitHub ∩ kernel) vs
-// observed (kernel rows + lease watchers + live pids). Zero I/O — every case here
-// is a fixture in, action-set out. `now` is injected (unused by current rules).
-const NOW = 1_700_000_000_000;
+const REPO = 'acme/forge';
+const NOW = '2026-08-19T00:00:00.000Z';
+const GATE = { state: 'complete', snapshot_hash: 'a'.repeat(64) };
 
-function pr(number, headSha, extra = {}) {
-	return { repo: 'owner/r', number, branch: `feat/${number}`, headSha, issueId: null, worktreeId: null, journalPtr: null, ...extra };
-}
-function kRow(number, headSha, state = 'open', extra = {}) {
-	// A complete kernel_pr row (listOpenPrs is SELECT *): include branch + soft links
-	// so link-drift detection has real values to compare (defaults match pr()).
-	return { id: `x#${number}`, number, repo: 'owner/r', head_sha: headSha, state, branch: `feat/${number}`, issue_id: null, worktree_id: null, journal_ptr: null, ...extra };
+function pr(number, fields = {}) {
+	return {
+		repo: REPO, number, branch: `pr-${number}`, headSha: `sha-${number}`,
+		issueId: null, worktreeId: null, journalPtr: null, ...fields,
+	};
 }
 
-describe('reconcile() — pure diff rules', () => {
-	test('new PR (D has #5, K empty, W empty) → upsertPrRow then startWatcher', () => {
-		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5')] };
-		const observed = { lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] };
+function owner(number, phase, fields = {}) {
+	return {
+		version: 1, repo: REPO, pr: number, generation: `generation-${number}`,
+		phase, controllerPid: null, watcherPid: null, startedAt: NOW, updatedAt: NOW,
+		heartbeatAt: null, terminalReceiptId: null, blockReason: null,
+		legacyEvidenceHash: null, ...fields,
+	};
+}
 
-		const { actions } = reconcile(desired, observed, NOW);
+function desired(openPrs = []) {
+	return { openPrs, repo: REPO, gitCommonDir: '/repo/.git', listingOk: true, repositoryOk: true };
+}
 
-		expect(actions.map(a => a.type)).toEqual(['upsertPrRow', 'startWatcher']);
-		expect(actions[0].row.number).toBe(5);
-		expect(actions[0].row.head_sha).toBe('sha5');
-		// git_common_dir is part of the kernel_pr natural key — must be carried from
-		// desired so broker.upsertPr(action.row) is directly writable (Codex #426).
-		expect(actions[0].row.git_common_dir).toBe('/r/.git');
-		expect(actions[1].pr.number).toBe(5);
+function observed(prRows = [], ownerRows = [], fields = {}) {
+	return { prRows, ownerRows, ownerRowsOk: true, migrationGate: GATE, ...fields };
+}
+
+describe('reconcile() — owner-row diff rules', () => {
+	test('new desired PR upserts linkage before reserving one watcher generation', () => {
+		const actions = reconcile(desired([pr(5)]), observed()).actions;
+		expect(actions.map(action => action.type)).toEqual(['upsertPrRow', 'reserveWatcher']);
+		expect(actions[0].row).toMatchObject({ repo: REPO, number: 5, head_sha: 'sha-5' });
+		expect(actions[1].pr).toMatchObject({ repo: REPO, number: 5 });
 	});
 
-	test('closed PR (D empty, K open #5, W watcher{pr:5}) → stopWatcher then retire', () => {
-		const desired = { gitCommonDir: '/r/.git', openPrs: [] };
-		const observed = {
-			lease: { watchers: [{ pr: 5, pid: null, startedAt: null }] },
-			leaseFresh: true, prRows: [kRow(5, 'sha5')], liveWatcherPids: [],
-		};
-
-		const { actions } = reconcile(desired, observed, NOW);
-
-		expect(actions.map(a => a.type)).toEqual(['stopWatcher', 'retire']);
-		expect(actions[0].pr.number).toBe(5);
-		expect(actions[1].pr.number).toBe(5);
+	test('closed PR retires linkage while a live watcher remains authoritative', () => {
+		const row = { repo: REPO, number: 5, state: 'open', head_sha: 'sha-5' };
+		const running = owner(5, 'running', { watcherPid: 55, watcherAlive: true });
+		const actions = reconcile(desired(), observed([row], [running])).actions;
+		expect(actions.map(action => action.type)).toEqual(['retire']);
+		expect(actions.some(action => action.type === 'requestStop')).toBe(false);
 	});
 
-	test('orphan PID (D empty, live watcher pid still claiming #5) → reapOrphan', () => {
-		const desired = { gitCommonDir: '/r/.git', openPrs: [] };
-		const observed = {
-			lease: { watchers: [{ pr: 5, pid: 999, startedAt: 't0' }] },
-			leaseFresh: true, prRows: [], liveWatcherPids: [{ pid: 999, startedAt: 't0' }],
-		};
-
-		const { actions } = reconcile(desired, observed, NOW);
-
-		expect(actions).toContainEqual({ type: 'reapOrphan', pid: 999, startedAt: 't0' });
-	});
-
-	test('already-converged (D=K=W agree) → no actions', () => {
-		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5')] };
-		const observed = {
-			lease: { watchers: [{ pr: 5, pid: 100, startedAt: 't0' }] },
-			leaseFresh: true, prRows: [kRow(5, 'sha5')], liveWatcherPids: [{ pid: 100, startedAt: 't0' }],
-		};
-
-		expect(reconcile(desired, observed, NOW)).toEqual({ actions: [] });
-	});
-
-	test('head drift (D #5@shaB, K #5@shaA) → upsertPrRow with head_sha=shaB', () => {
-		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'shaB')] };
-		const observed = {
-			lease: { watchers: [{ pr: 5, pid: 100, startedAt: 't0' }] },
-			leaseFresh: true, prRows: [kRow(5, 'shaA')], liveWatcherPids: [{ pid: 100, startedAt: 't0' }],
-		};
-
-		const { actions } = reconcile(desired, observed, NOW);
-
-		const upsert = actions.find(a => a.type === 'upsertPrRow');
-		expect(upsert).toBeDefined();
-		expect(upsert.row.head_sha).toBe('shaB');
-		expect(actions.some(a => a.type === 'startWatcher')).toBe(false);
-	});
-
-	test('same head but a newly-discovered soft link → upsertPrRow refreshes (never left unlinked)', () => {
-		// A worktree/issue discovered AFTER the row was first registered must reach the
-		// ledger even though the head is unchanged (Codex #426).
-		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5', { issueId: 'ISSUE-9', worktreeId: 'WT-9' })] };
-		const observed = {
-			lease: { watchers: [{ pr: 5, pid: 100, startedAt: 't0' }] },
-			leaseFresh: true,
-			prRows: [kRow(5, 'sha5')], // issue_id/worktree_id still null in kernel
-			liveWatcherPids: [{ pid: 100, startedAt: 't0' }],
-		};
-
-		const { actions } = reconcile(desired, observed, NOW);
-
-		const upsert = actions.find(a => a.type === 'upsertPrRow');
-		expect(upsert).toBeDefined();
-		expect(upsert.row.issue_id).toBe('ISSUE-9');
-		expect(upsert.row.worktree_id).toBe('WT-9');
-		// Head unchanged + watcher already live → no startWatcher, no reap.
-		expect(actions.some(a => a.type === 'startWatcher')).toBe(false);
-	});
-
-	test('same head AND same links → still converged (no needless upsert)', () => {
-		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5', { issueId: 'ISSUE-9' })] };
-		const observed = {
-			lease: { watchers: [{ pr: 5, pid: 100, startedAt: 't0' }] },
-			leaseFresh: true,
-			prRows: [kRow(5, 'sha5', 'open', { issue_id: 'ISSUE-9' })],
-			liveWatcherPids: [{ pid: 100, startedAt: 't0' }],
-		};
-
-		expect(reconcile(desired, observed, NOW)).toEqual({ actions: [] });
-	});
-
-	test('composite (repo, number) key: a stale renamed-slug row is retired, not masked by the new slug', () => {
-		// Two rows can share a number under one git_common_dir after a repo rename; the
-		// natural key includes repo, so the diff must too (Codex #426).
-		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5', { repo: 'owner/new' })] };
-		const observed = {
-			lease: { watchers: [] },
-			leaseFresh: true,
-			prRows: [kRow(5, 'sha5', 'open', { repo: 'owner/old' })], // stale OLD slug, same number
-			liveWatcherPids: [],
-		};
-
-		const { actions } = reconcile(desired, observed, NOW);
-
-		// The old-slug row (no longer desired) is retired…
-		expect(actions).toContainEqual({ type: 'retire', pr: { repo: 'owner/old', number: 5 } });
-		// …and the new-slug PR is registered (kernel has no owner/new#5 row — not masked).
-		const upsert = actions.find(a => a.type === 'upsertPrRow');
-		expect(upsert).toBeDefined();
-		expect(upsert.row.repo).toBe('owner/new');
-	});
-
-	test('legacy numeric watcher entry is never reaped (unverifiable pid)', () => {
-		const desired = { gitCommonDir: '/r/.git', openPrs: [] };
-		const observed = {
-			lease: { watchers: [7] }, // legacy shape: bare pr number, no pid/startedAt
-			leaseFresh: true, prRows: [], liveWatcherPids: [{ pid: 7, startedAt: 't0' }],
-		};
-
-		const { actions } = reconcile(desired, observed, NOW);
-
-		expect(actions.some(a => a.type === 'reapOrphan')).toBe(false);
-		expect(actions).toContainEqual({ type: 'stopWatcher', pr: { number: 7 } });
-	});
-
-	test('PURITY: twice with frozen inputs → deep-equal, inputs unmutated', () => {
-		const desired = Object.freeze({ gitCommonDir: '/r/.git', openPrs: Object.freeze([Object.freeze(pr(5, 'sha5'))]) });
-		const observed = Object.freeze({
-			lease: Object.freeze({ watchers: Object.freeze([Object.freeze({ pr: 9, pid: 42, startedAt: 't0' })]) }),
-			leaseFresh: false, prRows: Object.freeze([Object.freeze(kRow(9, 'sha9'))]),
-			liveWatcherPids: Object.freeze([Object.freeze({ pid: 42, startedAt: 't0' })]),
+	test('dead terminal owner is completed before the closed linkage is retired', () => {
+		const row = { repo: REPO, number: 5, state: 'open', head_sha: 'sha-5' };
+		const terminal = owner(5, 'terminal_pending', {
+			watcherPid: 55, watcherAlive: false, terminalReceiptId: 'receipt-5',
 		});
-
-		const first = reconcile(desired, observed, NOW);
-		const second = reconcile(desired, observed, NOW);
-		expect(second).toEqual(first);
+		const actions = reconcile(desired(), observed([row], [terminal])).actions;
+		expect(actions.map(action => action.type)).toEqual(['completeTerminal', 'retire']);
 	});
 
-	test('PURITY: source requires neither fs nor child_process', () => {
-		const src = fs.readFileSync(require.resolve('../../lib/pr-monitor/reconcile.js'), 'utf8');
-		expect(src).not.toMatch(/require\(\s*['"]node:fs['"]/);
-		expect(src).not.toMatch(/require\(\s*['"]fs['"]/);
-		expect(src).not.toMatch(/require\(\s*['"](node:)?child_process['"]/);
-		expect(src).not.toMatch(/require\(/); // pure module: no requires at all
-	});
-});
+	test('dead starting and running owners recover through their exact row fences', () => {
+		const starting = reconcile(desired([pr(5)]), observed([], [
+			owner(5, 'starting', { controllerPid: 50, controllerAlive: false }),
+		])).actions;
+		expect(starting.map(action => action.type)).toEqual(['upsertPrRow', 'recoverStarting']);
 
-describe('decideLifecycle() - fail-closed lifecycle authority', () => {
-	test('adopts a desired PR once when its recorded watcher is not live', () => {
-		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5')] };
-		const observed = {
-			lease: { watchers: [{ pr: 5, pid: 100, startedAt: 'old' }] },
-			leaseFresh: true,
-			prRows: [kRow(5, 'sha5')],
-			liveWatcherPids: [],
+		const running = reconcile(desired([pr(5)]), observed([], [
+			owner(5, 'running', { watcherPid: 55, watcherAlive: false }),
+		])).actions;
+		expect(running.map(action => action.type)).toEqual(['upsertPrRow', 'recoverWatcher']);
+	});
+
+	test('an open PR reopens only from its exact complete generation and receipt', () => {
+		const complete = owner(5, 'complete', { terminalReceiptId: 'receipt-5' });
+		const actions = reconcile(desired([pr(5)]), observed([], [complete])).actions;
+		expect(actions.map(action => action.type)).toEqual(['upsertPrRow', 'reopenWatcher']);
+		expect(actions[1].owner).toEqual(complete);
+	});
+
+	test('head or soft-link drift refreshes the exact repository row without duplicating ownership', () => {
+		const kernelRow = {
+			repo: REPO, number: 5, state: 'open', branch: 'pr-5', head_sha: 'old',
+			issue_id: null, worktree_id: null, journal_ptr: null,
 		};
-
-		expect(decideLifecycle(desired, observed, NOW)).toEqual({
-			status: LIFECYCLE_STATUS.PASS,
-			reason: 'lifecycle evidence accepted',
-			actions: [{ type: 'startWatcher', pr: { repo: 'owner/r', number: 5, branch: 'feat/5', headSha: 'sha5' } }],
-		});
+		const actions = reconcile(desired([pr(5, { issueId: 'issue-5' })]), observed([
+			kernelRow,
+		], [owner(5, 'running', { watcherPid: 55, watcherAlive: true })])).actions;
+		expect(actions).toHaveLength(1);
+		expect(actions[0]).toMatchObject({ type: 'upsertPrRow', row: { head_sha: 'sha-5', issue_id: 'issue-5' } });
 	});
 
-	test('identical duplicate desired rows and watcher rows never duplicate actions', () => {
-		const item = pr(5, 'sha5');
-		const watcher = { pr: 9, pid: 99, startedAt: 't9' };
-		const desired = { gitCommonDir: '/r/.git', openPrs: [item, { ...item }] };
-		const observed = {
-			lease: { watchers: [watcher, { ...watcher }] },
-			leaseFresh: true,
-			prRows: [],
-			liveWatcherPids: [{ pid: 99, startedAt: 't9' }],
+	test('repository plus PR is the key, so a renamed-slug row is ignored during canonical reconciliation', () => {
+		const stale = { repo: 'old/forge', number: 5, state: 'open', head_sha: 'sha-5' };
+		const actions = reconcile(desired([pr(5)]), observed([stale])).actions;
+		expect(actions.map(action => action.type)).toEqual(['upsertPrRow', 'reserveWatcher']);
+	});
+
+	test('bare legacy repository rows are coalesced into canonical linkage and retired', () => {
+		const canonical = { repo: REPO, number: 5, state: 'open', issue_id: 'issue-5' };
+		const legacy = { repo: 'forge', number: 5, state: 'open', head_sha: 'sha-5', worktree_id: 'tree-5' };
+		const actions = reconcile(desired([pr(5)]), observed([canonical, legacy])).actions;
+		expect(actions.map(action => action.type)).toEqual(['upsertPrRow', 'reserveWatcher', 'retire']);
+		expect(actions[0].row).toMatchObject({
+			repo: REPO, number: 5, head_sha: 'sha-5', issue_id: 'issue-5', worktree_id: 'tree-5',
+		});
+		expect(actions[2].pr).toEqual({ repo: 'forge', number: 5 });
+
+		const conflict = decideLifecycle(desired([pr(5)]), observed([
+			{ ...canonical, head_sha: 'canonical-sha' },
+			{ ...legacy, head_sha: 'legacy-sha' },
+		]), Date.parse(NOW));
+		expect(conflict).toMatchObject({ status: LIFECYCLE_STATUS.CONFLICT });
+	});
+
+	test('ignores owner and PR rows from repositories other than the desired canonical repo', () => {
+		const actions = reconcile(
+			{ ...desired(), repo: REPO },
+			observed([
+				{ repo: 'other/project', number: 5, state: 'open', head_sha: 'sha-other' },
+			], [
+				owner(5, 'running', { repo: 'other/project', watcherAlive: true }),
+			]),
+		).actions;
+		expect(actions).toEqual([]);
+	});
+
+	test('missing desired repository cannot retire or deactivate foreign rows', () => {
+		const actions = reconcile(
+			{ ...desired(), repo: undefined },
+			observed([
+				{ repo: 'other/project', number: 5, state: 'open', head_sha: 'sha-other' },
+			], [
+				owner(5, 'running', { repo: 'other/project', watcherAlive: false }),
+			]),
+		).actions;
+		expect(actions).toEqual([]);
+	});
+
+	test('already-converged desired, linkage, and owner rows emit no actions', () => {
+		const kernelRow = {
+			repo: REPO, number: 5, state: 'open', branch: 'pr-5', head_sha: 'sha-5',
+			issue_id: null, worktree_id: null, journal_ptr: null,
 		};
-
-		const decision = decideLifecycle(desired, observed, NOW);
-		expect(decision.status).toBe(LIFECYCLE_STATUS.PASS);
-		expect(decision.actions.filter(action => action.type === 'upsertPrRow')).toHaveLength(1);
-		expect(decision.actions.filter(action => action.type === 'startWatcher')).toHaveLength(1);
-		expect(decision.actions.filter(action => action.type === 'stopWatcher')).toHaveLength(1);
-		expect(decision.actions.filter(action => action.type === 'reapOrphan')).toHaveLength(1);
+		expect(reconcile(desired([pr(5)]), observed([
+			kernelRow,
+		], [owner(5, 'running', { watcherPid: 55, watcherAlive: true })])).actions).toEqual([]);
 	});
 
-	test('conflicting duplicate PR authority fails closed with zero actions', () => {
-		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha-a'), pr(5, 'sha-b')] };
-		const observed = { lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] };
+	test('identical desired duplicates converge once while conflicting authority fails closed', () => {
+		const duplicate = pr(5);
+		const accepted = decideLifecycle(desired([duplicate, { ...duplicate }]), observed());
+		expect(accepted.status).toBe(LIFECYCLE_STATUS.PASS);
+		expect(accepted.actions.map(action => action.type)).toEqual(['upsertPrRow', 'reserveWatcher']);
 
-		expect(decideLifecycle(desired, observed, NOW)).toMatchObject({
-			status: LIFECYCLE_STATUS.CONFLICT,
-			actions: [],
-		});
+		const conflict = decideLifecycle(desired([duplicate, { ...duplicate, headSha: 'other' }]), observed());
+		expect(conflict).toMatchObject({ status: LIFECYCLE_STATUS.CONFLICT, actions: [] });
+
+		const duplicateOwners = decideLifecycle(desired([duplicate]), observed([], [
+			owner(5, 'running'), owner(5, 'running'),
+		]));
+		expect(duplicateOwners).toMatchObject({ status: LIFECYCLE_STATUS.CONFLICT, actions: [] });
 	});
 
-	test('incomplete enumeration and a stale existing lease both fail closed', () => {
-		const observed = { lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] };
-		expect(decideLifecycle({ gitCommonDir: '/r/.git', openPrs: [], listingOk: false }, observed, NOW)).toMatchObject({
-			status: LIFECYCLE_STATUS.INCOMPLETE,
-			actions: [],
-		});
-		expect(decideLifecycle({ gitCommonDir: '/r/.git', openPrs: [] }, {
-			...observed,
-			lease: { watchers: [] },
-			leaseFresh: false,
-		}, NOW)).toMatchObject({
-			status: LIFECYCLE_STATUS.STALE,
-			actions: [],
-		});
+	test('incomplete listing, owner enumeration, or migration gate fails closed', () => {
+		expect(decideLifecycle({ ...desired([pr(5)]), listingOk: false }, observed()).actions).toEqual([]);
+		expect(decideLifecycle(desired([pr(5)]), observed([], [], { ownerRowsOk: false })).actions).toEqual([]);
+		expect(decideLifecycle(desired([pr(5)]), observed([], [], {
+			migrationGate: { state: 'quarantined' },
+		})).actions).toEqual([]);
 	});
 
-	test('a present lease without watchers or missing lease evidence fails closed before adoption', () => {
-		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5')] };
-		for (const observed of [
-			{ lease: {}, leaseFresh: true, prRows: [], liveWatcherPids: [] },
-			{ leaseFresh: true, prRows: [], liveWatcherPids: [] },
-		]) {
-			expect(decideLifecycle(desired, observed, NOW)).toMatchObject({
-				status: LIFECYCLE_STATUS.INCOMPLETE,
-				actions: [],
-			});
-			expect(reconcile(desired, observed, NOW)).toEqual({ actions: [] });
-		}
+	test('is deterministic, input-pure, and free of filesystem or process dependencies', () => {
+		const left = Object.freeze(desired([Object.freeze(pr(5))]));
+		const right = Object.freeze(observed());
+		expect(reconcile(left, right, 1)).toEqual(reconcile(left, right, 2));
+		const source = fs.readFileSync(path.join(__dirname, '../../lib/pr-monitor/reconcile.js'), 'utf8');
+		expect(source).not.toContain("require('node:fs')");
+		expect(source).not.toContain("require('node:child_process')");
 	});
 });

@@ -62,7 +62,13 @@ const KNOWN_TARGETABLE_FILES = new Set([
   'lib/kernel/schema.js',
   'lib/kernel/migrations.js',
   'lib/kernel/sqlite-driver.js',
+  'lib/commands/shepherd.js',
   'lib/pr-monitor/watch-owner.js',
+  'lib/pr-monitor/reconcile.js',
+  'lib/pr-monitor/reconcile-executor.js',
+  'lib/pr-monitor/watch-lifecycle.js',
+  'lib/pr-monitor/shepherd-lease.js',
+  'lib/pr-monitor/monitor.js',
 ]);
 
 const ALWAYS_RUN_RISK_TEST_TARGETS = [

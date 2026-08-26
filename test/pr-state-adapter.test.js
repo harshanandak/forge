@@ -100,6 +100,24 @@ describe('PrStateAdapter', () => {
     expect(state.checks.find((c) => c.name === 'lint').conclusion).toBe('FAILURE');
   });
 
+  test('pins every numeric PR read to the configured upstream repository', async () => {
+    const committedAt = '2026-08-19T10:00:00.000Z';
+    const { run, calls } = makeRunner([
+      ['--json commits', committedAt],
+      ['pr view', PR_VIEW_JSON],
+    ]);
+    const adapter = new PrStateAdapter({ gh: run, git: run, repository: 'upstream/forge' });
+
+    await adapter.readState('541');
+    await adapter.readHeadCommitTime({ pr: '541' });
+
+    const reads = calls.filter(call => call.cmd === 'gh' && call.args[0] === 'pr' && call.args[1] === 'view');
+    expect(reads).toHaveLength(2);
+    for (const read of reads) {
+      expect(read.args).toEqual(expect.arrayContaining(['--repo', 'upstream/forge']));
+    }
+  });
+
   test('readState marks missing lifecycle fields and malformed optional rollup unreadable', async () => {
     for (const payload of [
       { headRefOid: 'a'.repeat(40), statusCheckRollup: [], isDraft: false },

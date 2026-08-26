@@ -261,13 +261,17 @@ describe('pollEvents (events --since)', () => {
   test('returns only events with seq > since and does not re-run under a watcher', async () => {
     await runMonitorPass({ dir, gather: async () => snap({ checks: [{ name: 'ci', class: 'green' }] }), now });
     await runMonitorPass({ dir, gather: async () => snap({ checks: [{ name: 'ci', class: 'failed' }] }), now });
-    const res = await pollEvents({ dir, gather: async () => { throw new Error('must not run'); }, since: 1, watcherRunning: () => true });
+    const res = await pollEvents({ dir, gather: async () => { throw new Error('must not run'); }, since: 1, isOwnerRunning: async () => true });
     expect(res.events.every((e) => e.seq > 1)).toBe(true);
     expect(res.ranPass).toBe(false);
   });
 
   test('runs an inline pass when no watcher owns the PR', async () => {
-    const res = await pollEvents({ dir, gather: async () => snap(), since: 0, now, watcherRunning: () => false });
+    const res = await pollEvents({
+      dir, gather: async () => snap(), since: 0, now,
+      isOwnerRunning: async () => false,
+      owner: { readMigrationGate: async () => ({ ok: true, gate: { state: 'complete' } }) },
+    });
     expect(res.ranPass).toBe(true);
     expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
   });
@@ -287,7 +291,7 @@ describe('pollEvents (events --since)', () => {
       dir,
       gather: async () => { throw new Error('must not run'); },
       since: 0,
-      watcherRunning: () => true,
+      isOwnerRunning: async () => true,
     });
 
     expect(res.overflow).toBe(true);
@@ -303,7 +307,7 @@ describe('pollEvents (events --since)', () => {
     await runMonitorPass(ctx);
     current = snap({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
 
-    const res = await pollEvents({ ...ctx, since: 0, watcherRunning: () => false });
+    const res = await pollEvents({ ...ctx, since: 0, isOwnerRunning: async () => false, owner: { readMigrationGate: async () => ({ ok: true, gate: { state: 'complete' } }) } });
 
     expect(res.continuationPending).toBe(true);
     expect(res.receiptIds).toHaveLength(128);
