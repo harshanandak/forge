@@ -790,6 +790,40 @@ describe('watch owner SQLite authority', () => {
 		});
 	});
 
+	test('rechecks a blocked legacy row whose watcher PID was reused', async () => {
+		const ctx = { repo: 'acme/forge', pr: 62 };
+		const base = { driver, now: LATER };
+		const gateOpts = { ...base, isPidAlive: () => true };
+		await owner.publishMigrationQuarantine({ updatedAt: NOW }, base);
+		await owner.bindMigrationSnapshot({ snapshotHash: HASH, updatedAt: NOW }, base);
+		const blocked = await owner.markLegacyBlocked(ctx, {
+			blockReason: 'legacy_live_pid', pid: 218, snapshotHash: HASH,
+			legacyEvidenceHash: OTHER_HASH, startedAt: NOW,
+		}, gateOpts);
+		expect(blocked).toMatchObject({ ok: true, record: { phase: 'blocked', watcherPid: 218 } });
+
+		const input = {
+			generation: blocked.record.generation, legacyEvidenceHash: OTHER_HASH,
+			pid: 218, action: 'release', updatedAt: LATER,
+		};
+		// PID 218 exists, but its process booted an hour after the legacy watcher's
+		// recorded start — the blocked row has no heartbeat, so startedAt is the marker.
+		const live = {
+			...base,
+			isPidAlive: () => true,
+			pidStartedAt: async () => Date.parse('2026-08-19T09:00:00.000Z'),
+		};
+
+		expect(await owner.recheckLegacyBlocked(ctx, input, live))
+			.toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
+		expect(await owner.recheckLegacyBlocked(ctx, { ...input, pidReuseProven: true }, {
+			...live, pidStartedAt: async () => null,
+		})).toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
+
+		const released = await owner.recheckLegacyBlocked(ctx, { ...input, pidReuseProven: true }, live);
+		expect(released).toEqual({ ok: true, changed: true, reason: 'released', record: null });
+	});
+
 	test('recovers a starting row whose controller PID was reused, and fails closed without that proof', async () => {
 		const ctx = { repo: 'acme/forge', pr: 58 };
 		const base = { driver, now: LATER };

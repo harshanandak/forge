@@ -143,6 +143,58 @@ describe('reconcile executor owner-row authority', () => {
 		expect(inputs[0]).toMatchObject({ pid: 44, recoveryControllerPid: 12, pidReuseProven: true });
 	});
 
+	test('uses the legacy start marker for blocked-owner liveness', async () => {
+		// A genuinely live legacy watcher imported as blocked/legacy_live_pid. Blocked
+		// rows carry NO heartbeat, so `startedAt` is the only marker its own process
+		// wrote.
+		const blocked = {
+			...RECORD, phase: 'blocked', blockReason: 'legacy_live_pid', controllerPid: null,
+			watcherPid: 44, heartbeatAt: null, legacyEvidenceHash: 'a'.repeat(64),
+		};
+		const gather = pidStartedAt => gatherObserved('/repo/.git', null, {
+			broker: { listOpenPrs: async () => [] },
+			authority: {
+				enumerateOwners: async () => ({ ok: true, records: [blocked] }),
+				readMigrationGate: async () => ({ ok: true, gate: { state: 'complete', snapshot_hash: 'a'.repeat(64) } }),
+			},
+			isAlive: () => true,
+			pidStartedAt,
+			now: () => Date.parse(NOW),
+		});
+
+		// PID 44 exists, but its process booted an hour after the legacy watcher's
+		// recorded start, so the legacy watcher is gone and the number was inherited.
+		const reused = await gather(async () => Date.parse('2026-08-19T01:00:00.000Z'));
+		expect(reused.ownerRows[0]).toMatchObject({ watcherAlive: false, watcherPidReuseProven: true });
+
+		// An unknown start time keeps the previous bare-PID behaviour exactly.
+		const unknown = await gather(async () => null);
+		expect(unknown.ownerRows[0]).toMatchObject({ watcherAlive: true });
+		expect(unknown.ownerRows[0].watcherPidReuseProven).toBeUndefined();
+
+		// The dead-watcher observation must produce a recheck that carries the proof.
+		const decided = decideLifecycle({
+			openPrs: [PR], controllerPid: 12, listingOk: true, repositoryOk: true, gitCommonDir: '/repo/.git',
+		}, {
+			prRows: [], ownerRows: reused.ownerRows, ownerRowsOk: true,
+			migrationGate: { state: 'complete', snapshot_hash: 'a'.repeat(64) },
+		});
+		const recheck = decided.actions.find(action => action.type === 'recheckLegacyBlocked');
+		expect(recheck).toBeTruthy();
+
+		const inputs = [];
+		await execute([recheck], {
+			authority: {
+				recheckLegacyBlocked: async (_ctx, input) => {
+					inputs.push(input);
+					return { ok: true, changed: true, reason: 'released', record: null };
+				},
+			},
+			controllerPid: 12,
+		});
+		expect(inputs[0]).toMatchObject({ pid: 44, action: 'release', pidReuseProven: true });
+	});
+
 	test('recovers a starting row whose controller PID was reused instead of deferring to it', async () => {
 		const starting = {
 			...RECORD, phase: 'starting', controllerPid: 33, watcherPid: null, heartbeatAt: null,
