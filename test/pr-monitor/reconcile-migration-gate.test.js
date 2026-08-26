@@ -932,6 +932,66 @@ describe('one-release watcher authority migration gate', () => {
 		expect(api.rows.size).toBe(2);
 	});
 
+	// The SQLite authority rejects any legacy write against a pre-existing owner row
+	// that is not an exact replay. Mirror that contract so resume-after-crash drift is
+	// exercised honestly rather than papered over by a permissive fake.
+	function strictBlockingHarness(options = {}) {
+		const api = authorityHarness(options);
+		api.markLegacyBlocked = async (ctx, input) => {
+			const key = `${ctx.repo}#${ctx.pr}`;
+			api.calls.push(`blocked:${key}:${input.blockReason}`);
+			const existing = api.rows.get(key);
+			if (existing) {
+				const same = existing.phase === 'blocked'
+					&& existing.blockReason === input.blockReason
+					&& existing.legacyEvidenceHash === input.legacyEvidenceHash;
+				return { ok: same, changed: false, reason: same ? 'idempotent' : 'owner_conflict', record: existing };
+			}
+			const record = {
+				...ctx, startedAt: input.startedAt || ctx.startedAt || null, phase: 'blocked',
+				blockReason: input.blockReason, terminalReceiptId: input.terminalReceiptId || null,
+				legacyEvidenceHash: input.legacyEvidenceHash,
+			};
+			api.rows.set(key, record);
+			return { ok: true, changed: true, record };
+		};
+		return api;
+	}
+
+	test('adopts a partial import when the PR closes before migration resumes', async () => {
+		const api = strictBlockingHarness({ crashBeforeCompleteOnce: true });
+		const legacy = snapshot([entry('acme/repo', 7, { pid: 107, providerState: 'open' })]);
+
+		// First pass imports the open PR as `starting`, then crashes before the gate
+		// completes, leaving that row durable.
+		await expect(run(api, legacy)).rejects.toThrow('simulated pre-complete crash');
+		const imported = api.rows.get('acme/repo#7');
+		expect(imported).toMatchObject({ phase: 'starting' });
+
+		// The PR closes before the next daemon resumes. The legacy snapshot is
+		// byte-identical, so this is the SAME entry — ordinary provider drift.
+		const resumed = await run(api, legacy, { readProviderState: async () => 'closed' });
+
+		expect(resumed).toMatchObject({ ok: true, state: 'complete' });
+		expect(api.calls).not.toContain('conflict:legacy_owner_conflict');
+		expect(api.rows.get('acme/repo#7')).toEqual(imported);
+	});
+
+	test('still conflicts when a surviving row carries different legacy evidence', async () => {
+		const api = strictBlockingHarness({ crashBeforeCompleteOnce: true });
+		const legacy = snapshot([entry('acme/repo', 7, { pid: 107, providerState: 'open' })]);
+		await expect(run(api, legacy)).rejects.toThrow('simulated pre-complete crash');
+		// A foreign writer's row for the same PR carries evidence we never hashed.
+		api.rows.set('acme/repo#7', {
+			...api.rows.get('acme/repo#7'), legacyEvidenceHash: 'f'.repeat(64),
+		});
+
+		const resumed = await run(api, legacy, { readProviderState: async () => 'closed' });
+
+		expect(resumed).toMatchObject({ ok: false, state: 'conflict', reason: 'legacy_owner_conflict' });
+		expect(api.calls).toContain('conflict:legacy_owner_conflict');
+	});
+
 	test('resumes after all imports but before gate completion without replacing generations', async () => {
 		const options = { crashBeforeCompleteOnce: true };
 		const api = authorityHarness(options);
