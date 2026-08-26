@@ -620,6 +620,21 @@ describe('Validate Command - Validation Orchestration', () => {
 			expect(result).toMatchObject({ status: 'PASS', passed: 7, failed: 0, errors: 0, skipped: 1, total: 8 });
 		});
 
+		test('treats an INCOMPLETE full-suite aggregate as a failed run', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-incomplete-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
+				const result = await runAllTests(
+					() => '99 pass\nFull suite aggregate: status=INCOMPLETE tests=8 assertions=10 passed=7 failed=0 errors=0 skipped=1',
+					rootDir,
+				);
+				expect(result).toMatchObject({ success: false, testsFound: true, passed: 7, failed: 0, total: 8 });
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
 		test('executeValidate forwards rootDir to the repository full-suite runner', async () => {
 			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-root-'));
 			try {
