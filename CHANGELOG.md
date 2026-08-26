@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Full-suite scheduling now respects the computed worker budget.** Resource-aware lanes share the reserved worker pool by default, preventing mixed unit and subprocess shards from oversubscribing Windows runners. (PR #545, issue `8cb52d50-24ea-4c69-8579-b30a0f1ee467`)
 - **Windows legacy-claim repair now preserves owner-only ACL guarantees without PowerShell transport stalls.** The operator-only repair path uses bounded, privacy-safe Windows security-descriptor verification, exact owner/DACL replacement, Unicode-safe targets, transaction-isolated async hardening, and fail-closed timeout cleanup. (#538, issue `eb2c56e8-5054-4542-8f02-3f9fe635fd2d`)
 - **Local full-suite validation is deterministic under Windows process pressure.** Resource-aware lanes, runtime-balanced subprocess shards, isolated coordination state, direct commitlint execution, batched Flow-monitor replay, and exact failure attribution remove rotating shared-state and child-process flakes without weakening timeouts or gates. (#538; issues `51672736-3387-4d0f-950d-4ae6e5e2c13e`, `9eb98ac0-ebe1-4604-a57a-5fefadad6682`)
 - **PR lifecycle acceptance fails closed at its authority and privacy boundaries.** Every opened linkage write now proves exact live claim ownership, timed-out persistence reconciles only through bounded durable trace evidence, and bare POSIX user-home paths are rejected before WorkPacket publication. (#530, issue `50571aa3-b1cd-42f4-9c50-2c7576d1b0d4`)
