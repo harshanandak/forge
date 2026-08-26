@@ -33,12 +33,33 @@ describe('process identity', () => {
 		expect(await probe({ pidStartedAt: async () => marker - 60_000 })).toBe('alive');
 	});
 
+	test('accepts epoch-ms and numeric-string markers, not just ISO timestamps', async () => {
+		const marker = Date.parse(MARKER);
+		const late = async () => marker + PID_START_SKEW_MS + 1;
+		expect(await probe({ startedAt: marker, pidStartedAt: late })).toBe('reused');
+		expect(await probe({ startedAt: String(marker), pidStartedAt: late })).toBe('reused');
+		expect(await probe({ startedAt: marker, pidStartedAt: async () => marker })).toBe('alive');
+	});
+
 	test('keeps a live PID alive when identity cannot be established', async () => {
 		// Every non-Linux platform answers null today; behaviour must not change there.
 		expect(await probe({ pidStartedAt: async () => null })).toBe('alive');
 		expect(await probe({ pidStartedAt: async () => { throw new Error('unavailable'); } })).toBe('alive');
 		expect(await probe({ startedAt: null })).toBe('alive');
-		expect(await probe({ startedAt: 'not-a-timestamp' })).toBe('alive');
+	});
+
+	test('never pairs an injected liveness answer with the built-in start-time probe', async () => {
+		// A caller answering liveness for fabricated PIDs has no start-time counterpart.
+		// Falling back to the built-in /proc probe would compare that fabricated PID's
+		// liveness against a real process's start time and "prove" reuse on Linux.
+		expect(await probe({ pidStartedAt: undefined })).toBe('alive');
+		expect(await probe({ pidStartedAt: null, startedAt: 'not-a-timestamp' })).toBe('alive');
+	});
+
+	test('refuses to guess from an unparsable marker rather than defaulting to alive', async () => {
+		expect(await probe({ startedAt: 'not-a-timestamp' })).toBe('unknown');
+		expect(await probe({ startedAt: Number.NaN })).toBe('unknown');
+		expect(await probe({ startedAt: {} })).toBe('unknown');
 	});
 
 	test('reports unknown when liveness itself is unavailable, never reused', async () => {

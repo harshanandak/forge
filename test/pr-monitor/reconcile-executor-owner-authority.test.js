@@ -7,6 +7,7 @@ const {
 	convergeOnce,
 } = require('../../lib/pr-monitor/reconcile-executor');
 const { decideLifecycle } = require('../../lib/pr-monitor/reconcile');
+const { defaultPidStartedAt } = require('../../lib/pr-monitor/process-identity');
 
 const NOW = '2026-08-19T00:00:00.000Z';
 const PR = { repo: 'acme/project', number: 7, branch: 'topic', headSha: 'abc' };
@@ -81,6 +82,27 @@ describe('reconcile executor owner-row authority', () => {
 		expect(order).toEqual(['enumerate', 'pid:44']);
 		expect(result.ownerRows[0]).toMatchObject({ watcherAlive: true });
 		expect(result.migrationGate).toMatchObject({ state: 'complete' });
+	});
+
+	test('never pairs an injected liveness probe with the built-in start-time probe', async () => {
+		// Fabricated PIDs have no real process behind them. Handing the built-in /proc
+		// probe to an injected liveness answer read an unrelated live process's start
+		// time and "proved" reuse on Linux, while Windows (null probe) saw nothing.
+		const seen = [];
+		const authority = {
+			enumerateOwners: async (_ctx, options) => {
+				seen.push(options.pidStartedAt);
+				return { ok: true, records: [] };
+			},
+			readMigrationGate: async () => ({ ok: true, gate: { state: 'complete', snapshot_hash: 'a'.repeat(64) } }),
+		};
+		const broker = { listOpenPrs: async () => [] };
+		await gatherObserved('/repo/.git', null, { broker, authority, isAlive: () => true });
+		expect(seen).toEqual([null]);
+
+		// The built-in pair still travels together for the real daemon.
+		await gatherObserved('/repo/.git', null, { broker, authority });
+		expect(seen[1]).toBe(defaultPidStartedAt);
 	});
 
 	test('treats a reused watcher PID as dead and carries the reuse proof into recovery', async () => {
