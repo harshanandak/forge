@@ -200,7 +200,9 @@ describe('execute — owner-row watcher lifecycle', () => {
 		const authority = {
 			completeTerminal: async (_identity, input) => {
 				attempts += 1;
-				expect(input).toEqual({ generation: 'generation-7', pid: 70, terminalReceiptId: 'receipt-7' });
+				expect(input).toEqual({
+					generation: 'generation-7', pid: 70, pidReuseProven: false, terminalReceiptId: 'receipt-7',
+				});
 				return attempts === 1
 					? { ok: false, changed: false, reason: 'receipt_unverified', record: terminal }
 					: { ok: true, changed: true, reason: 'complete', record: { ...terminal, phase: 'complete' } };
@@ -209,6 +211,29 @@ describe('execute — owner-row watcher lifecycle', () => {
 		expect((await execute([{ type: 'completeTerminal', owner: terminal }], { authority })).ok).toBe(false);
 		expect((await execute([{ type: 'completeTerminal', owner: terminal }], { authority })).ok).toBe(true);
 		expect(attempts).toBe(2);
+	});
+
+	test('forwards proven watcher PID reuse into terminal completion', async () => {
+		// gatherObserved proved the exited watcher's PID was inherited by an unrelated
+		// process. Dropping that proof here makes the authority re-probe the bare PID,
+		// see it live, and leave the row terminal_pending forever.
+		const terminal = {
+			...OWNER, phase: 'terminal_pending', terminalReceiptId: 'receipt-7',
+			watcherPidReuseProven: true,
+		};
+		let observed;
+		const result = await execute([{ type: 'completeTerminal', owner: terminal }], {
+			authority: {
+				completeTerminal: async (_identity, input) => {
+					observed = input;
+					return { ok: true, changed: true, reason: 'complete', record: { ...terminal, phase: 'complete' } };
+				},
+			},
+		});
+		expect(result.ok).toBe(true);
+		expect(observed).toEqual({
+			generation: 'generation-7', pid: 70, pidReuseProven: true, terminalReceiptId: 'receipt-7',
+		});
 	});
 
 	test('upsert and retire use the Kernel broker without filesystem owner markers', async () => {

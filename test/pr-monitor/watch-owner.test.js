@@ -752,6 +752,44 @@ describe('watch owner SQLite authority', () => {
 			.toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
 	});
 
+	test('completes a terminal_pending row whose watcher PID was reused', async () => {
+		const ctx = { repo: 'acme/forge', pr: 61 };
+		const base = { driver, now: LATER, verifyTerminalReceipt: async () => true };
+		const start = await owner.reserveStarting(ctx, { controllerPid: 116, startedAt: NOW }, base);
+		await owner.bindRunning(ctx, {
+			generation: start.record.generation, controllerPid: 116, pid: 216, updatedAt: LATER,
+		}, base);
+		await owner.recordTerminal(ctx, {
+			generation: start.record.generation, pid: 216, terminalReceiptId: 'receipt-61', updatedAt: LATER,
+		}, base);
+		const input = {
+			generation: start.record.generation, pid: 216,
+			terminalReceiptId: 'receipt-61', updatedAt: NEXT,
+		};
+		// PID 216 exists, but its process booted an hour after the watcher stamped this
+		// row's heartbeat, so it is an unrelated process that inherited the number.
+		const live = {
+			...base,
+			isPidAlive: () => true,
+			pidStartedAt: async () => Date.parse('2026-08-19T09:00:00.000Z'),
+		};
+
+		// Without the proof input a live PID still blocks completion.
+		expect(await owner.completeTerminal(ctx, input, live))
+			.toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
+		// The claim alone is never enough: an unknown process start time keeps the live
+		// PID authoritative.
+		expect(await owner.completeTerminal(ctx, { ...input, pidReuseProven: true }, {
+			...live, pidStartedAt: async () => null,
+		})).toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
+
+		const completed = await owner.completeTerminal(ctx, { ...input, pidReuseProven: true }, live);
+		expect(completed).toMatchObject({
+			ok: true, changed: true, reason: 'complete',
+			record: { phase: 'complete', watcherPid: null, terminalReceiptId: 'receipt-61' },
+		});
+	});
+
 	test('recovers a starting row whose controller PID was reused, and fails closed without that proof', async () => {
 		const ctx = { repo: 'acme/forge', pr: 58 };
 		const base = { driver, now: LATER };
