@@ -267,7 +267,11 @@ describe('pollEvents (events --since)', () => {
   });
 
   test('runs an inline pass when no watcher owns the PR', async () => {
-    const res = await pollEvents({ dir, gather: async () => snap(), since: 0, now, isOwnerRunning: async () => false });
+    const res = await pollEvents({
+      dir, gather: async () => snap(), since: 0, now,
+      isOwnerRunning: async () => false,
+      owner: { readMigrationGate: async () => ({ ok: true, gate: { state: 'complete' } }) },
+    });
     expect(res.ranPass).toBe(true);
     expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
   });
@@ -303,7 +307,7 @@ describe('pollEvents (events --since)', () => {
     await runMonitorPass(ctx);
     current = snap({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
 
-    const res = await pollEvents({ ...ctx, since: 0, isOwnerRunning: async () => false });
+    const res = await pollEvents({ ...ctx, since: 0, isOwnerRunning: async () => false, owner: { readMigrationGate: async () => ({ ok: true, gate: { state: 'complete' } }) } });
 
     expect(res.continuationPending).toBe(true);
     expect(res.receiptIds).toHaveLength(128);

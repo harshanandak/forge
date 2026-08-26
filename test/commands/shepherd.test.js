@@ -12,6 +12,10 @@ const CONVERGENCE_DEPS = {
   }),
 };
 
+// Watcher authority whose lease/owner migration gate is EXACTLY complete — the
+// only state in which pollEvents may run an inline pass.
+const MIGRATED_GATE_OWNER = { readMigrationGate: async () => ({ ok: true, gate: { state: 'complete' } }) };
+
 describe('shepherd command handler', () => {
   test('satisfies the _registry { name, description, handler } contract', () => {
     expect(validateCommand(shepherdCmd)).toEqual({ valid: true });
@@ -640,6 +644,7 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
   test('runs an inline pass and returns NDJSON events since the cursor', async () => {
     const res = await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
       dir, gather: async () => snap(), now, isOwnerRunning: async () => false,
+      owner: MIGRATED_GATE_OWNER,
     });
     expect(res.success).toBe(true);
     expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
@@ -701,7 +706,7 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
       },
       repository: 'acme/forge',
       ownerOptions: { driver: {} },
-      owner: { readOwner: async () => ({ ok: true, record }) },
+      owner: { ...MIGRATED_GATE_OWNER, readOwner: async () => ({ ok: true, record }) },
     });
 
     expect(res.success).toBe(true);
@@ -792,10 +797,12 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
     // Baseline pass (green) establishes the snapshot; no check.failed yet.
     await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
       dir, gather: async () => green, now, isOwnerRunning: async () => false, gatherPull,
+      owner: MIGRATED_GATE_OWNER,
     });
     // Transition to failed → check.failed emitted and enriched by the default hook.
     const res = await shepherdCmd.handleEvents(['events', '1', '--since', '1'], root, {
       dir, gather: async () => failed, now, isOwnerRunning: async () => false, gatherPull,
+      owner: MIGRATED_GATE_OWNER,
     });
     const cf = res.events.find((e) => e.type === T.CHECK_FAILED);
     expect(cf).toBeDefined();
