@@ -211,6 +211,32 @@ describe('one-release watcher authority migration gate', () => {
 		}
 	});
 
+	test('hashes shared markers identically from the primary checkout and a linked worktree', () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-legacy-marker-'));
+		const gitCommonDir = path.join(root, '.git');
+		try {
+			const monitorDir = path.join(root, '.forge', 'pr-monitor', 'acme-repo-7');
+			fs.mkdirSync(monitorDir, { recursive: true });
+			fs.writeFileSync(path.join(monitorDir, 'snapshot.json'), JSON.stringify({
+				repo: 'acme/repo', pr: 7, startedAt: '2026-08-19T00:00:00.000Z', state: 'open',
+			}));
+			fs.writeFileSync(path.join(monitorDir, 'watch.pid'), '107');
+			fs.writeFileSync(path.join(monitorDir, 'watch.generation'), 'generation-a');
+			fs.writeFileSync(path.join(monitorDir, 'cleanup.marker'), 'cleanup-a');
+			const worktreeRoot = path.join(root, '.worktrees', 'feature');
+			fs.mkdirSync(worktreeRoot, { recursive: true });
+
+			const fromPrimary = defaultReadLegacySnapshot(root, { gitCommonDir, repo: 'acme/repo' });
+			const fromWorktree = defaultReadLegacySnapshot(worktreeRoot, { gitCommonDir, repo: 'acme/repo' });
+
+			expect(fromPrimary.sources.some(source => source.path.startsWith('.forge/pr-monitor/'))).toBe(true);
+			expect(fromWorktree.sources.some(source => source.path.startsWith('git-common-root/.forge/pr-monitor/'))).toBe(true);
+			expect(hashLegacySnapshot(fromWorktree)).toBe(hashLegacySnapshot(fromPrimary));
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test('assigns distinct stable hashes to each canonical migrated entry', async () => {
 		const legacy = snapshot([
 			entry('zeta/repo', 2, { pid: 102 }),
