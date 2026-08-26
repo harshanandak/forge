@@ -343,6 +343,59 @@ describe('shepherd command handler', () => {
     expect(evidence.continuationPending).toBe(true);
   });
 
+  test('rejects convergence evidence when the authoritative pass was skipped', async () => {
+    const head = 'a'.repeat(40);
+    const collect = (polled) => shepherdCmd.collectConvergenceEvidence({
+      args: ['7'], pr: '7', projectRoot: process.cwd(),
+      context: { pr: '7', owner: 'o', repo: 'r', headSha: head },
+      adapter: { readState: async () => ({ headSha: head }) },
+      deps: {
+        dir: 'journal-dir', gather: async () => ({}), store: {},
+        monitorId: 'pr:o/r:7', ownerRunId: 'run-7', packetId: 'packet-7', subjectId: 'o/r#7',
+        pollEvents: async () => ({ events: [], overflow: false, receiptIds: [], ...polled }),
+      },
+    });
+
+    // A quarantined/conflicting migration gate suppresses the forced pass.
+    await expect(collect({ ranPass: false, migrationGateIncomplete: true }))
+      .rejects.toThrow(/authoritative convergence pass did not run \(watcher migration gate incomplete\)/);
+    // So does an unreadable authority.
+    await expect(collect({ ranPass: false, authorityUnavailable: true }))
+      .rejects.toThrow(/authoritative convergence pass did not run \(watcher authority unavailable\)/);
+    // And a bare ranPass:false is never silently accepted.
+    await expect(collect({ ranPass: false }))
+      .rejects.toThrow(/authoritative convergence pass did not run \(pass suppressed\)/);
+  });
+
+  test('never emits a MERGE_READY handoff when the migration gate blocked the pass', async () => {
+    const head = 'a'.repeat(40);
+    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+      ...CONVERGENCE_DEPS,
+      collectConvergenceEvidence: shepherdCmd.collectConvergenceEvidence,
+      pollEvents: async () => ({
+        events: [], overflow: false, receiptIds: [], ranPass: false, migrationGateIncomplete: true,
+      }),
+      runPass: async () => ({ state: 'MERGE_READY', actions: [], reason: 'ready', expectedHead: head }),
+      buildContext: async () => ({
+        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+        headSha: head, localHead: head,
+      }),
+      adapter: {
+        id: 'test', kind: 'pr-state', name: 'test',
+        readState: async () => ({ headSha: head }),
+        readRequiredChecks: async () => [], readComments: async () => [],
+        readDivergence: async () => ({}), detectConflicts: async () => false,
+        rerunFailedChecks: async () => {}, replyToThread: async () => {},
+      },
+      store: {}, monitorId: 'pr:o/r:7', ownerRunId: 'run-7', packetId: 'packet-7', subjectId: 'o/r#7',
+      resolveGitCommonDir: () => process.cwd(),
+    });
+
+    expect(out).toMatchObject({ success: false, state: 'INCOMPLETE', remoteState: 'MERGE_READY' });
+    expect(out.reason).toMatch(/watcher migration gate incomplete/);
+    expect(out.handoff).toBeUndefined();
+  });
+
   test('compares exact heads case-insensitively at evidence and handoff fences', async () => {
     const lowerHead = 'abcdef0123456789abcdef0123456789abcdef01';
     const upperHead = lowerHead.toUpperCase();
