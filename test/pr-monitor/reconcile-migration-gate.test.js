@@ -237,6 +237,29 @@ describe('one-release watcher authority migration gate', () => {
 		}
 	});
 
+	test('hashes a leftover generation marker in an otherwise empty legacy directory', () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-legacy-marker-only-'));
+		const gitCommonDir = path.join(root, '.git');
+		try {
+			const monitorDir = path.join(root, '.forge', 'pr-monitor', 'acme-repo-7');
+			fs.mkdirSync(monitorDir, { recursive: true });
+			const empty = defaultReadLegacySnapshot(root, { gitCommonDir, repo: 'acme/repo' });
+			expect(empty).toMatchObject({ corrupt: false, unmappable: false });
+
+			// An interrupted cleanup left only the generation marker behind. It still
+			// proves unresolved legacy lifecycle authority, so it must reach both the
+			// snapshot and its hash instead of being skipped as an empty directory.
+			fs.writeFileSync(path.join(monitorDir, 'watch.generation'), 'generation-a');
+			const value = defaultReadLegacySnapshot(root, { gitCommonDir, repo: 'acme/repo' });
+			expect(value.sources.some(source => source.path.endsWith('acme-repo-7/watch.generation'))).toBe(true);
+			expect(hashLegacySnapshot(value)).not.toBe(hashLegacySnapshot(empty));
+			// No parseable identity accompanies the marker, so the gate must fail closed.
+			expect(value.unmappable).toBe(true);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test('assigns distinct stable hashes to each canonical migrated entry', async () => {
 		const legacy = snapshot([
 			entry('zeta/repo', 2, { pid: 102 }),
