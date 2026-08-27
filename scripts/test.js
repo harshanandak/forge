@@ -92,14 +92,29 @@ const isWindows = process.platform === 'win32';
 // wedged). Raise it with FORGE_TEST_TIMEOUT_MS for slow machines.
 const DEFAULT_TEST_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 
-// Wall-clock budget for the FULL-SUITE fallback lane (`scripts/test-full-suite.js`),
-// which runs on package-level, unmapped, or zero-resolved changes. Unlike a
-// targeted lane, a healthy full suite legitimately takes 5-10 min, so the 5-min
-// fail-fast ceiling would kill a good-but-slow full run. Kept at 10 min to stay
-// aligned with the local-validation budget (VALIDATION_COMMAND_TIMEOUT_MS = 600000
-// in lib/commands/validate.js and its "long enough subprocess timeout for the
-// full local suite" regression test). FORGE_TEST_TIMEOUT_MS still overrides.
-const DEFAULT_FULL_SUITE_TIMEOUT_MS = 10 * 60 * 1000;
+// Measured wall-clock runtime of a HEALTHY, fully passing full suite on a
+// developer Windows machine with pinned Bun 1.3.12 (2026-08-26):
+//
+//   8005 pass, 32 skip, 1 todo, 0 fail — 8038 tests across 594 files [602.43s]
+//
+// Any full-suite budget must clear this by a wide margin. Treat it as a floor to
+// measure against, never as the budget itself.
+const OBSERVED_FULL_SUITE_RUNTIME_MS = 602_430;
+
+// Wall-clock budget for the FULL-SUITE lane (`scripts/test-full-suite.js` and the
+// package-level `test` script run by `forge push`), used on package-level,
+// unmapped, or zero-resolved changes.
+//
+// This ceiling exists to catch an INDEFINITE HANG (issue 8aef79e8: a synchronous
+// git/bash spawn wedged during git mid-push state, observed ~50 min), not to
+// bound normal runtime. So it is sized as ~2x the measured healthy runtime above,
+// not fitted to it. The previous 10-min value was BELOW the 602.43s measurement,
+// so it SIGKILLed passing suites — `forge push` died mid-suite with no summary
+// and never pushed. 25 min is the next round number clearing 2x the measurement
+// (1_204_860 ms). Do not shave this back toward the observed runtime; if a
+// slower machine needs more, raise FORGE_TEST_TIMEOUT_MS (which still overrides)
+// and re-measure before changing this default.
+const DEFAULT_FULL_SUITE_TIMEOUT_MS = 25 * 60 * 1000;
 
 // Conventional shell exit code for a command terminated by a timeout.
 const TIMEOUT_EXIT_CODE = 124;
@@ -142,9 +157,10 @@ function resolveCommandTimeoutMs(env = process.env) {
 }
 
 /**
- * Resolves the wall-clock budget for the full-suite fallback lane. An explicit
+ * Resolves the wall-clock budget for the full-suite lane. An explicit
  * FORGE_TEST_TIMEOUT_MS override wins; otherwise it uses the larger,
- * validation-aligned budget so a healthy-but-slow full run is not failed fast.
+ * measurement-derived budget (~2x OBSERVED_FULL_SUITE_RUNTIME_MS) so a healthy
+ * full run is never failed fast.
  *
  * @param {NodeJS.ProcessEnv} [env=process.env] Environment to read the override from.
  * @returns {number} Timeout in milliseconds (defaults to DEFAULT_FULL_SUITE_TIMEOUT_MS).
@@ -513,7 +529,7 @@ async function runTestExecutionPlan(plan, deps = {}) {
   const label = deps.label || 'tests';
   const timeout = resolveCommandTimeoutMs(env);
   const laneOptions = { env: childEnv, killSignal: 'SIGKILL', timeout, processTree };
-  // The full-suite fallback gets a larger, validation-aligned budget so a
+  // The full-suite fallback gets the larger, measurement-derived budget so a
   // healthy-but-slow full run is not failed fast by the targeted-lane ceiling.
   const fullSuiteOptions = {
     env: childEnv,
@@ -615,6 +631,7 @@ module.exports = {
   ALWAYS_RUN_RISK_TEST_TARGETS,
   DEFAULT_FULL_SUITE_TIMEOUT_MS,
   DEFAULT_TEST_COMMAND_TIMEOUT_MS,
+  OBSERVED_FULL_SUITE_RUNTIME_MS,
   QUICK_LANE_ENV_VAR,
   QUICK_LANE_VALUE,
   buildTestExecutionPlan,

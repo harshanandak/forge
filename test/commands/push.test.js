@@ -12,7 +12,12 @@ const { describe, test, expect } = require('bun:test');
 
 // We will require push.js once it exists — for now these tests should RED
 const pushModule = require('../../lib/commands/push.js');
-const { QUICK_LANE_ENV_VAR, QUICK_LANE_VALUE } = require('../../scripts/test.js');
+const {
+	QUICK_LANE_ENV_VAR,
+	QUICK_LANE_VALUE,
+	OBSERVED_FULL_SUITE_RUNTIME_MS,
+	resolveFullSuiteTimeoutMs,
+} = require('../../scripts/test.js');
 
 describe('Forge Push Command', () => {
 	describe('Module exports', () => {
@@ -199,7 +204,7 @@ describe('Forge Push Command', () => {
 			expect(result.pushed).toBe(false);
 		});
 
-		test('should run tests with 120s timeout', async () => {
+		test('should not cap the full suite with a hardcoded 120s timeout', async () => {
 			let testOpts = null;
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, opts) => {
@@ -213,7 +218,99 @@ describe('Forge Push Command', () => {
 			await pushModule.handler([], {}, '/fake/project', deps);
 
 			expect(testOpts).toBeTruthy();
-			expect(testOpts.timeout).toBe(120000);
+			expect(testOpts.timeout).not.toBe(120000);
+		});
+
+		test('should budget the test run from the shared full-suite budget', async () => {
+			let testOpts = null;
+			const deps = makeDeps({
+				spawnSync: (_cmd, args, opts) => {
+					if (args.includes('test')) {
+						testOpts = opts;
+					}
+					return { status: 0 };
+				},
+			});
+
+			await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(testOpts.timeout).toBe(resolveFullSuiteTimeoutMs(process.env));
+			expect(testOpts.killSignal).toBe('SIGKILL');
+		});
+
+		test('should budget the push test run well above the measured full-suite runtime', async () => {
+			let testOpts = null;
+			const deps = makeDeps({
+				spawnSync: (_cmd, args, opts) => {
+					if (args.includes('test')) {
+						testOpts = opts;
+					}
+					return { status: 0 };
+				},
+			});
+
+			await pushModule.handler([], {}, '/fake/project', deps);
+
+			// A budget at or near the observed runtime SIGKILLs a passing suite:
+			// that is the bug this guards. Require real headroom, not a tight fit.
+			expect(testOpts.timeout).toBeGreaterThanOrEqual(OBSERVED_FULL_SUITE_RUNTIME_MS * 2);
+		});
+
+		test('should honor FORGE_TEST_TIMEOUT_MS for the push test run', async () => {
+			let testOpts = null;
+			const deps = makeDeps({
+				spawnSync: (_cmd, args, opts) => {
+					if (args.includes('test')) {
+						testOpts = opts;
+					}
+					return { status: 0 };
+				},
+				env: { ...process.env, FORGE_TEST_TIMEOUT_MS: '1234567' },
+			});
+
+			await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(testOpts.timeout).toBe(1234567);
+		});
+
+		test('should report a timeout explicitly when the test run is killed', async () => {
+			const logs = [];
+			const deps = makeDeps({
+				spawnSync: (_cmd, args, _opts) => {
+					if (args.includes('test')) {
+						return { status: null, signal: 'SIGKILL' };
+					}
+					return { status: 0 };
+				},
+				log: msg => logs.push(String(msg)),
+			});
+
+			const result = await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(result.testsPassed).toBe(false);
+			expect(result.pushed).toBe(false);
+			const joined = logs.join('\n');
+			expect(joined).toContain('timed out');
+			expect(joined).toContain('SIGKILL');
+			expect(joined).toContain('FORGE_TEST_TIMEOUT_MS');
+		});
+
+		test('should report the spawn error when the test runner cannot start', async () => {
+			const logs = [];
+			const deps = makeDeps({
+				spawnSync: (_cmd, args, _opts) => {
+					if (args.includes('test')) {
+						return { status: null, signal: null, error: new Error('spawn ENOENT') };
+					}
+					return { status: 0 };
+				},
+				log: msg => logs.push(String(msg)),
+			});
+
+			const result = await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(result.testsPassed).toBe(false);
+			expect(logs.join('\n')).toContain('spawn ENOENT');
 		});
 	});
 
@@ -493,5 +590,6 @@ function makeDeps(overrides = {}) {
 		existsSync: overrides.existsSync || (() => true), // bun.lock exists by default
 		log: overrides.log || (() => {}),
 		writeForgeToken: overrides.writeForgeToken || (() => {}),
+		...(overrides.env ? { env: overrides.env } : {}),
 	};
 }

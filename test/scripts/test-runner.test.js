@@ -7,6 +7,7 @@ const path = require('node:path');
 const {
   ALWAYS_RUN_RISK_TEST_TARGETS,
   DEFAULT_FULL_SUITE_TIMEOUT_MS,
+  OBSERVED_FULL_SUITE_RUNTIME_MS,
   DEFAULT_TEST_COMMAND_TIMEOUT_MS,
   QUICK_LANE_ENV_VAR,
   QUICK_LANE_VALUE,
@@ -751,13 +752,21 @@ describe('scripts/test pre-push runner', () => {
     expect(fullSuiteCall.options.killSignal).toBeUndefined();
   });
 
-  test('resolveFullSuiteTimeoutMs defaults to the validation-aligned budget and honors valid overrides', () => {
+  test('resolveFullSuiteTimeoutMs defaults to the measured-headroom budget and honors valid overrides', () => {
     expect(resolveFullSuiteTimeoutMs({})).toBe(DEFAULT_FULL_SUITE_TIMEOUT_MS);
     expect(resolveFullSuiteTimeoutMs({ FORGE_TEST_TIMEOUT_MS: 'nonsense' })).toBe(DEFAULT_FULL_SUITE_TIMEOUT_MS);
     expect(resolveFullSuiteTimeoutMs({ FORGE_TEST_TIMEOUT_MS: '-1' })).toBe(DEFAULT_FULL_SUITE_TIMEOUT_MS);
     expect(resolveFullSuiteTimeoutMs({ FORGE_TEST_TIMEOUT_MS: '7000' })).toBe(7000);
     // The full-suite default must clear the targeted-lane fail-fast ceiling.
     expect(DEFAULT_FULL_SUITE_TIMEOUT_MS).toBeGreaterThan(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
+  });
+
+  test('the full-suite budget keeps real headroom over the measured full-suite runtime', () => {
+    // The ceiling exists to catch an indefinite hang, NOT to bound normal
+    // runtime. A budget at or near the observed runtime kills healthy runs.
+    expect(OBSERVED_FULL_SUITE_RUNTIME_MS).toBeGreaterThan(0);
+    expect(DEFAULT_FULL_SUITE_TIMEOUT_MS).toBeGreaterThanOrEqual(OBSERVED_FULL_SUITE_RUNTIME_MS * 2);
+    expect(resolveFullSuiteTimeoutMs({})).toBeGreaterThan(OBSERVED_FULL_SUITE_RUNTIME_MS);
   });
 
   test('a lane that times out fails fast with a non-zero status instead of hanging', async () => {
