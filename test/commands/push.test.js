@@ -273,7 +273,11 @@ describe('Forge Push Command', () => {
 			expect(testOpts.timeout).toBe(1234567);
 		});
 
-		test('should report a timeout explicitly when the test run is killed', async () => {
+		test('should report a bare SIGKILL as an external kill, not a timeout', async () => {
+			// An OOM kill or an operator `kill -9` produces status:null +
+			// signal:'SIGKILL' + NO error â€” identical in shape to a budget kill
+			// minus the ETIMEDOUT evidence. Claiming the budget elapsed here
+			// sends the user to raise a timeout that was never the problem.
 			const logs = [];
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, _opts) => {
@@ -290,9 +294,10 @@ describe('Forge Push Command', () => {
 			expect(result.testsPassed).toBe(false);
 			expect(result.pushed).toBe(false);
 			const joined = logs.join('\n');
-			expect(joined).toContain('timed out');
 			expect(joined).toContain('SIGKILL');
-			expect(joined).toContain('FORGE_TEST_TIMEOUT_MS');
+			expect(joined).toContain('out-of-memory');
+			expect(joined).not.toContain('timed out');
+			expect(joined).not.toContain('FORGE_TEST_TIMEOUT_MS');
 		});
 
 		test('should report a timeout when spawnSync reports ETIMEDOUT with a null status', async () => {
