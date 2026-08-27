@@ -688,12 +688,93 @@ describe('scripts/test-full-suite.js', () => {
       classify: (file) => (file.indexOf('spawn') !== -1 ? 'subprocess' : 'unit'),
       durationMap: new Map(),
       cpuCount: 4,
+      platform: 'linux',
       processTree: fakeProcessTree(),
       spawn,
     });
 
     expect(status).toBe(0);
     expect(maxActive).toBe(3);
+  });
+
+  test('windows subprocess workers are weighted at two budget units each', async () => {
+    let unitActive = 0;
+    let subprocessActive = 0;
+    let maxSubprocessActive = 0;
+    let maxWeightedCost = 0;
+    const spawn = (_command, args) => {
+      const isSubprocessShard = args.some((arg) => String(arg).indexOf('spawn') !== -1);
+      if (isSubprocessShard) subprocessActive += 1;
+      else unitActive += 1;
+      maxSubprocessActive = Math.max(maxSubprocessActive, subprocessActive);
+      maxWeightedCost = Math.max(maxWeightedCost, (subprocessActive * 2) + unitActive);
+      const child = new EventEmitter();
+      child.pid = 9800 + subprocessActive + unitActive;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      const junitPath = args[args.indexOf('--reporter-outfile') + 1];
+      fs.writeFileSync(junitPath, passingShardReceipt);
+      process.nextTick(() => {
+        child.stdout.emit('data', '1 pass\nRan 1 test across 1 file.\n');
+        child.emit('close', 0);
+        if (isSubprocessShard) subprocessActive -= 1;
+        else unitActive -= 1;
+      });
+      return child;
+    };
+
+    const status = await runFullSuiteInParallel({}, {
+      allTests: [
+        'test/a.test.js',
+        'test/b.test.js',
+        'test/spawn-a.test.js',
+        'test/spawn-b.test.js',
+        'test/spawn-c.test.js',
+        'test/spawn-d.test.js',
+      ],
+      classify: (file) => (file.indexOf('spawn') !== -1 ? 'subprocess' : 'unit'),
+      durationMap: new Map(),
+      cpuCount: 4,
+      platform: 'win32',
+      processTree: fakeProcessTree(),
+      spawn,
+    });
+
+    expect(status).toBe(0);
+    expect(maxSubprocessActive).toBe(1);
+    expect(maxWeightedCost).toBeLessThanOrEqual(3);
+  });
+
+  test('resource lane plan output reports granted concurrency and budget', async () => {
+    const logged = [];
+    const logSpy = spyOn(console, 'log').mockImplementation((...parts) => {
+      logged.push(parts.join(' '));
+    });
+    try {
+      const status = await runFullSuiteInParallel({}, {
+        allTests: [
+          'test/a.test.js',
+          'test/spawn-a.test.js',
+          'test/spawn-b.test.js',
+          'test/spawn-c.test.js',
+        ],
+        classify: (file) => (file.indexOf('spawn') !== -1 ? 'subprocess' : 'unit'),
+        durationMap: new Map(),
+        cpuCount: 4,
+        platform: 'win32',
+        processTree: fakeProcessTree(),
+        spawn: (_command, args) => fakeShardChild(0, 9900, args),
+      });
+      expect(status).toBe(0);
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    const subprocessLine = logged.find((line) => line.startsWith('Resource lane subprocess:'));
+    expect(subprocessLine).toContain('concurrency=1');
+    expect(subprocessLine).toContain('nominal=3');
+    expect(subprocessLine).toContain('cost=2');
+    expect(subprocessLine).toContain('budget=3');
   });
 
   test('runLaneSchedule propagates deferred-lane failures instead of masking them', async () => {
