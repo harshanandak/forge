@@ -491,3 +491,87 @@ describe('scripts/protected-state-check.js', () => {
 		expect(output).toContain('beads_state');
 	});
 });
+
+describe('scripts/protected-state-check.js merge awareness', () => {
+	const scriptPath = path.join(__dirname, '..', 'scripts', 'protected-state-check.js');
+	const WORKFLOW = '.github/workflows/test.yml';
+
+	function writeRepoFile(root, relPath, content) {
+		fs.mkdirSync(path.join(root, path.dirname(relPath)), { recursive: true });
+		fs.writeFileSync(path.join(root, relPath), content);
+	}
+
+	function initRepo(root) {
+		runGit(root, ['init', '--quiet', '--initial-branch=master']);
+		runGit(root, ['config', 'user.email', 'test@example.com']);
+		runGit(root, ['config', 'user.name', 'Test']);
+		runGit(root, ['config', 'commit.gpgsign', 'false']);
+		writeRepoFile(root, WORKFLOW, 'name: base\n');
+		writeRepoFile(root, 'lib/safe.js', 'module.exports = 1;\n');
+		runGit(root, ['add', '.']);
+		runGit(root, ['commit', '--quiet', '-m', 'base']);
+	}
+
+	function startMerge(root) {
+		runGit(root, ['checkout', '--quiet', '-b', 'feature']);
+		runGit(root, ['checkout', '--quiet', 'master']);
+		writeRepoFile(root, WORKFLOW, 'name: base\njobs: {}\n');
+		runGit(root, ['add', WORKFLOW]);
+		runGit(root, ['commit', '--quiet', '-m', 'upstream workflow change']);
+		runGit(root, ['checkout', '--quiet', 'feature']);
+		writeRepoFile(root, 'lib/safe.js', 'module.exports = 2;\n');
+		runGit(root, ['add', 'lib/safe.js']);
+		runGit(root, ['commit', '--quiet', '-m', 'feature change']);
+		runGit(root, ['merge', '--no-commit', '--no-ff', '--quiet', 'master']);
+	}
+
+	function runCheck(root) {
+		return spawnSync('node', [scriptPath], {
+			cwd: root,
+			stdio: 'pipe',
+			env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: 'merge-test' },
+		});
+	}
+
+	test('allows a merge-in-progress protected path whose staged blob came from MERGE_HEAD', () => {
+		const root = createTempDir();
+		try {
+			initRepo(root);
+			startMerge(root);
+			const result = runCheck(root);
+			expect(`${result.stdout}${result.stderr}`).not.toContain('Protected state edit detected');
+			expect(result.status).toBe(0);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	test('still blocks a merge-in-progress protected path edited beyond the merge content', () => {
+		const root = createTempDir();
+		try {
+			initRepo(root);
+			startMerge(root);
+			writeRepoFile(root, WORKFLOW, 'name: base\njobs: {}\n# hand edit\n');
+			runGit(root, ['add', WORKFLOW]);
+			const result = runCheck(root);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	test('still blocks a staged protected path when no merge is in progress', () => {
+		const root = createTempDir();
+		try {
+			initRepo(root);
+			writeRepoFile(root, WORKFLOW, 'name: base\njobs: {}\n');
+			runGit(root, ['add', WORKFLOW]);
+			const result = runCheck(root);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+});
