@@ -19,6 +19,7 @@ function buildHarness(overrides = {}) {
   let persisted = overrides.existingPr || null;
   let upserts = 0;
   let reads = 0;
+  const readKeys = [];
   const worktrees = overrides.worktrees || [{
     id: 'WT-1',
     path: ROOT,
@@ -33,7 +34,9 @@ function buildHarness(overrides = {}) {
     if (key === 'git rev-parse --show-toplevel') return `${ROOT}\n`;
     if (key === 'git branch --show-current') return `${BRANCH}\n`;
     if (key === 'git rev-parse HEAD') return `${overrides.localHead || HEAD}\n`;
-    if (key === 'git rev-parse --path-format=absolute --git-common-dir') return `${COMMON}\n`;
+    if (key === 'git rev-parse --path-format=absolute --git-common-dir') {
+      return `${overrides.commonDirOutput || COMMON}\n`;
+    }
     if (key === 'gh repo view --json nameWithOwner,isFork,parent') {
       return JSON.stringify({ nameWithOwner: REPO, isFork: false, parent: null });
     }
@@ -50,8 +53,9 @@ function buildHarness(overrides = {}) {
     throw new Error(`unexpected command: ${key}`);
   };
   const broker = {
-    listOpenPrs: async () => {
+    listOpenPrs: async (gitCommonDir) => {
       reads += 1;
+      readKeys.push(gitCommonDir);
       if (overrides.openPrRows) return overrides.openPrRows;
       if (overrides.readBackFailure && upserts > 0) return [];
       return persisted ? [persisted] : [];
@@ -91,7 +95,7 @@ function buildHarness(overrides = {}) {
     opts,
     broker,
     driver,
-    calls: () => ({ upserts, reads, persisted }),
+    calls: () => ({ upserts, reads, readKeys, persisted }),
   };
 }
 
@@ -141,6 +145,18 @@ describe('forge pr link', () => {
       worktree_id: 'WT-1',
       state: 'open',
     });
+  });
+
+  test('normalizes the git common directory before every Kernel read and write', async () => {
+    const rawCommonDir = process.platform === 'win32'
+      ? COMMON.replaceAll('\\', '/')
+      : `${COMMON}${path.sep}.`;
+    const harness = buildHarness({ commonDirOutput: rawCommonDir });
+
+    expect((await link(harness)).success).toBe(true);
+
+    expect(harness.calls().readKeys).toEqual([COMMON, COMMON]);
+    expect(harness.calls().persisted.git_common_dir).toBe(COMMON);
   });
 
   test('is idempotent and preserves existing linkage metadata', async () => {
