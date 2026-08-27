@@ -141,11 +141,79 @@ function objectIdForSpec(spec) {
 	}
 }
 
-// True when `commit` is reachable from at least one remote-tracking ref, i.e.
-// the bytes are already published upstream and passed the gate there.
-function isPublishedUpstream(commit) {
+// Resolve the repository's single canonical upstream ref, deterministically:
+// the current branch's configured upstream remote (else `origin`), then that
+// remote's default branch (`refs/remotes/<remote>/HEAD`, falling back to the
+// branch's configured upstream and then the conventional default names).
+// Returns a fully-qualified ref name, or null when it cannot be established.
+function canonicalUpstreamRef() {
+	let branch;
 	try {
-		return gitCapture(['for-each-ref', '--count=1', '--contains', commit, '--format=%(refname)', 'refs/remotes']) !== '';
+		branch = gitCapture(['symbolic-ref', '--quiet', '--short', 'HEAD']);
+	} catch {
+		branch = '';
+	}
+
+	let remote = '';
+	if (branch) {
+		try {
+			remote = gitCapture(['config', '--get', `branch.${branch}.remote`]);
+		} catch {
+			remote = '';
+		}
+	}
+	if (!remote) remote = 'origin';
+	try {
+		const remotes = gitCapture(['remote']).split(/\r?\n/).map(line => line.trim());
+		if (!remotes.includes(remote)) return null;
+	} catch {
+		return null;
+	}
+
+	const candidates = [];
+	try {
+		const head = gitCapture(['symbolic-ref', '--quiet', `refs/remotes/${remote}/HEAD`]);
+		if (head) candidates.push(head);
+	} catch {
+		// no remote HEAD recorded; fall through to the configured upstream
+	}
+	if (branch) {
+		try {
+			const merge = gitCapture(['config', '--get', `branch.${branch}.merge`]);
+			if (merge.startsWith('refs/heads/')) {
+				candidates.push(`refs/remotes/${remote}/${merge.slice('refs/heads/'.length)}`);
+			}
+		} catch {
+			// branch has no configured upstream
+		}
+	}
+	candidates.push(`refs/remotes/${remote}/main`, `refs/remotes/${remote}/master`);
+
+	for (const candidate of candidates) {
+		if (resolveCommit(candidate)) return candidate;
+	}
+	return null;
+}
+
+// True when `commit` is contained in the canonical upstream line — not merely
+// "some ref points at it". `--contains` over refs/remotes would accept an
+// untrusted contributor remote or a hand-written `git update-ref
+// refs/remotes/<anything>`; ancestry in the canonical ref is the property we
+// actually want (these bytes are already published on the branch this repo
+// integrates into, where the same gate ran).
+//
+// Honest limitation: refs under .git are locally writable, and anyone who can
+// write .git can disable this hook outright. This gate defends against
+// accidental and agent-authored protected edits and against merges from
+// untrusted contributor remotes. It is NOT a security boundary against a local
+// adversary — do not treat it as one.
+function isCanonicalUpstreamAncestor(commit, canonicalRef) {
+	if (!canonicalRef) return false;
+	try {
+		execFileSync('git', ['merge-base', '--is-ancestor', commit, canonicalRef], {
+			stdio: ['ignore', 'ignore', 'ignore'],
+		});
+		return true;
 	} catch {
 		return false;
 	}
@@ -154,7 +222,7 @@ function isPublishedUpstream(commit) {
 // A merge is in progress when the per-worktree MERGE_HEAD exists. `--git-path`
 // resolves the correct (possibly linked-worktree) git dir. Returns null unless a
 // merge is genuinely in progress and every recorded id resolves; `trustedSides`
-// holds only those MERGE_HEAD commits already published on a remote-tracking ref.
+// holds only those MERGE_HEAD commits contained in the canonical upstream ref.
 function readMergeProvenance() {
 	let mergeHeadPath;
 	try {
@@ -176,9 +244,15 @@ function readMergeProvenance() {
 	if (ids.length === 0 || !ids.every(isValidGitObjectId)) return null;
 	const resolved = ids.map(id => resolveCommit(id));
 	if (resolved.some(commit => commit === null)) return null;
+	// HEAD anchors the "no net change" half of the predicate. If it cannot be
+	// resolved we know nothing about the commit being built, so there is no
+	// exemption context at all — fail closed rather than fall back to the sides.
+	const head = resolveCommit('HEAD');
+	if (!head) return null;
+	const canonicalRef = canonicalUpstreamRef();
 	return {
-		head: resolveCommit('HEAD'),
-		trustedSides: resolved.filter(commit => isPublishedUpstream(commit)),
+		head,
+		trustedSides: resolved.filter(commit => isCanonicalUpstreamAncestor(commit, canonicalRef)),
 	};
 }
 
@@ -187,9 +261,9 @@ function readMergeProvenance() {
 // trusted provenance:
 //   - staged blob === the blob at HEAD: no net change versus the branch being
 //     committed onto, so there is no provenance question at all; or
-//   - staged blob === the blob on a MERGE_HEAD that is reachable from a
-//     remote-tracking ref: the bytes are already published upstream and cleared
-//     the gate there.
+//   - staged blob === the blob on a MERGE_HEAD contained in the canonical
+//     upstream ref: the bytes are already published on the line this repo
+//     integrates into, where the same gate ran.
 // A purely local merge side earns no exemption — otherwise anyone could smuggle a
 // protected edit in on a local branch and merge it. The merge base is likewise not
 // a permitted side: matching only the base means both sides were reverted, an edit.
@@ -197,8 +271,7 @@ function readMergeProvenance() {
 function createMergeExemption() {
 	const merge = readMergeProvenance();
 	if (!merge) return () => false;
-	const trustedRevisions = [...(merge.head ? [merge.head] : []), ...merge.trustedSides];
-	if (trustedRevisions.length === 0) return () => false;
+	const trustedRevisions = [merge.head, ...merge.trustedSides];
 	return file => {
 		const staged = objectIdForSpec(`:${file}`);
 		if (staged === null) return false;
