@@ -110,10 +110,36 @@ function getCurrentHead() {
 const ABSENT_ENTRY = 'absent';
 const LINE_SPLIT = /\r?\n/;
 
+// Pathspec magic is only honoured when Git is not already in a forced pathspec
+// mode. If the hook inherits GIT_LITERAL_PATHSPECS=1, `:(literal)<file>` is read
+// as a filename spelled `:(literal)<file>`, every probe matches nothing, and the
+// exemption predicate would compare absent against absent. The sibling GLOB /
+// NOGLOB / ICASE switches distort matching the same way, so strip all four and
+// keep the explicit `:(literal)` magic (paths with glob or colon characters stay
+// safe). Keys are compared case-insensitively because Windows environment names
+// are case-insensitive.
+const PATHSPEC_ENV_KEYS = new Set([
+	'GIT_LITERAL_PATHSPECS',
+	'GIT_GLOB_PATHSPECS',
+	'GIT_NOGLOB_PATHSPECS',
+	'GIT_ICASE_PATHSPECS',
+]);
+
+function pathspecSafeEnv() {
+	const env = { ...process.env };
+	for (const key of Object.keys(env)) {
+		if (PATHSPEC_ENV_KEYS.has(key.toUpperCase())) delete env[key];
+	}
+	return env;
+}
+
+const GIT_PROBE_ENV = pathspecSafeEnv();
+
 function gitCapture(args) {
 	return execFileSync('git', args, {
 		encoding: 'utf8',
 		stdio: ['ignore', 'pipe', 'pipe'],
+		env: GIT_PROBE_ENV,
 	}).trim();
 }
 
@@ -307,6 +333,12 @@ function createMergeExemption() {
 	return file => {
 		const staged = stagedEntry(file);
 		if (staged === null) return false;
+		// Git just reported this path as staged, so an absent index entry is a
+		// contradiction (a broken or misinterpreted probe), not evidence of
+		// equality. Treat it as unknown and refuse the exemption. The one honest
+		// absence is a staged deletion, where absent === absent is the real answer
+		// and a merged deletion must still pass.
+		if (staged === ABSENT_ENTRY && !deletedFiles.has(file)) return false;
 		return trustedRevisions.some(revision => {
 			const entry = revisionEntry(revision, file);
 			return entry !== null && entry === staged;

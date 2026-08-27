@@ -540,11 +540,11 @@ describe('scripts/protected-state-check.js merge awareness', () => {
 		runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', branch]);
 	}
 
-	function runCheck(work) {
+	function runCheck(work, extraEnv = {}) {
 		return spawnSync('node', [scriptPath], {
 			cwd: work,
 			stdio: 'pipe',
-			env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: 'merge-test' },
+			env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: 'merge-test', ...extraEnv },
 		});
 	}
 
@@ -676,6 +676,76 @@ describe('scripts/protected-state-check.js merge awareness', () => {
 			const result = runCheck(work);
 			expect(result.status).toBe(1);
 			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('blocks a hand-edited protected path during a merge under inherited GIT_LITERAL_PATHSPECS', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			startMerge(work, { branch: 'upstream-work', publish: true });
+			writeRepoFile(work, WORKFLOW, 'name: base\njobs: {}\n# hand edit\n');
+			runGit(work, ['add', WORKFLOW]);
+			// Forced literal-pathspec mode would make `:(literal)<file>` probes match
+			// nothing, so absent would compare equal to absent and exempt everything.
+			const result = runCheck(work, { GIT_LITERAL_PATHSPECS: '1' });
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('still allows a genuine upstream merge carry-over under inherited GIT_LITERAL_PATHSPECS', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			startMerge(work, { branch: 'upstream-work', publish: true });
+			const result = runCheck(work, { GIT_LITERAL_PATHSPECS: '1' });
+			expect(`${result.stdout}${result.stderr}`).not.toContain('Protected state edit detected');
+			expect(result.status).toBe(0);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('blocks a staged non-deletion protected path whose index probe finds nothing', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			startMerge(work, { branch: 'upstream-work', publish: true });
+			// Reported as staged-modified, but absent from the index: the probe and the
+			// revision lookup both come back empty, which must never read as equal.
+			const result = runCheck(work, {
+				FORGE_PROTECTED_STATE_STAGED_NAME_STATUS: 'M\t.github/workflows/ghost.yml',
+			});
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain('.github/workflows/ghost.yml');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('allows a protected path deleted by a merge from the canonical upstream', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
+			runGit(work, ['checkout', '--quiet', '-B', 'upstream-work', 'master']);
+			runGit(work, ['rm', '--quiet', WORKFLOW]);
+			runGit(work, ['commit', '--quiet', '-m', 'delete workflow']);
+			runGit(work, ['push', '--quiet', 'origin', 'upstream-work:master']);
+			runGit(work, ['fetch', '--quiet', 'origin']);
+			runGit(work, ['checkout', '--quiet', 'feature']);
+			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+			runGit(work, ['add', 'lib/safe.js']);
+			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
+			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'upstream-work']);
+			const result = runCheck(work);
+			expect(`${result.stdout}${result.stderr}`).not.toContain('Protected state edit detected');
+			expect(result.status).toBe(0);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
