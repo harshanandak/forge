@@ -491,3 +491,389 @@ describe('scripts/protected-state-check.js', () => {
 		expect(output).toContain('beads_state');
 	});
 });
+
+describe('scripts/protected-state-check.js merge awareness', () => {
+	const scriptPath = path.join(__dirname, '..', 'scripts', 'protected-state-check.js');
+	const WORKFLOW = '.github/workflows/test.yml';
+
+	function writeRepoFile(root, relPath, content) {
+		fs.mkdirSync(path.join(root, path.dirname(relPath)), { recursive: true });
+		fs.writeFileSync(path.join(root, relPath), content);
+	}
+
+	// A repo with a real origin and a recorded default branch, so the canonical
+	// upstream ref resolves the way a clone's would.
+	function initRepo(root) {
+		const remote = path.join(root, 'remote.git');
+		const work = path.join(root, 'work');
+		runGit(root, ['init', '--bare', '--quiet', '--initial-branch=master', remote]);
+		runGit(root, ['init', '--quiet', '--initial-branch=master', work]);
+		runGit(work, ['config', 'user.email', 'test@example.com']);
+		runGit(work, ['config', 'user.name', 'Test']);
+		runGit(work, ['config', 'commit.gpgsign', 'false']);
+		runGit(work, ['remote', 'add', 'origin', remote]);
+		writeRepoFile(work, WORKFLOW, 'name: base\n');
+		writeRepoFile(work, 'lib/safe.js', 'module.exports = 1;\n');
+		runGit(work, ['add', '.']);
+		runGit(work, ['commit', '--quiet', '-m', 'base']);
+		runGit(work, ['push', '--quiet', '-u', 'origin', 'master']);
+		runGit(work, ['remote', 'set-head', 'origin', 'master']);
+		return work;
+	}
+
+	// Commit a workflow change on `branch`, optionally publish it to the canonical
+	// upstream (origin/master), then merge it into a feature branch without committing.
+	function startMerge(work, { branch, publish }) {
+		runGit(work, ['checkout', '--quiet', '-b', 'feature']);
+		runGit(work, ['checkout', '--quiet', '-B', branch, 'master']);
+		writeRepoFile(work, WORKFLOW, 'name: base\njobs: {}\n');
+		runGit(work, ['add', WORKFLOW]);
+		runGit(work, ['commit', '--quiet', '-m', 'workflow change']);
+		if (publish) {
+			runGit(work, ['push', '--quiet', 'origin', `${branch}:master`]);
+			runGit(work, ['fetch', '--quiet', 'origin']);
+		}
+		runGit(work, ['checkout', '--quiet', 'feature']);
+		writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+		runGit(work, ['add', 'lib/safe.js']);
+		runGit(work, ['commit', '--quiet', '-m', 'feature change']);
+		runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', branch]);
+	}
+
+	function runCheck(work, extraEnv = {}) {
+		return spawnSync('node', [scriptPath], {
+			cwd: work,
+			stdio: 'pipe',
+			env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: 'merge-test', ...extraEnv },
+		});
+	}
+
+	test('allows a merge whose protected blob matches a MERGE_HEAD in the canonical upstream', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			startMerge(work, { branch: 'upstream-work', publish: true });
+			const result = runCheck(work);
+			expect(`${result.stdout}${result.stderr}`).not.toContain('Protected state edit detected');
+			expect(result.status).toBe(0);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('blocks a merge whose protected blob is only reachable from a hand-created remote-tracking ref', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
+			runGit(work, ['checkout', '--quiet', '-B', 'attacker-branch', 'master']);
+			writeRepoFile(work, WORKFLOW, 'name: base\njobs: {}\n');
+			runGit(work, ['add', WORKFLOW]);
+			runGit(work, ['commit', '--quiet', '-m', 'workflow change']);
+			// Locally forged "published" provenance: a refs/remotes ref nobody fetched.
+			runGit(work, ['update-ref', 'refs/remotes/attacker/x', 'attacker-branch']);
+			runGit(work, ['checkout', '--quiet', 'feature']);
+			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+			runGit(work, ['add', 'lib/safe.js']);
+			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
+			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'attacker-branch']);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('blocks a merge from a local-only branch that modified a protected path', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			startMerge(work, { branch: 'local-only', publish: false });
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('still blocks a merge-in-progress protected path edited beyond the merge content', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			startMerge(work, { branch: 'upstream-work', publish: true });
+			writeRepoFile(work, WORKFLOW, 'name: base\njobs: {}\n# hand edit\n');
+			runGit(work, ['add', WORKFLOW]);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('still requires the bun.lock regeneration proof for a lockfile carried in by a merge', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
+			runGit(work, ['checkout', '--quiet', '-B', 'upstream-work', 'master']);
+			writeRepoFile(work, 'bun.lock', '{"lockfileVersion": 1}\n');
+			runGit(work, ['add', 'bun.lock']);
+			runGit(work, ['commit', '--quiet', '-m', 'lockfile change']);
+			runGit(work, ['push', '--quiet', 'origin', 'upstream-work:master']);
+			runGit(work, ['fetch', '--quiet', 'origin']);
+			runGit(work, ['checkout', '--quiet', 'feature']);
+			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+			runGit(work, ['add', 'lib/safe.js']);
+			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
+			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'upstream-work']);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain('bun.lock');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 120_000);
+
+	test('blocks a mode-only change to a protected path carried in by a merge', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			startMerge(work, { branch: 'upstream-work', publish: true });
+			// Same blob as the trusted merge side, different mode.
+			runGit(work, ['update-index', '--chmod=+x', WORKFLOW]);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('grants no exemption when HEAD cannot be resolved during a merge', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			startMerge(work, { branch: 'upstream-work', publish: true });
+			// Same staged bytes as the allowed case, but HEAD no longer resolves.
+			runGit(work, ['symbolic-ref', 'HEAD', 'refs/heads/gone']);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('still blocks a staged protected path when no merge is in progress', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			writeRepoFile(work, WORKFLOW, 'name: base\njobs: {}\n');
+			runGit(work, ['add', WORKFLOW]);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('blocks a hand-edited protected path during a merge under inherited GIT_LITERAL_PATHSPECS', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			startMerge(work, { branch: 'upstream-work', publish: true });
+			writeRepoFile(work, WORKFLOW, 'name: base\njobs: {}\n# hand edit\n');
+			runGit(work, ['add', WORKFLOW]);
+			// Forced literal-pathspec mode would make `:(literal)<file>` probes match
+			// nothing, so absent would compare equal to absent and exempt everything.
+			const result = runCheck(work, { GIT_LITERAL_PATHSPECS: '1' });
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('still allows a genuine upstream merge carry-over under inherited GIT_LITERAL_PATHSPECS', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			startMerge(work, { branch: 'upstream-work', publish: true });
+			const result = runCheck(work, { GIT_LITERAL_PATHSPECS: '1' });
+			expect(`${result.stdout}${result.stderr}`).not.toContain('Protected state edit detected');
+			expect(result.status).toBe(0);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('blocks a staged non-deletion protected path whose index probe finds nothing', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			startMerge(work, { branch: 'upstream-work', publish: true });
+			// Reported as staged-modified, but absent from the index: the probe and the
+			// revision lookup both come back empty, which must never read as equal.
+			const result = runCheck(work, {
+				FORGE_PROTECTED_STATE_STAGED_NAME_STATUS: 'M\t.github/workflows/ghost.yml',
+			});
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain('.github/workflows/ghost.yml');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('allows a protected path deleted by a merge from the canonical upstream', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
+			runGit(work, ['checkout', '--quiet', '-B', 'upstream-work', 'master']);
+			runGit(work, ['rm', '--quiet', WORKFLOW]);
+			runGit(work, ['commit', '--quiet', '-m', 'delete workflow']);
+			runGit(work, ['push', '--quiet', 'origin', 'upstream-work:master']);
+			runGit(work, ['fetch', '--quiet', 'origin']);
+			runGit(work, ['checkout', '--quiet', 'feature']);
+			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+			runGit(work, ['add', 'lib/safe.js']);
+			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
+			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'upstream-work']);
+			const result = runCheck(work);
+			expect(`${result.stdout}${result.stderr}`).not.toContain('Protected state edit detected');
+			expect(result.status).toBe(0);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('blocks a manual deletion of a HEAD-only protected path during an upstream merge', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			const featureOnly = '.github/workflows/feature-only.yml';
+			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
+			// Exists only on the branch being committed onto; the upstream never had it.
+			writeRepoFile(work, featureOnly, 'name: feature-only\n');
+			runGit(work, ['add', featureOnly]);
+			runGit(work, ['commit', '--quiet', '-m', 'feature-only workflow']);
+			runGit(work, ['checkout', '--quiet', '-B', 'upstream-work', 'master']);
+			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+			runGit(work, ['add', 'lib/safe.js']);
+			runGit(work, ['commit', '--quiet', '-m', 'upstream change']);
+			runGit(work, ['push', '--quiet', 'origin', 'upstream-work:master']);
+			runGit(work, ['fetch', '--quiet', 'origin']);
+			runGit(work, ['checkout', '--quiet', 'feature']);
+			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'upstream-work']);
+			// The merge left the path alone; this deletion is the committer's own edit.
+			runGit(work, ['rm', '--quiet', featureOnly]);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(featureOnly);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('blocks a staged protected deletion when the merge base cannot be resolved', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			// An unrelated-history upstream: absent there, but no merge base can prove
+			// the side ever deleted anything.
+			runGit(work, ['checkout', '--quiet', '--orphan', 'orphan']);
+			runGit(work, ['rm', '-r', '-f', '--quiet', '.']);
+			writeRepoFile(work, 'lib/other.js', 'module.exports = 3;\n');
+			runGit(work, ['add', 'lib/other.js']);
+			runGit(work, ['commit', '--quiet', '-m', 'unrelated root']);
+			runGit(work, ['push', '--quiet', '--force', 'origin', 'orphan:master']);
+			runGit(work, ['fetch', '--quiet', 'origin']);
+			runGit(work, ['checkout', '--quiet', '-b', 'feature', 'master']);
+			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', '--allow-unrelated-histories', 'orphan']);
+			runGit(work, ['rm', '--quiet', WORKFLOW]);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	// A fork-style checkout: `origin` is the contributor-owned fork the feature
+	// branch tracks, `upstream` is the official repository the PR merges into.
+	// Provenance must be resolved against `upstream`, never the tracking remote.
+	function initForkRepo(root) {
+		const upstreamRemote = path.join(root, 'upstream.git');
+		const forkRemote = path.join(root, 'fork.git');
+		const work = path.join(root, 'work');
+		runGit(root, ['init', '--bare', '--quiet', '--initial-branch=master', upstreamRemote]);
+		runGit(root, ['init', '--bare', '--quiet', '--initial-branch=master', forkRemote]);
+		runGit(root, ['init', '--quiet', '--initial-branch=master', work]);
+		runGit(work, ['config', 'user.email', 'test@example.com']);
+		runGit(work, ['config', 'user.name', 'Test']);
+		runGit(work, ['config', 'commit.gpgsign', 'false']);
+		runGit(work, ['remote', 'add', 'origin', forkRemote]);
+		runGit(work, ['remote', 'add', 'upstream', upstreamRemote]);
+		writeRepoFile(work, WORKFLOW, 'name: base\n');
+		writeRepoFile(work, 'lib/safe.js', 'module.exports = 1;\n');
+		runGit(work, ['add', '.']);
+		runGit(work, ['commit', '--quiet', '-m', 'base']);
+		runGit(work, ['push', '--quiet', 'upstream', 'master']);
+		runGit(work, ['push', '--quiet', 'origin', 'master']);
+		runGit(work, ['remote', 'set-head', 'origin', 'master']);
+		runGit(work, ['remote', 'set-head', 'upstream', 'master']);
+		return work;
+	}
+
+	// Change a protected path on `fork-work`, publish it to the fork's default
+	// branch, optionally publish it to the official repo too, then merge it into a
+	// feature branch that tracks the fork.
+	function startForkMerge(work, { publishUpstream }) {
+		runGit(work, ['checkout', '--quiet', '-B', 'fork-work', 'master']);
+		writeRepoFile(work, WORKFLOW, 'name: base\njobs: {}\n');
+		runGit(work, ['add', WORKFLOW]);
+		runGit(work, ['commit', '--quiet', '-m', 'workflow change']);
+		runGit(work, ['push', '--quiet', 'origin', 'fork-work:master']);
+		if (publishUpstream) {
+			runGit(work, ['push', '--quiet', 'upstream', 'fork-work:master']);
+		}
+		runGit(work, ['fetch', '--quiet', '--all']);
+		runGit(work, ['checkout', '--quiet', '-b', 'feature', 'master']);
+		// The feature branch tracks the contributor's fork, not the official repo.
+		runGit(work, ['push', '--quiet', '-u', 'origin', 'feature']);
+		writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+		runGit(work, ['add', 'lib/safe.js']);
+		runGit(work, ['commit', '--quiet', '-m', 'feature change']);
+		runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'fork-work']);
+	}
+
+	test('blocks a fork-published protected change absent from the upstream base remote', () => {
+		const root = createTempDir();
+		try {
+			const work = initForkRepo(root);
+			startForkMerge(work, { publishUpstream: false });
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('allows the same fork merge once the change is published to the upstream base remote', () => {
+		const root = createTempDir();
+		try {
+			const work = initForkRepo(root);
+			startForkMerge(work, { publishUpstream: true });
+			const result = runCheck(work);
+			expect(`${result.stdout}${result.stderr}`).not.toContain('Protected state edit detected');
+			expect(result.status).toBe(0);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+});
