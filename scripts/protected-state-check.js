@@ -12,6 +12,7 @@ const {
 	isValidGitObjectId,
 } = require('../lib/protected-state-authority');
 const { verifyBunLockfileRegeneration } = require('../lib/bun-lockfile-proof');
+const { resolveBaseRemote, resolveBaseBranch } = require('../lib/base-remote');
 const realStagedFiles = new Set();
 const deletedFiles = new Set();
 
@@ -212,28 +213,24 @@ function revisionEntry(revision, file) {
 	return `${match[1]} ${match[2]} ${match[3]}`;
 }
 
+// Adapter so the shared base-remote resolver runs through this script's
+// pathspec-scrubbed git probe. The resolver ignores the options object it is
+// handed here; the env scrub and quiet stdio come from `gitCapture`.
+function baseRemoteProbe(_command, args) {
+	return gitCapture(args);
+}
+
 // Resolve the repository's single canonical upstream ref, deterministically:
-// the current branch's configured upstream remote (else `origin`), then that
-// remote's default branch (`refs/remotes/<remote>/HEAD`, falling back to the
-// branch's configured upstream and then the conventional default names).
+// the *base* remote (`upstream` preferred over `origin`, the same resolution
+// `/ship` uses to pick a PR base), then that remote's default branch
+// (`refs/remotes/<remote>/HEAD`, falling back to the conventional default
+// names). Deliberately NOT the current branch's tracking remote: in a
+// fork-style checkout the feature branch tracks the contributor-owned fork, and
+// trusting it would let a change merged from the fork's default branch pass as
+// "already published on the base" when it never reached the official repo.
 // Returns a fully-qualified ref name, or null when it cannot be established.
 function canonicalUpstreamRef() {
-	let branch;
-	try {
-		branch = gitCapture(['symbolic-ref', '--quiet', '--short', 'HEAD']);
-	} catch {
-		branch = '';
-	}
-
-	let remote = '';
-	if (branch) {
-		try {
-			remote = gitCapture(['config', '--get', `branch.${branch}.remote`]);
-		} catch {
-			remote = '';
-		}
-	}
-	if (!remote) remote = 'origin';
+	const remote = resolveBaseRemote(baseRemoteProbe, process.cwd());
 	try {
 		const remotes = gitCapture(['remote']).split(/\r?\n/).map(line => line.trim());
 		if (!remotes.includes(remote)) return null;
@@ -246,18 +243,9 @@ function canonicalUpstreamRef() {
 		const head = gitCapture(['symbolic-ref', '--quiet', `refs/remotes/${remote}/HEAD`]);
 		if (head) candidates.push(head);
 	} catch {
-		// no remote HEAD recorded; fall through to the configured upstream
+		// no remote HEAD recorded; fall through to the resolved default branch
 	}
-	if (branch) {
-		try {
-			const merge = gitCapture(['config', '--get', `branch.${branch}.merge`]);
-			if (merge.startsWith('refs/heads/')) {
-				candidates.push(`refs/remotes/${remote}/${merge.slice('refs/heads/'.length)}`);
-			}
-		} catch {
-			// branch has no configured upstream
-		}
-	}
+	candidates.push(`refs/remotes/${remote}/${resolveBaseBranch(baseRemoteProbe, process.cwd(), remote)}`);
 	candidates.push(`refs/remotes/${remote}/main`, `refs/remotes/${remote}/master`);
 
 	for (const candidate of candidates) {

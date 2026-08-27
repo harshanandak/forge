@@ -802,4 +802,78 @@ describe('scripts/protected-state-check.js merge awareness', () => {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	}, 60_000);
+
+	// A fork-style checkout: `origin` is the contributor-owned fork the feature
+	// branch tracks, `upstream` is the official repository the PR merges into.
+	// Provenance must be resolved against `upstream`, never the tracking remote.
+	function initForkRepo(root) {
+		const upstreamRemote = path.join(root, 'upstream.git');
+		const forkRemote = path.join(root, 'fork.git');
+		const work = path.join(root, 'work');
+		runGit(root, ['init', '--bare', '--quiet', '--initial-branch=master', upstreamRemote]);
+		runGit(root, ['init', '--bare', '--quiet', '--initial-branch=master', forkRemote]);
+		runGit(root, ['init', '--quiet', '--initial-branch=master', work]);
+		runGit(work, ['config', 'user.email', 'test@example.com']);
+		runGit(work, ['config', 'user.name', 'Test']);
+		runGit(work, ['config', 'commit.gpgsign', 'false']);
+		runGit(work, ['remote', 'add', 'origin', forkRemote]);
+		runGit(work, ['remote', 'add', 'upstream', upstreamRemote]);
+		writeRepoFile(work, WORKFLOW, 'name: base\n');
+		writeRepoFile(work, 'lib/safe.js', 'module.exports = 1;\n');
+		runGit(work, ['add', '.']);
+		runGit(work, ['commit', '--quiet', '-m', 'base']);
+		runGit(work, ['push', '--quiet', 'upstream', 'master']);
+		runGit(work, ['push', '--quiet', 'origin', 'master']);
+		runGit(work, ['remote', 'set-head', 'origin', 'master']);
+		runGit(work, ['remote', 'set-head', 'upstream', 'master']);
+		return work;
+	}
+
+	// Change a protected path on `fork-work`, publish it to the fork's default
+	// branch, optionally publish it to the official repo too, then merge it into a
+	// feature branch that tracks the fork.
+	function startForkMerge(work, { publishUpstream }) {
+		runGit(work, ['checkout', '--quiet', '-B', 'fork-work', 'master']);
+		writeRepoFile(work, WORKFLOW, 'name: base\njobs: {}\n');
+		runGit(work, ['add', WORKFLOW]);
+		runGit(work, ['commit', '--quiet', '-m', 'workflow change']);
+		runGit(work, ['push', '--quiet', 'origin', 'fork-work:master']);
+		if (publishUpstream) {
+			runGit(work, ['push', '--quiet', 'upstream', 'fork-work:master']);
+		}
+		runGit(work, ['fetch', '--quiet', '--all']);
+		runGit(work, ['checkout', '--quiet', '-b', 'feature', 'master']);
+		// The feature branch tracks the contributor's fork, not the official repo.
+		runGit(work, ['push', '--quiet', '-u', 'origin', 'feature']);
+		writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+		runGit(work, ['add', 'lib/safe.js']);
+		runGit(work, ['commit', '--quiet', '-m', 'feature change']);
+		runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'fork-work']);
+	}
+
+	test('blocks a fork-published protected change absent from the upstream base remote', () => {
+		const root = createTempDir();
+		try {
+			const work = initForkRepo(root);
+			startForkMerge(work, { publishUpstream: false });
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('allows the same fork merge once the change is published to the upstream base remote', () => {
+		const root = createTempDir();
+		try {
+			const work = initForkRepo(root);
+			startForkMerge(work, { publishUpstream: true });
+			const result = runCheck(work);
+			expect(`${result.stdout}${result.stderr}`).not.toContain('Protected state edit detected');
+			expect(result.status).toBe(0);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
 });
