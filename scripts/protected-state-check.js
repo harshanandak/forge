@@ -107,7 +107,8 @@ function getCurrentHead() {
 	}
 }
 
-const ABSENT_OBJECT = 'absent';
+const ABSENT_ENTRY = 'absent';
+const LINE_SPLIT = /\r?\n/;
 
 function gitCapture(args) {
 	return execFileSync('git', args, {
@@ -127,18 +128,49 @@ function resolveCommit(revision) {
 	}
 }
 
-// Object id of `<spec>` (e.g. `:path`, `<sha>:path`).
-// Returns ABSENT_OBJECT when the path is provably missing from an existing tree,
-// and null when the answer is unknown — callers must fail closed on null.
-function objectIdForSpec(spec) {
+// Git prints the mode but not the type for index entries; derive it so index and
+// tree entries normalise to the same shape.
+function objectTypeForMode(mode) {
+	if (mode === '160000') return 'commit';
+	if (mode === '040000' || mode === '40000') return 'tree';
+	return 'blob';
+}
+
+// Normalised `<mode> <type> <oid>` for the staged index entry, ABSENT_ENTRY when
+// the path is not in the index, or null when the answer is unknown. A conflicted
+// path yields several stage lines and therefore null — fail closed.
+// The mode matters: blob equality alone would exempt a real 100644 -> 100755
+// index change on a protected path.
+function stagedEntry(file) {
+	let output;
 	try {
-		const id = gitCapture(['rev-parse', '--verify', '--quiet', spec]);
-		if (isValidGitObjectId(id)) return id;
-		return id === '' ? ABSENT_OBJECT : null;
-	} catch (error) {
-		if (error && error.status === 1 && !String(error.stderr || '').trim()) return ABSENT_OBJECT;
+		output = gitCapture(['ls-files', '--stage', '--', `:(literal)${file}`]);
+	} catch {
 		return null;
 	}
+	if (output === '') return ABSENT_ENTRY;
+	const lines = output.split(LINE_SPLIT).filter(Boolean);
+	if (lines.length !== 1) return null;
+	const match = /^([0-7]{6}) ([0-9a-f]{40}|[0-9a-f]{64}) [0-3]\t/.exec(lines[0]);
+	if (!match) return null;
+	return `${match[1]} ${objectTypeForMode(match[1])} ${match[2]}`;
+}
+
+// Same normalised shape for `<revision>:<file>`, so the comparison covers mode
+// and object type as well as content.
+function revisionEntry(revision, file) {
+	let output;
+	try {
+		output = gitCapture(['ls-tree', revision, '--', `:(literal)${file}`]);
+	} catch {
+		return null;
+	}
+	if (output === '') return ABSENT_ENTRY;
+	const lines = output.split(LINE_SPLIT).filter(Boolean);
+	if (lines.length !== 1) return null;
+	const match = /^([0-7]{6}) (blob|tree|commit) ([0-9a-f]{40}|[0-9a-f]{64})\t/.exec(lines[0]);
+	if (!match) return null;
+	return `${match[1]} ${match[2]} ${match[3]}`;
 }
 
 // Resolve the repository's single canonical upstream ref, deterministically:
@@ -259,9 +291,9 @@ function readMergeProvenance() {
 // Exemption predicate. While a merge is in progress, a staged protected path is
 // exempt only when the committer introduced no net change AND the content has
 // trusted provenance:
-//   - staged blob === the blob at HEAD: no net change versus the branch being
+//   - staged entry (mode + object) === the entry at HEAD: no net change versus the branch being
 //     committed onto, so there is no provenance question at all; or
-//   - staged blob === the blob on a MERGE_HEAD contained in the canonical
+//   - staged entry === the entry on a MERGE_HEAD contained in the canonical
 //     upstream ref: the bytes are already published on the line this repo
 //     integrates into, where the same gate ran.
 // A purely local merge side earns no exemption — otherwise anyone could smuggle a
@@ -273,11 +305,11 @@ function createMergeExemption() {
 	if (!merge) return () => false;
 	const trustedRevisions = [merge.head, ...merge.trustedSides];
 	return file => {
-		const staged = objectIdForSpec(`:${file}`);
+		const staged = stagedEntry(file);
 		if (staged === null) return false;
 		return trustedRevisions.some(revision => {
-			const revisionObject = objectIdForSpec(`${revision}:${file}`);
-			return revisionObject !== null && revisionObject === staged;
+			const entry = revisionEntry(revision, file);
+			return entry !== null && entry === staged;
 		});
 	};
 }

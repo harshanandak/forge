@@ -637,6 +637,21 @@ describe('scripts/protected-state-check.js merge awareness', () => {
 		}
 	}, 120_000);
 
+	test('blocks a mode-only change to a protected path carried in by a merge', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			startMerge(work, { branch: 'upstream-work', publish: true });
+			// Same blob as the trusted merge side, different mode.
+			runGit(work, ['update-index', '--chmod=+x', WORKFLOW]);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
 	test('grants no exemption when HEAD cannot be resolved during a merge', () => {
 		const root = createTempDir();
 		try {
