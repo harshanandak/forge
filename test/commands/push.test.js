@@ -295,6 +295,106 @@ describe('Forge Push Command', () => {
 			expect(joined).toContain('FORGE_TEST_TIMEOUT_MS');
 		});
 
+		test('should report a timeout when spawnSync reports ETIMEDOUT with a null status', async () => {
+			// Verified against pinned Bun 1.3.12 on Windows: a node:child_process
+			// spawnSync timeout returns status:null, signal:<killSignal>, AND an
+			// error whose code is ETIMEDOUT. Checking `error` first hid the
+			// timeout diagnostic in the exact case it was written for.
+			const logs = [];
+			const deps = makeDeps({
+				spawnSync: (_cmd, args, _opts) => {
+					if (args.includes('test')) {
+						return {
+							status: null,
+							signal: 'SIGKILL',
+							error: Object.assign(new Error('spawnSync bun ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+						};
+					}
+					return { status: 0 };
+				},
+				log: msg => logs.push(String(msg)),
+			});
+
+			const result = await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(result.testsPassed).toBe(false);
+			const joined = logs.join('\n');
+			expect(joined).toContain('timed out');
+			expect(joined).toContain('SIGKILL');
+			expect(joined).toContain('FORGE_TEST_TIMEOUT_MS');
+			expect(joined).not.toContain('could not complete');
+		});
+
+		test('should report a timeout when the runner reports exitedDueToTimeout', async () => {
+			// Native Bun.spawnSync shape: exitedDueToTimeout + signalCode instead
+			// of an ETIMEDOUT error. Handle both field spellings.
+			const logs = [];
+			const deps = makeDeps({
+				spawnSync: (_cmd, args, _opts) => {
+					if (args.includes('test')) {
+						return { status: null, signalCode: 'SIGKILL', exitedDueToTimeout: true };
+					}
+					return { status: 0 };
+				},
+				log: msg => logs.push(String(msg)),
+			});
+
+			const result = await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(result.testsPassed).toBe(false);
+			const joined = logs.join('\n');
+			expect(joined).toContain('timed out');
+			expect(joined).toContain('SIGKILL');
+			expect(joined).toContain('FORGE_TEST_TIMEOUT_MS');
+		});
+
+		test('should report a non-timeout signal termination without timeout guidance', async () => {
+			// An externally signalled run (e.g. operator SIGTERM) is not a timeout;
+			// blaming the budget there sends the user after the wrong lever.
+			const logs = [];
+			const deps = makeDeps({
+				spawnSync: (_cmd, args, _opts) => {
+					if (args.includes('test')) {
+						return { status: null, signal: 'SIGTERM' };
+					}
+					return { status: 0 };
+				},
+				log: msg => logs.push(String(msg)),
+			});
+
+			const result = await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(result.testsPassed).toBe(false);
+			const joined = logs.join('\n');
+			expect(joined).toContain('SIGTERM');
+			expect(joined).not.toContain('timed out');
+			expect(joined).not.toContain('FORGE_TEST_TIMEOUT_MS');
+		});
+
+		test('should report a genuine spawn failure as a spawn error, not a timeout', async () => {
+			const logs = [];
+			const deps = makeDeps({
+				spawnSync: (_cmd, args, _opts) => {
+					if (args.includes('test')) {
+						return {
+							status: null,
+							signal: null,
+							error: Object.assign(new Error('spawnSync bun ENOENT'), { code: 'ENOENT' }),
+						};
+					}
+					return { status: 0 };
+				},
+				log: msg => logs.push(String(msg)),
+			});
+
+			const result = await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(result.testsPassed).toBe(false);
+			const joined = logs.join('\n');
+			expect(joined).toContain('ENOENT');
+			expect(joined).not.toContain('timed out');
+		});
+
 		test('should report the spawn error when the test runner cannot start', async () => {
 			const logs = [];
 			const deps = makeDeps({
