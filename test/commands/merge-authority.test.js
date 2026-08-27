@@ -381,6 +381,42 @@ describe('merge command — mandatory release authority', () => {
     }
   });
 
+  test('continues to exact-head provider evaluation for an authoritative open binding without terminal iterations', async () => {
+    let fetches = 0;
+    let merges = 0;
+    const openPr = {
+      id: 'pr-1', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open',
+      git_common_dir: '/repo/.git', iterations: [],
+    };
+    const injected = deps({
+      fetchPrContext: async () => { fetches += 1; return context(); },
+      mergePr: async ({ expectedHead }) => {
+        merges += 1;
+        expect(expectedHead).toBe(HEAD);
+        return { merged: true };
+      },
+      resolveLocalRepository: () => 'acme/forge',
+      buildPrBindingBroker: async () => ({
+        gitCommonDir: '/repo/.git',
+        broker: {
+          readTrace: async () => ({
+            gaps: ['iterations:pr-1:missing'],
+            pull_requests: [openPr],
+          }),
+          listOpenPrs: async () => [openPr],
+        },
+        driver: { close() {} },
+      }),
+    });
+    delete injected.verifyPrIssueBinding;
+
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
+
+    expect(out).toMatchObject({ success: true, merged: true });
+    expect(fetches).toBe(2);
+    expect(merges).toBe(1);
+  });
+
   test('does not treat missing retired rows as clean absence when trace gaps are unreadable', async () => {
     for (const gaps of [
       null,
