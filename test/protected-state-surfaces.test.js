@@ -750,4 +750,56 @@ describe('scripts/protected-state-check.js merge awareness', () => {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	}, 60_000);
+
+	test('blocks a manual deletion of a HEAD-only protected path during an upstream merge', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			const featureOnly = '.github/workflows/feature-only.yml';
+			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
+			// Exists only on the branch being committed onto; the upstream never had it.
+			writeRepoFile(work, featureOnly, 'name: feature-only\n');
+			runGit(work, ['add', featureOnly]);
+			runGit(work, ['commit', '--quiet', '-m', 'feature-only workflow']);
+			runGit(work, ['checkout', '--quiet', '-B', 'upstream-work', 'master']);
+			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+			runGit(work, ['add', 'lib/safe.js']);
+			runGit(work, ['commit', '--quiet', '-m', 'upstream change']);
+			runGit(work, ['push', '--quiet', 'origin', 'upstream-work:master']);
+			runGit(work, ['fetch', '--quiet', 'origin']);
+			runGit(work, ['checkout', '--quiet', 'feature']);
+			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'upstream-work']);
+			// The merge left the path alone; this deletion is the committer's own edit.
+			runGit(work, ['rm', '--quiet', featureOnly]);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(featureOnly);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('blocks a staged protected deletion when the merge base cannot be resolved', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			// An unrelated-history upstream: absent there, but no merge base can prove
+			// the side ever deleted anything.
+			runGit(work, ['checkout', '--quiet', '--orphan', 'orphan']);
+			runGit(work, ['rm', '-r', '-f', '--quiet', '.']);
+			writeRepoFile(work, 'lib/other.js', 'module.exports = 3;\n');
+			runGit(work, ['add', 'lib/other.js']);
+			runGit(work, ['commit', '--quiet', '-m', 'unrelated root']);
+			runGit(work, ['push', '--quiet', '--force', 'origin', 'orphan:master']);
+			runGit(work, ['fetch', '--quiet', 'origin']);
+			runGit(work, ['checkout', '--quiet', '-b', 'feature', 'master']);
+			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', '--allow-unrelated-histories', 'orphan']);
+			runGit(work, ['rm', '--quiet', WORKFLOW]);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
 });

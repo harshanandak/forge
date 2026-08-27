@@ -154,6 +154,19 @@ function resolveCommit(revision) {
 	}
 }
 
+// Best common ancestor of two commits, or null when there is none (unrelated
+// histories) or the query fails. Used to tell "the merge side deleted this path"
+// apart from "this path never existed on the merge side".
+function resolveMergeBase(left, right) {
+	let base;
+	try {
+		base = gitCapture(['merge-base', left, right]).split(LINE_SPLIT)[0].trim();
+	} catch {
+		return null;
+	}
+	return isValidGitObjectId(base) ? base : null;
+}
+
 // Git prints the mode but not the type for index entries; derive it so index and
 // tree entries normalise to the same shape.
 function objectTypeForMode(mode) {
@@ -333,12 +346,24 @@ function createMergeExemption() {
 	return file => {
 		const staged = stagedEntry(file);
 		if (staged === null) return false;
-		// Git just reported this path as staged, so an absent index entry is a
-		// contradiction (a broken or misinterpreted probe), not evidence of
-		// equality. Treat it as unknown and refuse the exemption. The one honest
-		// absence is a staged deletion, where absent === absent is the real answer
-		// and a merged deletion must still pass.
-		if (staged === ABSENT_ENTRY && !deletedFiles.has(file)) return false;
+		if (staged === ABSENT_ENTRY) {
+			// Git just reported this path as staged, so an absent index entry is only
+			// honest for a staged deletion; otherwise the probe contradicts git and
+			// the answer is unknown.
+			if (!deletedFiles.has(file)) return false;
+			// Absent on a trusted side is not proof that side deleted anything — a
+			// path that only ever existed on HEAD is absent upstream too, so a manual
+			// `git rm` during a merge would otherwise exempt itself. Demand that the
+			// merge side actually removed it: present at the merge base, gone at the
+			// side. Fail closed when the base or either probe is unavailable.
+			return merge.trustedSides.some(side => {
+				if (revisionEntry(side, file) !== ABSENT_ENTRY) return false;
+				const base = resolveMergeBase(merge.head, side);
+				if (!base) return false;
+				const baseEntry = revisionEntry(base, file);
+				return baseEntry !== null && baseEntry !== ABSENT_ENTRY;
+			});
+		}
 		return trustedRevisions.some(revision => {
 			const entry = revisionEntry(revision, file);
 			return entry !== null && entry === staged;
