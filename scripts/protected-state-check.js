@@ -141,48 +141,70 @@ function objectIdForSpec(spec) {
 	}
 }
 
+// True when `commit` is reachable from at least one remote-tracking ref, i.e.
+// the bytes are already published upstream and passed the gate there.
+function isPublishedUpstream(commit) {
+	try {
+		return gitCapture(['for-each-ref', '--count=1', '--contains', commit, '--format=%(refname)', 'refs/remotes']) !== '';
+	} catch {
+		return false;
+	}
+}
+
 // A merge is in progress when the per-worktree MERGE_HEAD exists. `--git-path`
-// resolves the correct (possibly linked-worktree) git dir.
-function readMergeSides() {
+// resolves the correct (possibly linked-worktree) git dir. Returns null unless a
+// merge is genuinely in progress and every recorded id resolves; `trustedSides`
+// holds only those MERGE_HEAD commits already published on a remote-tracking ref.
+function readMergeProvenance() {
 	let mergeHeadPath;
 	try {
 		mergeHeadPath = gitCapture(['rev-parse', '--git-path', 'MERGE_HEAD']);
 	} catch {
-		return [];
+		return null;
 	}
-	if (!mergeHeadPath) return [];
+	if (!mergeHeadPath) return null;
 	let raw;
 	try {
 		raw = fs.readFileSync(path.resolve(process.cwd(), mergeHeadPath), 'utf8');
 	} catch {
-		return [];
+		return null;
 	}
 	const ids = raw
 		.split(/\r?\n/)
 		.map(line => line.trim())
 		.filter(Boolean);
-	if (ids.length === 0 || !ids.every(isValidGitObjectId)) return [];
+	if (ids.length === 0 || !ids.every(isValidGitObjectId)) return null;
 	const resolved = ids.map(id => resolveCommit(id));
-	if (resolved.some(commit => commit === null)) return [];
-	const head = resolveCommit('HEAD');
-	return head ? [head, ...resolved] : resolved;
+	if (resolved.some(commit => commit === null)) return null;
+	return {
+		head: resolveCommit('HEAD'),
+		trustedSides: resolved.filter(commit => isPublishedUpstream(commit)),
+	};
 }
 
-// Exemption predicate: while a merge is in progress, a staged protected path is
-// exempt only when its staged blob is byte-identical to that path on one of the
-// merge sides (HEAD or any MERGE_HEAD) — i.e. the committer introduced no net
-// change; the content came from the merge. The merge base is deliberately NOT a
-// permitted side: matching only the base means the committer reverted both sides,
-// which is an edit. Anything else stays blocked, and any failed git query fails closed.
+// Exemption predicate. While a merge is in progress, a staged protected path is
+// exempt only when the committer introduced no net change AND the content has
+// trusted provenance:
+//   - staged blob === the blob at HEAD: no net change versus the branch being
+//     committed onto, so there is no provenance question at all; or
+//   - staged blob === the blob on a MERGE_HEAD that is reachable from a
+//     remote-tracking ref: the bytes are already published upstream and cleared
+//     the gate there.
+// A purely local merge side earns no exemption — otherwise anyone could smuggle a
+// protected edit in on a local branch and merge it. The merge base is likewise not
+// a permitted side: matching only the base means both sides were reverted, an edit.
+// Anything else stays blocked, and any failed git query fails closed.
 function createMergeExemption() {
-	const sides = readMergeSides();
-	if (sides.length === 0) return () => false;
+	const merge = readMergeProvenance();
+	if (!merge) return () => false;
+	const trustedRevisions = [...(merge.head ? [merge.head] : []), ...merge.trustedSides];
+	if (trustedRevisions.length === 0) return () => false;
 	return file => {
 		const staged = objectIdForSpec(`:${file}`);
 		if (staged === null) return false;
-		return sides.some(side => {
-			const sideObject = objectIdForSpec(`${side}:${file}`);
-			return sideObject !== null && sideObject === staged;
+		return trustedRevisions.some(revision => {
+			const revisionObject = objectIdForSpec(`${revision}:${file}`);
+			return revisionObject !== null && revisionObject === staged;
 		});
 	};
 }
@@ -201,7 +223,9 @@ async function main() {
 		.map(file => {
 			const probe = assertProtectedWriteAllowed(file, { actor, operation: 'staged_edit' });
 			if (!probe.requiredSurface) return { probe };
-			if (isMergeCarryOver(probe.path)) {
+			// Deliberately after the lockfile branch: bun.lock keeps its own
+			// regeneration proof, which a merge must never skip.
+			if (probe.path !== 'bun.lock' && isMergeCarryOver(probe.path)) {
 				mergeExempt.push(probe.path);
 				return { probe: { ...probe, allowed: true, decision: 'allowed_merge_carry_over' } };
 			}
