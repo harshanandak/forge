@@ -88,10 +88,12 @@ describe('scripts/benchmark.js', () => {
   test('calculateMedian and summarizeSamples use median-of-three semantics', () => {
     expect(calculateMedian([100, 300, 200])).toBe(200);
     expect(summarizeSamples([100, 300, 200])).toEqual({
+      coefficientOfVariation: 0.4082482904638631,
       maxMs: 300,
       meanMs: 200,
       medianMs: 200,
       minMs: 100,
+      p95Ms: 300,
       samplesMs: [100, 300, 200],
     });
   });
