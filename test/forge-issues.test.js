@@ -790,6 +790,122 @@ describe('resolveIssueActor precedence', () => {
   });
 });
 
+describe('resolveIssueIdentity contract', () => {
+  test('uses FORGE_ACTOR, then FORGE_SESSION_ID, then the historical forge actor', () => {
+    const { resolveIssueIdentity } = require('../lib/forge-issues');
+
+    expect(resolveIssueIdentity({ FORGE_ACTOR: ' alice ', FORGE_SESSION_ID: 'session-1' }))
+      .toEqual({ actor: 'alice', sessionId: 'session-1' });
+    expect(resolveIssueIdentity({ FORGE_SESSION_ID: ' session-2 ' }))
+      .toEqual({ actor: 'session-2', sessionId: 'session-2' });
+    expect(resolveIssueIdentity({})).toEqual({ actor: 'forge', sessionId: null });
+    expect(resolveIssueIdentity()).toEqual({ actor: 'forge', sessionId: null });
+  });
+
+  test('decorates successful identity reports after projection without mutating the service result', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    const serviceResult = {
+      ok: true,
+      success: true,
+      command: 'issue.close',
+      data: { id: 'issue-1', revision: 2 },
+    };
+    let projectedResult;
+
+    const result = await runIssueOperation('close', ['issue-1', '--reason', 'done'], '/repo', {
+      env: { FORGE_ACTOR: 'alice', FORGE_SESSION_ID: 'session-1' },
+      createService: () => ({ run: async () => serviceResult }),
+      enqueueGitHubProjection: async (_plan, context) => {
+        projectedResult = context.result;
+      },
+    });
+
+    expect(projectedResult).toBe(serviceResult);
+    expect(projectedResult.data).toEqual({ id: 'issue-1', revision: 2 });
+    expect(result).not.toBe(serviceResult);
+    expect(result.data).toEqual({
+      id: 'issue-1',
+      revision: 2,
+      actor: 'alice',
+      session_id: 'session-1',
+    });
+    expect(serviceResult.data).toEqual({ id: 'issue-1', revision: 2 });
+  });
+
+  test('uses the resolved identity for claim, owns, release, and close', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    for (const operation of ['claim', 'owns', 'release', 'close']) {
+      let captured;
+      const result = await runIssueOperation(operation, ['issue-1'], '/repo', {
+        env: { FORGE_ACTOR: 'alice', FORGE_SESSION_ID: 'session-1' },
+        createService: () => ({
+          run: async (_operation, _args, context) => {
+            captured = context;
+            return { ok: true, data: { id: 'issue-1' } };
+          },
+        }),
+      });
+
+      expect(captured.actor).toBe('alice');
+      expect(captured.sessionId).toBe('session-1');
+      expect(result.data).toMatchObject({ actor: 'alice', session_id: 'session-1' });
+    }
+  });
+
+  test('identity fields are optional in mutation response data schemas', () => {
+    const { ISSUE_COMMAND_RESPONSE_SCHEMAS } = require('../lib/kernel/issue-command-contract');
+    const schema = ISSUE_COMMAND_RESPONSE_SCHEMAS.mutation.properties.data;
+    expect(schema.properties.actor).toEqual({ type: 'string' });
+    expect(schema.properties.session_id).toEqual({ type: ['string', 'null'] });
+    expect(schema.required).not.toContain('actor');
+    expect(schema.required).not.toContain('session_id');
+
+    const batchItem = ISSUE_COMMAND_RESPONSE_SCHEMAS.mutationBatch
+      .properties.data.properties.results.items;
+    expect(batchItem.properties.actor).toEqual({ type: 'string' });
+    expect(batchItem.properties.session_id).toEqual({ type: ['string', 'null'] });
+  });
+
+  test('rejects actor flags before creating a service', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    let created = false;
+
+    const result = await runIssueOperation('release', ['issue-1', '--actor=alice'], '/repo', {
+      createService: () => {
+        created = true;
+        return { run: async () => ({ ok: true }) };
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error.exit_code).toBe(6);
+    expect(result.error.code).toBe('FORGE_ISSUE_ACTOR_FLAG_UNSUPPORTED');
+    expect(result.error.details).toEqual({ actor: 'forge', session_id: null });
+    expect(created).toBe(false);
+  });
+
+  test('adds the attempted identity to contract errors without mutating them', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    const serviceResult = {
+      ok: false,
+      error: { code: 'CLAIM_CONFLICT', message: 'held', details: { claimed_by: 'bob' } },
+    };
+
+    const result = await runIssueOperation('claim', ['issue-1'], '/repo', {
+      env: { FORGE_ACTOR: 'alice', FORGE_SESSION_ID: 'session-1' },
+      createService: () => ({ run: async () => serviceResult }),
+    });
+
+    expect(result).not.toBe(serviceResult);
+    expect(result.error.details).toEqual({
+      claimed_by: 'bob',
+      actor: 'alice',
+      session_id: 'session-1',
+    });
+    expect(serviceResult.error.details).toEqual({ claimed_by: 'bob' });
+  });
+});
+
 describe('no Beads dead-end (7f09ae93 superseded by the backend removal)', () => {
   test('an uninitialized-Beads repo never dead-ends: the kernel is the only route', async () => {
     // 7f09ae93 was a graceful Beads->Kernel fallback. With the backend removed the

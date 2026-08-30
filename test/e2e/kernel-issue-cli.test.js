@@ -217,4 +217,33 @@ describe('kernel issue CLI — multi-id close E2E', () => {
     },
     TIMEOUT,
   );
+
+  test(
+    'the exact issue owns --actor command is rejected with validation exit 6',
+    () => {
+      runForge(repo, ['create', '--id', 'identity-owned', '--title', 'Identity owner', '--kernel']);
+
+      let thrown;
+      try {
+        runForge(repo, [
+          'issue',
+          'owns',
+          'identity-owned',
+          '--actor=alice',
+          '--json',
+          '--kernel',
+        ]);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeTruthy();
+      expect(thrown.status).toBe(6);
+      expect(thrown.stderr).toContain('FORGE_ACTOR');
+      const envelope = JSON.parse(thrown.stdout);
+      expect(envelope.ok).toBe(false);
+      expect(envelope.error.details).toEqual({ actor: 'forge', session_id: null });
+    },
+    TIMEOUT,
+  );
 });

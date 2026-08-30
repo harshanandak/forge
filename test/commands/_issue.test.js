@@ -388,7 +388,11 @@ describe('kernel batch close (KAP-9)', () => {
       ...VERIFY_OFF,
       runIssueOperation: async (operation, args) => {
         calls.push({ operation, args });
-        return { ok: true, command: operation, data: { id: args[0], revision: 1 } };
+        return {
+          ok: true,
+          command: operation,
+          data: { id: args[0], revision: 1, actor: 'alice', session_id: 'session-1' },
+        };
       },
     });
 
@@ -408,8 +412,10 @@ describe('kernel batch close (KAP-9)', () => {
     expect(summary).toHaveLength(2);
     expect(summary[0].id).toBe('k1');
     expect(summary[0].ok).toBe(true);
+    expect(summary[0]).toMatchObject({ actor: 'alice', session_id: 'session-1' });
     expect(summary[1].id).toBe('k2');
     expect(summary[1].ok).toBe(true);
+    expect(summary[1]).toMatchObject({ actor: 'alice', session_id: 'session-1' });
     expect(envelope.data.closed).toEqual(['k1', 'k2']);
   });
 
@@ -519,5 +525,41 @@ describe('id-required subcommands reject a missing id with a clean usage error (
     const result = await show.handler(['--json'], {}, '/repo', { issueBackend: 'kernel', env: {} });
     expect(result.success).toBe(false);
     expect(result.error).toContain('Missing required argument');
+  });
+});
+
+describe('issue actor identity flags', () => {
+  test('claim, owns, release, and close reject actor flags before backend work', async () => {
+    for (const subcommand of ['claim', 'owns', 'release', 'close']) {
+      for (const actorArgs of [['--actor', 'alice'], ['--actor=alice']]) {
+        const command = createIssueSubcommand(subcommand);
+        let invoked = false;
+        const result = await command.handler(['forge-abc', ...actorArgs, '--json'], {}, '/repo', {
+          issueBackend: 'kernel',
+          env: { FORGE_ACTOR: 'worker-1', FORGE_SESSION_ID: 'session-1' },
+          runIssueOperation: async () => {
+            invoked = true;
+            return { success: true };
+          },
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.exitCode).toBe(6);
+        expect(result.error).toContain('FORGE_ACTOR');
+        expect(JSON.parse(result.output).error.details).toEqual({
+          actor: 'worker-1',
+          session_id: 'session-1',
+        });
+        expect(invoked).toBe(false);
+      }
+    }
+  });
+
+  test('help remains read-only and wins over actor validation', async () => {
+    const owns = createIssueSubcommand('owns');
+    const result = await owns.handler(['--help', '--actor=alice'], {}, '/repo');
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('forge issue owns');
   });
 });
