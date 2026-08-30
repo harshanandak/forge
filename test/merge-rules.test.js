@@ -14,9 +14,10 @@ const minAgo = (m) => new Date(NOW - m * 60_000).toISOString();
 function greenContext(overrides = {}) {
   return {
     checks: [
-      { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
-      { name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { name: 'lint', appId: 456, status: 'COMPLETED', conclusion: 'SUCCESS' },
     ],
+    requiredChecks: [{ context: 'ci', appId: 123 }],
     requiredChecksKnown: true,
     unresolvedThreads: 0,
     behindBase: 0,
@@ -110,27 +111,72 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
   });
 
   test('checks_green fails when any check is not green', () => {
-    const ctx = greenContext({ checks: [{ name: 'ci', conclusion: 'FAILURE' }] });
+    const ctx = greenContext({ checks: [{ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'FAILURE' }] });
     expect(evaluateMergeRules(ctx, ['checks_green']).allowed).toBe(false);
   });
 
-  test('checks_green requires COMPLETED plus SUCCESS and rejects success-like conclusions', () => {
-    for (const check of [
-      { name: 'ci', conclusion: 'SUCCESS' },
-      { name: 'ci', status: 'IN_PROGRESS', conclusion: 'SUCCESS' },
-      { name: 'ci', status: 'COMPLETED', conclusion: 'NEUTRAL' },
-      { name: 'ci', status: 'COMPLETED', conclusion: 'SKIPPED' },
-      { name: 'ci', status: 'COMPLETED', conclusion: 'PASS' },
-    ]) {
-      expect(evaluateMergeRules(greenContext({ checks: [check] }), ['checks_green']).allowed).toBe(false);
+  test('bare checks_green allows terminal NEUTRAL and SKIPPED optional check runs', () => {
+    for (const conclusion of ['NEUTRAL', 'SKIPPED']) {
+      const ctx = greenContext({ checks: [
+        { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+        { name: 'optional', appId: 999, status: 'COMPLETED', conclusion },
+      ] });
+      expect(evaluateMergeRules(ctx, ['checks_green']).allowed).toBe(true);
     }
+  });
+
+  test('protected required checks remain strict SUCCESS with context and app identity matching', () => {
+    for (const conclusion of ['NEUTRAL', 'SKIPPED']) {
+      const ctx = greenContext({ checks: [
+        { name: 'ci', appId: 123, status: 'COMPLETED', conclusion },
+        { name: 'ci', appId: 999, status: 'COMPLETED', conclusion: 'SUCCESS' },
+      ] });
+      expect(evaluateMergeRules(ctx, ['checks_green']).allowed).toBe(false);
+    }
+  });
+
+  test('checks_green fails closed when required-check policy is unavailable, malformed, or conflicting', () => {
+    for (const requiredChecks of [
+      undefined,
+      [{ context: 'ci' }],
+      [{ context: 'ci', appId: 123 }, { context: 'ci', appId: 999 }],
+    ]) {
+      expect(evaluateMergeRules(greenContext({ requiredChecks }), ['checks_green']).allowed).toBe(false);
+    }
+  });
+
+  test('bare checks_green rejects unsafe, nonterminal, and malformed optional observations', () => {
+    for (const check of [
+      ...['FAILURE', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED'].map((conclusion) => (
+        { name: 'optional', appId: 999, status: 'COMPLETED', conclusion }
+      )),
+      { name: 'optional', appId: 999, status: 'IN_PROGRESS', conclusion: null },
+      { name: 'optional', appId: 999, conclusion: 'SUCCESS' },
+      { name: 'optional', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { name: '', appId: 999, status: 'COMPLETED', conclusion: 'SUCCESS' },
+    ]) {
+      const ctx = greenContext({ checks: [
+        { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+        check,
+      ] });
+      expect(evaluateMergeRules(ctx, ['checks_green']).allowed).toBe(false);
+    }
+  });
+
+  test('bare checks_green keeps legacy status contexts strict SUCCESS-only', () => {
+    const checks = (state) => [
+      { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { name: 'legacy', appId: null, state },
+    ];
+    expect(evaluateMergeRules(greenContext({ checks: checks('SUCCESS') }), ['checks_green']).allowed).toBe(true);
+    expect(evaluateMergeRules(greenContext({ checks: checks('PENDING') }), ['checks_green']).allowed).toBe(false);
   });
 
   test('checks_green { ignore } exempts a named failing check but still blocks on OTHER failures', () => {
     const oneBadIgnored = greenContext({
       checks: [
-        { name: 'coverage', conclusion: 'FAILURE' },
-        { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        { name: 'coverage', appId: 789, status: 'COMPLETED', conclusion: 'FAILURE' },
+        { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
       ],
     });
     // coverage is exempt; every other check (ci) is green → allowed.
@@ -138,25 +184,30 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
 
     const anotherAlsoBad = greenContext({
       checks: [
-        { name: 'coverage', conclusion: 'FAILURE' },
-        { name: 'ci', conclusion: 'FAILURE' },
+        { name: 'coverage', appId: 789, status: 'COMPLETED', conclusion: 'FAILURE' },
+        { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'FAILURE' },
       ],
     });
     // coverage exempt, but ci (not exempt) still fails → unmet.
     expect(evaluateMergeRules(anotherAlsoBad, [{ checks_green: { ignore: ['coverage'] } }]).allowed).toBe(false);
   });
 
-  test('checks_green { ignore: [] } behaves like bare checks_green (strict)', () => {
+  test('checks_green { ignore: [] } behaves like bare checks_green', () => {
     expect(evaluateMergeRules(greenContext(), [{ checks_green: { ignore: [] } }]).allowed).toBe(true);
-    const bad = greenContext({ checks: [{ name: 'ci', conclusion: 'FAILURE' }] });
+    const safeOptional = greenContext({ checks: [
+      { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { name: 'optional', appId: 999, status: 'COMPLETED', conclusion: 'SKIPPED' },
+    ] });
+    expect(evaluateMergeRules(safeOptional, [{ checks_green: { ignore: [] } }]).allowed).toBe(true);
+    const bad = greenContext({ checks: [{ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'FAILURE' }] });
     expect(evaluateMergeRules(bad, [{ checks_green: { ignore: [] } }]).allowed).toBe(false);
   });
 
-  test('checks_green { only } requires ONLY the listed checks to be SUCCESS', () => {
+  test('checks_green { only } requires ONLY the listed checks to be strict SUCCESS', () => {
     const ctx = greenContext({
       checks: [
-        { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
-        { name: 'coverage', conclusion: 'FAILURE' },
+        { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+        { name: 'coverage', appId: 789, status: 'COMPLETED', conclusion: 'FAILURE' },
       ],
     });
     // only ci matters; coverage failure is ignored → allowed.
@@ -165,6 +216,14 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
     expect(evaluateMergeRules(ctx, [{ checks_green: { only: ['coverage'] } }]).allowed).toBe(false);
     // a named check that is missing → unmet (must be present AND green).
     expect(evaluateMergeRules(ctx, [{ checks_green: { only: ['nonexistent'] } }]).allowed).toBe(false);
+
+    for (const conclusion of ['NEUTRAL', 'SKIPPED']) {
+      const optional = greenContext({ checks: [
+        { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+        { name: 'optional', appId: 999, status: 'COMPLETED', conclusion },
+      ] });
+      expect(evaluateMergeRules(optional, [{ checks_green: { only: ['optional'] } }]).allowed).toBe(false);
+    }
   });
 
   test('checks_green with BOTH ignore and only is malformed → fail-closed', () => {
