@@ -217,4 +217,88 @@ describe('kernel issue CLI — multi-id close E2E', () => {
     },
     TIMEOUT,
   );
+
+  test(
+    'issue passthrough honors global path forms without leaking them to the issue parser',
+    async () => {
+      const forms = [
+        (target, id) => ['--path', target, 'issue', 'create', '--id', id, '--title', id, '--type', 'task', '--kernel'],
+        (target, id) => ['issue', 'create', '--id', id, '--path', target, '--title', id, '--type', 'task', '--issue-backend=kernel'],
+        (target, id) => ['-p', target, 'issue', 'create', '--id', id, '--title', id, '--type', 'task', '--kernel'],
+        (target, id) => ['issue', 'create', '--id', id, '--title', id, '--path=' + target, '--type', 'task', '--issue-backend', 'kernel'],
+      ];
+
+      for (let index = 0; index < forms.length; index += 1) {
+        const target = path.join(repo, `target ${index}`);
+        fs.mkdirSync(target, { recursive: true });
+        execFileSync('git', ['init', '-q'], { cwd: target });
+        fs.writeFileSync(path.join(target, 'AGENTS.md'), '# target\n');
+        const id = `path-${index}`;
+
+        runForge(repo, forms[index](target, id));
+
+        const issue = await loadIssueStatus(path.join(target, '.git', 'forge', 'kernel.sqlite'), id);
+        expect(issue).toEqual({ status: 'open', revision: 0 });
+      }
+
+      expect(fs.existsSync(dbPath)).toBe(false);
+    },
+    TIMEOUT,
+  );
+
+  test(
+    'post-command -p remains an issue priority flag instead of selecting a project path',
+    async () => {
+      runForge(repo, ['create', '--id', 'short-priority', '--title', 'Short priority', '--type', 'task', '-p', '0']);
+
+      const issue = await loadIssueStatus(dbPath, 'short-priority');
+      expect(issue).toEqual({ status: 'open', revision: 0 });
+      expect(fs.existsSync(path.join(repo, '0'))).toBe(false);
+    },
+    TIMEOUT,
+  );
+
+  test(
+    'global help and version stay global when followed by the word issue',
+    () => {
+      expect(runForge(repo, ['--help', 'issue'])).toContain('Universal AI Agent Workflow');
+      expect(runForge(repo, ['--version', 'issue'])).toMatch(/^Forge v\d+/);
+      expect(fs.existsSync(dbPath)).toBe(false);
+    },
+    TIMEOUT,
+  );
+
+  test(
+    'issue path parsing preserves subcommand help and rejects a missing value',
+    () => {
+      const target = path.join(repo, 'help-target');
+      fs.mkdirSync(target, { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: target });
+      fs.writeFileSync(path.join(target, 'AGENTS.md'), '# target\n');
+
+      const help = runForge(repo, ['issue', 'create', '--path', target, '--help']);
+      expect(help).toContain('forge create');
+
+      let thrown;
+      try {
+        runForge(repo, ['issue', 'list', '--path']);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeTruthy();
+      expect(thrown.status).not.toBe(0);
+      expect(thrown.stderr).toContain('--path requires a directory');
+      expect(fs.existsSync(dbPath)).toBe(false);
+
+      thrown = undefined;
+      try {
+        runForge(repo, ['issue', 'list', '--path=']);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeTruthy();
+      expect(thrown.stderr).toContain('--path requires a directory');
+    },
+    TIMEOUT,
+  );
 });

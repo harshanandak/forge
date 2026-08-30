@@ -2347,15 +2347,23 @@ function parseFlags() {
     skillsOnly: false, // Install skills without Git or harness hook enforcement
   };
 
-  // Issue passthrough commands delegate all flags to bd.
-  // Skip global parsing so flags like --type, -p, --help reach the handler intact.
+  // Issue passthrough commands delegate their own flags to the kernel parser.
+  // Parse only the global project selector; flags like --type and --help must
+  // still reach the issue handler intact.
   // Canonical `issue` plus the ISSUE-canonical back-compat aliases only. Non-issue
   // aliases (e.g. the memory shortcuts remember/recall/insights) are excluded so
   // their global flags still parse exactly as their standalone commands' did —
   // keeping bare `recall -p <dir>` / `recall --help` byte-identical.
   const issuePassthroughCommands = [...passthroughAliasNames(), 'issue'];
-  if (issuePassthroughCommands.includes(args[0])) {
-    return flags;
+  let commandIndex = issuePassthroughCommands.includes(args[0]) ? 0 : -1;
+  if ((args[0] === '--path' || args[0] === '-p') && issuePassthroughCommands.includes(args[2])) {
+    commandIndex = 2;
+  } else if (typeof args[0] === 'string' && args[0].startsWith('--path=')
+    && issuePassthroughCommands.includes(args[1])) {
+    commandIndex = 1;
+  }
+  if (commandIndex >= 0) {
+    return { flags, commandArgs: parseIssuePathFlags(args, flags, commandIndex) };
   }
 
   for (let i = 0; i < args.length;) {
@@ -2429,7 +2437,28 @@ function parseFlags() {
     }
   }
 
-  return flags;
+  return { flags, commandArgs: args };
+}
+
+// Issue commands own every flag after their command token except the unambiguous
+// --path form. A leading -p remains the global project selector; post-command -p
+// stays available to the issue CLI as its documented priority shorthand.
+function parseIssuePathFlags(rawArgs, flags, commandIndex) {
+  const kept = [];
+  for (let i = 0; i < rawArgs.length;) {
+    const arg = rawArgs[i];
+    const isPath = arg === '--path' || arg.startsWith('--path=')
+      || (arg === '-p' && i < commandIndex);
+    if (isPath) {
+      const result = parsePathFlag(rawArgs, i);
+      flags.path = result.value;
+      i = result.nextIndex;
+    } else {
+      kept.push(arg);
+      i++;
+    }
+  }
+  return kept;
 }
 
 // Parse --path flag with validation - extracted to reduce complexity
@@ -2446,12 +2475,15 @@ function parsePathFlag(args, i) {
     nextIndex = i + 2;
   }
 
-  if (inputPath) {
-    const validation = validateUserInput(inputPath, 'directory_path');
-    if (!validation.valid) {
-      console.error(`Error: Invalid --path value: ${validation.error}`);
-      process.exit(1);
-    }
+  if (!inputPath) {
+    console.error('Error: --path requires a directory');
+    process.exit(1);
+  }
+
+  const validation = validateUserInput(inputPath, 'directory_path');
+  if (!validation.valid) {
+    console.error(`Error: Invalid --path value: ${validation.error}`);
+    process.exit(1);
   }
 
   return { value: inputPath, nextIndex };
@@ -3646,14 +3678,14 @@ async function handleExternalServices(skipExternal, selectedAgents) {
 }
 
 async function main() {
-  let command = args[0];
-  const flags = parseFlags();
-  const suppressJsonIntrospectionOutput = ['options', 'explain'].includes(command) && args.includes('--json');
-  const suppressCommandJsonOutput = args.includes('--json');
-  const suppressDocsDetectOutput = command === 'docs' && args[1] === 'detect';
+  const { flags, commandArgs } = parseFlags();
+  let command = commandArgs[0];
+  const suppressJsonIntrospectionOutput = ['options', 'explain'].includes(command) && commandArgs.includes('--json');
+  const suppressCommandJsonOutput = commandArgs.includes('--json');
+  const suppressDocsDetectOutput = command === 'docs' && commandArgs[1] === 'detect';
   const profileDryRunArgs = ['--minimal', '--standard', '--full'];
   const suppressAdoptionDryRunOutput = flags.dryRun && (
-    command === 'init' || (command === 'setup' && profileDryRunArgs.some(arg => args.includes(arg)))
+    command === 'init' || (command === 'setup' && profileDryRunArgs.some(arg => commandArgs.includes(arg)))
   );
   const suppressStructuredOutput = suppressJsonIntrospectionOutput ||
     suppressCommandJsonOutput ||
@@ -3705,7 +3737,7 @@ async function main() {
 
   // Handle --path option: change to target directory
   if (flags.path) {
-    const createTargetPath = !(command === 'docs' && ['verify', 'detect'].includes(args[1]));
+    const createTargetPath = !(command === 'docs' && ['verify', 'detect'].includes(commandArgs[1]));
     // Update projectRoot after changing directory to maintain state consistency
     projectRoot = suppressAdoptionDryRunOutput
       ? resolvePathForDryRun(flags.path)
@@ -3743,9 +3775,9 @@ async function main() {
   // rewrite via the first clause; this activates only when a later phase folds a
   // bare verb into a noun handler.
   maybeWarnDeprecation(command);
-  let dispatchArgv = args;
+  let dispatchArgv = commandArgs;
   if (!registry.commands.has(command) && isAlias(command)) {
-    const resolved = resolveDispatch(command, args, (name) => registry.commands.has(name));
+    const resolved = resolveDispatch(command, commandArgs, (name) => registry.commands.has(name));
     command = resolved.command;
     dispatchArgv = resolved.args;
   }
