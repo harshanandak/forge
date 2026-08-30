@@ -22,6 +22,7 @@ const {
 } = require('./test-profile');
 const { createProcessTree, signalExitCode } = require('./process-tree');
 const { stripGitHookEnv } = require('./test');
+const { redact } = require('../lib/audit-evidence');
 
 const rootDir = path.join(__dirname, '..');
 const reportDir = path.join(rootDir, 'test-results');
@@ -32,6 +33,7 @@ const RESOURCE_LANE_RANK = new Map([
   ['exclusive', 2],
 ]);
 const DEFAULT_SHARD_TIMEOUT_MS = 30000;
+const STDERR_TAIL_LIMIT = 4096;
 const JS_FAMILY_EXTENSIONS = ['.js', '.cjs', '.mjs', '.jsx', '.ts', '.cts', '.mts', '.tsx'];
 const FORGE_COORDINATION_ENV = new Set([
   'FORGE_ACTOR',
@@ -655,6 +657,19 @@ function extractFailedTestCases(output, limit = 20) {
   return failures;
 }
 
+function classifyShardFailure(result) {
+  if (result?.signal) return 'signal';
+  const output = typeof result?.output === 'string' ? result.output : '';
+  const stderrTail = typeof result?.stderrTail === 'string' ? result.stderrTail : '';
+  const parsed = parseShardReceipt(output);
+  const failedReceipt = parsed && (parsed.failed > 0 || parsed.errors > 0);
+  const namesTimeout = (value) => /\b(?:etimedout|timed?\s*out|timeout)/i.test(value);
+  if ((failedReceipt && namesTimeout(output)) || namesTimeout(stderrTail)) return 'test-timeout';
+  if (failedReceipt) return 'test-failure';
+  if (parsed) return 'post-junit-exit';
+  return 'incomplete-receipt';
+}
+
 function writeDurationProfile({ allTests, label, outputPath, runReportDir }) {
   const files = walkProfileFiles(runReportDir, '.xml');
   if (files.length === 0) return false;
@@ -727,6 +742,7 @@ function spawnShard(shard, options = {}) {
   const targetReportDir = options.reportDirectory || reportDir;
   const platform = options.platform || process.platform;
   const processTree = options.processTree || createProcessTree({ env, platform });
+  const stderrStream = options.stderrStream || process.stderr;
   const resolvedReportDir = path.resolve(targetReportDir);
   const junitPath = path.resolve(resolvedReportDir, `${labelPrefix}-shard-${shard.index}.xml`);
   if (path.dirname(junitPath) !== resolvedReportDir) {
@@ -747,11 +763,17 @@ function spawnShard(shard, options = {}) {
 
     let child;
     let settled = false;
-    const finish = (code, output) => {
+    let stderrTail = '';
+    const finish = (code, output, signal) => {
       if (settled) return;
       settled = true;
       processTree.unregisterChild(reservation);
-      resolve({ code, index: shard.index, output });
+      const result = { code, index: shard.index, output };
+      if (code !== 0) {
+        if (signal) result.signal = signal;
+        if (stderrTail) result.stderrTail = redact(stderrTail).slice(-STDERR_TAIL_LIMIT);
+      }
+      resolve(result);
     };
     try {
       fs.rmSync(junitPath, { force: true });
@@ -763,7 +785,7 @@ function spawnShard(shard, options = {}) {
         cwd: rootDir,
         env,
         shell: false,
-        stdio: 'inherit',
+        stdio: ['inherit', 'inherit', 'pipe'],
         detached: platform !== 'win32',
         windowsHide: true,
       });
@@ -788,18 +810,22 @@ function spawnShard(shard, options = {}) {
         reject(new Error('test shard process could not be registered'));
         return;
       }
+      child.stderr?.on('data', (chunk) => {
+        stderrStream.write(chunk);
+        stderrTail = (stderrTail + String(chunk)).slice(-STDERR_TAIL_LIMIT);
+      });
     } catch (error) {
       if (!settled) processTree.unregisterChild(reservation);
       reject(error);
       return;
     }
 
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       let output = null;
       try {
         output = fs.readFileSync(junitPath, 'utf8');
       } catch {}
-      finish(code ?? 1, output);
+      finish(code ?? 1, output, signal);
     });
   });
 }
@@ -878,6 +904,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
           spawn: deps.spawn,
           platform,
           processTree,
+          stderrStream: deps.stderrStream,
           timeoutMs: args.timeoutMs,
         }),
         resource: lane.name,
@@ -900,7 +927,13 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
 
     const nonzeroShards = results.filter((result) => result.code !== 0);
     if (nonzeroShards.length > 0) {
-      console.error(`Full suite non-zero shards: ${nonzeroShards.map((result) => `${result.index}:${result.resource}:exit=${result.code}`).join(', ')}`);
+      console.error(`Full suite non-zero shards: ${nonzeroShards.map((result) => {
+        let diagnostic = `${result.index}:${result.resource}:exit=${result.code} cause=${classifyShardFailure(result)}`;
+        if (result.signal) diagnostic += ` signal=${result.signal}`;
+        const stderrTail = result.stderrTail?.trim();
+        if (stderrTail) diagnostic += ` stderr=${JSON.stringify(stderrTail)}`;
+        return diagnostic;
+      }).join(', ')}`);
       const failedTests = nonzeroShards.flatMap((result) => extractFailedTestCases(result.output));
       if (failedTests.length > 0) {
         console.error(`Full suite failing tests: ${failedTests.map((failure) => `${failure.file}${failure.line ? `:${failure.line}` : ''} (${failure.name})`).join(', ')}`);
@@ -956,6 +989,7 @@ module.exports = {
   buildResourceLanePlan,
   buildShardTestArgs,
   buildShardSpecs,
+  classifyShardFailure,
   classifyTestResource,
   computeLaneGrants,
   extractFailedTestCases,

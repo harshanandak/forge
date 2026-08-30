@@ -148,6 +148,35 @@ describe('forge worktree create — verifies the install and self-heals a stale 
     fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: 'left-pad' }));
   }
 
+  function makeWorkspaceFixture(lockfile = 'bun.lock') {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-wt-workspace-heal-'));
+    const projectRoot = path.join(tmp, 'main');
+    const worktreePath = path.join(projectRoot, '.worktrees', 'heal-workspace');
+    const rootPackage = JSON.stringify({ name: 'root', workspaces: ['packages/*'] });
+    const workspacePackage = JSON.stringify({ name: '@forge/skills', dependencies: { chalk: '^6.0.0' } });
+
+    for (const root of [projectRoot, worktreePath]) {
+      fs.mkdirSync(path.join(root, 'packages', 'skills'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'package.json'), rootPackage);
+      fs.writeFileSync(path.join(root, 'packages', 'skills', 'package.json'), workspacePackage);
+    }
+    fs.writeFileSync(path.join(projectRoot, lockfile), '');
+    fs.mkdirSync(path.join(projectRoot, 'node_modules', '.bun'), { recursive: true });
+
+    const fsApi = {
+      ...fs,
+      symlinkSync: (_target, dest) => fs.mkdirSync(dest, { recursive: true }),
+      unlinkSync: dest => fs.rmSync(dest, { recursive: true }),
+    };
+    return { tmp, projectRoot, worktreePath, fsApi };
+  }
+
+  function populateWorkspaceDependency(worktreePath) {
+    const pkgDir = path.join(worktreePath, 'packages', 'skills', 'node_modules', 'chalk');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: 'chalk' }));
+  }
+
   // Plain install exits 0 without writing anything (the "no changes" stale-store
   // symptom); only --force actually repopulates the tree.
   function staleStoreSpawn(worktreePath, calls) {
@@ -192,6 +221,191 @@ describe('forge worktree create — verifies the install and self-heals a stale 
       expect(result.installed).toBe(true);
       expect(result.healed).toBe(false);
       expect(calls).toHaveLength(1);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('installs a missing Bun-isolated workspace dependency after linking the shared root store', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      const calls = [];
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => {
+          calls.push({ cmd, args });
+          populateWorkspaceDependency(f.worktreePath);
+          return { status: 0 };
+        },
+        fsApi: f.fsApi,
+        platform: 'linux',
+      });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(calls.map(({ args }) => args)).toEqual([['install']]);
+      expect(fs.existsSync(path.join(f.worktreePath, 'packages', 'skills', 'node_modules', 'chalk', 'package.json'))).toBe(true);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('detaches a newly-created root modules link before installing workspace dependencies', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      const destModules = path.join(f.worktreePath, 'node_modules');
+      let linkWasDetached = false;
+      let result;
+      try {
+        result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+          spawnFn: () => {
+            linkWasDetached = !fs.existsSync(destModules);
+            fs.mkdirSync(destModules, { recursive: true });
+            populateWorkspaceDependency(f.worktreePath);
+            return { status: 0 };
+          },
+          fsApi: fs,
+          platform: process.platform,
+        });
+      } catch (error) {
+        if (['EPERM', 'EACCES', 'ENOSYS', 'UV_EPERM'].includes(error.code)) return;
+        throw error;
+      }
+
+      expect(linkWasDetached).toBe(true);
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('detaches an existing root modules link before installing workspace dependencies', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      const srcModules = path.join(f.projectRoot, 'node_modules');
+      const destModules = path.join(f.worktreePath, 'node_modules');
+      try {
+        fs.symlinkSync(srcModules, destModules, process.platform === 'win32' ? 'junction' : 'dir');
+      } catch (error) {
+        if (['EPERM', 'EACCES', 'ENOSYS', 'UV_EPERM'].includes(error.code)) return;
+        throw error;
+      }
+      let linkWasDetached = false;
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => {
+          linkWasDetached = !fs.existsSync(destModules);
+          fs.mkdirSync(destModules, { recursive: true });
+          populateWorkspaceDependency(f.worktreePath);
+          return { status: 0 };
+        },
+        fsApi: fs,
+        platform: process.platform,
+      });
+
+      expect(linkWasDetached).toBe(true);
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('preserves an existing real modules directory before installing workspace dependencies', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      const destModules = path.join(f.worktreePath, 'node_modules');
+      fs.mkdirSync(destModules, { recursive: true });
+      let realDirectoryWasPreserved = false;
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => {
+          realDirectoryWasPreserved = fs.existsSync(destModules) && !fs.lstatSync(destModules).isSymbolicLink();
+          populateWorkspaceDependency(f.worktreePath);
+          return { status: 0 };
+        },
+        fsApi: fs,
+        platform: process.platform,
+      });
+
+      expect(realDirectoryWasPreserved).toBe(true);
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('does not treat a coincidental root package as a Bun-isolated workspace dependency', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      const rootChalk = path.join(f.projectRoot, 'node_modules', 'chalk');
+      fs.mkdirSync(rootChalk, { recursive: true });
+      fs.writeFileSync(path.join(rootChalk, 'package.json'), JSON.stringify({ name: 'chalk' }));
+      f.fsApi.symlinkSync = (target, dest) => fs.cpSync(target, dest, { recursive: true });
+      const calls = [];
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => {
+          calls.push({ cmd, args });
+          populateWorkspaceDependency(f.worktreePath);
+          return { status: 0 };
+        },
+        fsApi: f.fsApi,
+        platform: 'linux',
+      });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(calls.map(({ args }) => args)).toEqual([['install']]);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('accepts a valid root-hoisted npm workspace dependency without installing', () => {
+    const f = makeWorkspaceFixture('package-lock.json');
+    try {
+      const rootChalk = path.join(f.projectRoot, 'node_modules', 'chalk');
+      fs.mkdirSync(rootChalk, { recursive: true });
+      fs.writeFileSync(path.join(rootChalk, 'package.json'), JSON.stringify({ name: 'chalk' }));
+      f.fsApi.symlinkSync = (target, dest) => fs.cpSync(target, dest, { recursive: true });
+      const calls = [];
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => { calls.push({ cmd, args }); return { status: 0 }; },
+        fsApi: f.fsApi,
+        platform: 'linux',
+      });
+
+      expect(result).toEqual({ linked: true, installed: false, healed: false });
+      expect(calls).toHaveLength(0);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed when install and heal leave a Bun-isolated workspace dependency missing', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      const calls = [];
+      expect(() => setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => { calls.push({ cmd, args }); return { status: 0 }; },
+        fsApi: f.fsApi,
+        platform: 'linux',
+      })).toThrow(/bun install --force/);
+      expect(calls.map(({ args }) => args)).toEqual([['install'], ['install', '--force']]);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a missing workspace base does not hide a missing root dependency', () => {
+    const f = makeFixture();
+    try {
+      fs.writeFileSync(path.join(f.worktreePath, 'package.json'), JSON.stringify({
+        name: 'wt',
+        workspaces: ['packages/*'],
+        dependencies: { 'left-pad': '^1.0.0' },
+      }));
+      const calls = [];
+      expect(() => setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => { calls.push({ cmd, args }); return { status: 0 }; },
+        fsApi: fs,
+        platform: 'linux',
+      })).toThrow(/bun install --force/);
+      expect(calls.map(({ args }) => args)).toEqual([['install'], ['install', '--force']]);
     } finally {
       fs.rmSync(f.tmp, { recursive: true, force: true });
     }
