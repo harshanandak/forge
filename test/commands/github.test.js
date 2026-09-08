@@ -136,6 +136,8 @@ describe('forge github lifecycle', () => {
   });
 
   test.each([
+    { remote: 'http://github.com/org/project.git' },
+    { remote: 'git://github.com/org/project.git' },
     { remote: 'https://gitlab.com/org/project.git' },
     { remote: 'https://github.com/org/project/extra' },
     { remote: `https://user:${CANARY}@github.com/org/project.git` },
