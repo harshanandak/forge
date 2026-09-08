@@ -102,14 +102,38 @@ describe('github context', () => {
     expect(() => JSON.stringify(context)).not.toThrow();
   });
 
+  test('generic child execution uses the injected child runner, preserves stdio, and returns its result', () => {
+    const calls = [];
+    const childResult = { sentinel: true };
+    const childRunner = (command, args, options) => {
+      calls.push({ command, args, options });
+      return childResult;
+    };
+    const context = createGithubContext('/repo', {
+      runner: fakeRunner([], { account: 'octo', liveLogin: 'octo', token: 'token-canary' }),
+      childRunner,
+      baseEnv: { PATH: 'kept', GH_TOKEN: 'ambient' },
+    });
+
+    const result = context.runChild('codex', ['--interactive'], { stdio: 'inherit', env: { CUSTOM: 'value' } });
+
+    expect(result).toBe(childResult);
+    expect(calls[0]).toMatchObject({ command: 'codex', args: ['--interactive'], options: { stdio: 'inherit' } });
+    expect(calls[0].options.env).toMatchObject({ PATH: 'kept', CUSTOM: 'value', GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com' });
+  });
+
   test('unbound child execution preserves the injected base environment without account overrides', () => {
     const calls = [];
     const baseEnv = { PATH: 'kept', GH_TOKEN: 'ambient-token', GITHUB_TOKEN: 'ambient-token-2', GH_HOST: 'ambient.example' };
-    const context = createGithubContext('/repo', { runner: fakeRunner(calls), baseEnv });
+    const childResult = { sentinel: true };
+    const context = createGithubContext('/repo', {
+      runner: fakeRunner(calls),
+      childRunner: (_command, _args, options) => { calls.push({ options }); return childResult; },
+      baseEnv,
+    });
 
-    context.runGh(['api', 'user']);
+    expect(context.runChild('codex', ['--interactive'], { stdio: 'inherit' })).toBe(childResult);
     expect(calls[1].options.env).toEqual(baseEnv);
-    expect(calls[1].args).toEqual(['api', 'user']);
     expect(JSON.stringify(context)).not.toContain('ambient-token');
   });
 
