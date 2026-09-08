@@ -58,6 +58,7 @@
     "team": { "exempt": "team skill pending (plan §3.2 B: new `team` skill)" },
 
     "setup": "setup",
+    "github": "setup",
     "init": "setup",
     "upgrade": "setup",
     "doctor": "setup",

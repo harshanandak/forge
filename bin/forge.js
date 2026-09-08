@@ -2361,6 +2361,9 @@ function parseFlags() {
   for (let i = 0; i < args.length;) {
     const arg = args[i];
 
+    // Everything after the explicit launcher delimiter belongs to the child.
+    if (arg === '--' && args[0] === 'github' && args[firstPositionalIndex(args, 1)] === 'run') break;
+
     if (arg === '--quick' || arg === '-q') {
       flags.quick = true;
       i++;
