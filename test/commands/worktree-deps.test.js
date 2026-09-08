@@ -180,10 +180,17 @@ describe('forge worktree create — verifies the install and self-heals a stale 
     return { tmp, projectRoot, worktreePath, fsApi };
   }
 
-  function populateWorkspaceDependency(worktreePath) {
-    const pkgDir = path.join(worktreePath, 'packages', 'skills', 'node_modules', 'chalk');
+  function populateWorkspaceDependency(worktreePath, workspacePath = path.join('packages', 'skills')) {
+    const pkgDir = path.join(worktreePath, workspacePath, 'node_modules', 'chalk');
     fs.mkdirSync(pkgDir, { recursive: true });
     fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: 'chalk' }));
+  }
+
+  function nestWorkspace(f) {
+    for (const root of [f.projectRoot, f.worktreePath]) {
+      fs.mkdirSync(path.join(root, 'packages', 'group'), { recursive: true });
+      fs.renameSync(path.join(root, 'packages', 'skills'), path.join(root, 'packages', 'group', 'skills'));
+    }
   }
 
   // Plain install exits 0 without writing anything (the "no changes" stale-store
@@ -282,6 +289,158 @@ describe('forge worktree create — verifies the install and self-heals a stale 
       }
     });
   }
+
+  for (const pattern of ['packages/**', 'packages/*/*', 'packages/{group,other}/*']) {
+    test(`installs a dependency declared through nested workspace glob ${pattern}`, () => {
+      const f = makeWorkspaceFixture('bun.lock', [pattern]);
+      try {
+        nestWorkspace(f);
+        const decoy = path.join(f.worktreePath, 'packages', 'group', 'skills', 'node_modules', 'fixture');
+        fs.mkdirSync(decoy, { recursive: true });
+        fs.writeFileSync(path.join(decoy, 'package.json'), JSON.stringify({
+          name: 'fixture',
+          dependencies: { 'never-installed': '^1.0.0' },
+        }));
+        const calls = [];
+
+        const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+          spawnFn: (cmd, args) => {
+            calls.push({ cmd, args });
+            populateWorkspaceDependency(f.worktreePath, path.join('packages', 'group', 'skills'));
+            return { status: 0 };
+          },
+          fsApi: f.fsApi,
+          platform: 'linux',
+        });
+
+        expect(result).toEqual({ linked: false, installed: true, healed: false });
+        expect(calls.map(({ args }) => args)).toEqual([['install']]);
+      } finally {
+        fs.rmSync(f.tmp, { recursive: true, force: true });
+      }
+    });
+  }
+
+  test('applies workspace exclusions instead of verifying excluded packages', () => {
+    const f = makeWorkspaceFixture('bun.lock', ['packages/*', '!packages/skills']);
+    try {
+      const calls = [];
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => { calls.push({ cmd, args }); return { status: 0 }; },
+        fsApi: f.fsApi,
+        platform: 'linux',
+      });
+
+      expect(result).toEqual({ linked: true, installed: false, healed: false });
+      expect(calls).toHaveLength(0);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('treats case-variant Windows workspace paths as the same package', () => {
+    if (process.platform !== 'win32') return;
+    const f = makeWorkspaceFixture('bun.lock', ['packages/skills', 'PACKAGES/SKILLS']);
+    try {
+      f.fsApi.globSync = pattern => [pattern.startsWith('PACKAGES')
+        ? 'PACKAGES/SKILLS/package.json'
+        : 'packages/skills/package.json'];
+      const calls = [];
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => {
+          calls.push({ cmd, args });
+          populateWorkspaceDependency(f.worktreePath);
+          return { status: 0 };
+        },
+        fsApi: f.fsApi,
+        platform: 'win32',
+      });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(calls.map(({ args }) => args)).toEqual([['install']]);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('applies case-variant Windows workspace exclusions', () => {
+    if (process.platform !== 'win32') return;
+    const f = makeWorkspaceFixture('bun.lock', ['packages/skills', '!PACKAGES/SKILLS']);
+    try {
+      f.fsApi.globSync = pattern => [pattern.startsWith('PACKAGES')
+        ? 'PACKAGES/SKILLS/package.json'
+        : 'packages/skills/package.json'];
+      const calls = [];
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => { calls.push({ cmd, args }); return { status: 0 }; },
+        fsApi: f.fsApi,
+        platform: 'win32',
+      });
+
+      expect(result).toEqual({ linked: true, installed: false, healed: false });
+      expect(calls).toHaveLength(0);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects malformed workspace patterns instead of accepting incomplete evidence', () => {
+    const f = makeWorkspaceFixture('bun.lock', ['packages/*', 42]);
+    try {
+      expect(() => setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => ({ status: 0 }),
+        fsApi: f.fsApi,
+        platform: 'linux',
+      })).toThrow(/workspace pattern/i);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('surfaces workspace glob failures instead of accepting incomplete evidence', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      f.fsApi.globSync = () => { throw new Error('fixture glob failure'); };
+      expect(() => setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => ({ status: 0 }),
+        fsApi: f.fsApi,
+        platform: 'linux',
+      })).toThrow(/workspace glob.*fixture glob failure/i);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects duplicate workspace package names', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      for (const root of [f.projectRoot, f.worktreePath]) {
+        const duplicate = path.join(root, 'packages', 'duplicate');
+        fs.mkdirSync(duplicate, { recursive: true });
+        fs.writeFileSync(path.join(duplicate, 'package.json'), JSON.stringify({ name: '@forge/skills' }));
+      }
+      expect(() => setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => ({ status: 0 }),
+        fsApi: f.fsApi,
+        platform: 'linux',
+      })).toThrow(/duplicate workspace package name.*@forge\/skills/i);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects workspace patterns that escape the worktree', () => {
+    const f = makeWorkspaceFixture('bun.lock', ['../outside']);
+    try {
+      expect(() => setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => ({ status: 0 }),
+        fsApi: f.fsApi,
+        platform: 'linux',
+      })).toThrow(/workspace pattern.*outside the worktree/i);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
 
   test('ignores hidden directories excluded by a workspace wildcard', () => {
     const f = makeWorkspaceFixture();
