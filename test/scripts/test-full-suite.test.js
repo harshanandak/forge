@@ -978,6 +978,51 @@ describe('scripts/test-full-suite.js', () => {
       fs.rmSync(reportDirectory, { force: true, recursive: true });
     }
   });
+  test('spawnShard pauses stderr until a backpressured destination drains', async () => {
+    const reportDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-stderr-pressure-'));
+    const processTree = {
+      reserveChild: () => ({ id: 'stderr-pressure' }),
+      registerChild: () => true,
+      unregisterChild: () => {},
+    };
+    const events = [];
+    const stderrStream = new EventEmitter();
+    stderrStream.write = () => { events.push('write'); return false; };
+    const spawn = (_command, args) => {
+      const child = new EventEmitter();
+      child.pid = 9092;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stderr.pause = () => events.push('pause');
+      child.stderr.resume = () => events.push('resume');
+      fs.writeFileSync(args[args.indexOf('--reporter-outfile') + 1], passingShardReceipt);
+      process.nextTick(() => {
+        child.stderr.emit('data', 'blocked stderr');
+        process.nextTick(() => {
+          stderrStream.emit('drain');
+          child.stderr.emit('data', 'blocked again');
+          child.emit('close', 0, null);
+          stderrStream.emit('drain');
+        });
+      });
+      return child;
+    };
+
+    try {
+      await spawnShard({ files: ['test/a.test.js'], index: 0 }, {
+        labelPrefix: unitLabelPrefix,
+        processTree,
+        reportDirectory,
+        spawn,
+        stderrStream,
+      });
+
+      expect(events).toEqual(['write', 'pause', 'resume', 'write', 'pause']);
+      expect(stderrStream.listenerCount('drain')).toBe(0);
+    } finally {
+      fs.rmSync(reportDirectory, { force: true, recursive: true });
+    }
+  });
   test('spawnShard omits an oversized secret line before retaining its tail', async () => {
     const reportDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-stderr-secret-'));
     const processTree = {

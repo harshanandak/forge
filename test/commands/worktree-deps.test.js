@@ -31,6 +31,12 @@ function gitStub(calls = []) {
   };
 }
 
+function missingLstat() {
+  const error = new Error('missing');
+  error.code = 'ENOENT';
+  throw error;
+}
+
 describe('forge worktree create — node_modules link to shared install', () => {
   function runLinkScenario() {
     const projectRoot = '/fake/root';
@@ -44,6 +50,7 @@ describe('forge worktree create — node_modules link to shared install', () => 
       mkdirSync: () => {},
       // Main repo has node_modules; the new worktree does not yet.
       existsSync: (p) => p === srcModules,
+      lstatSync: missingLstat,
       symlinkSync: (target, dest, type) => { symlinkCalls.push({ target, dest, type }); },
       readdirSync: () => [],
       cpSync: () => {},
@@ -90,6 +97,7 @@ describe('forge worktree create — surfaces dependency failures', () => {
     const mockFs = {
       mkdirSync: () => {},
       existsSync: (p) => p.endsWith('package.json') || p.endsWith('bun.lock'),
+      lstatSync: missingLstat,
       symlinkSync: () => {},
       readdirSync: () => [],
       cpSync: () => {},
@@ -110,6 +118,7 @@ describe('forge worktree create — surfaces dependency failures', () => {
     const mockFs = {
       mkdirSync: () => {},
       existsSync: (p) => p.endsWith('package.json'),
+      lstatSync: missingLstat,
       symlinkSync: () => {},
       readdirSync: () => [],
       cpSync: () => {},
@@ -328,6 +337,35 @@ describe('forge worktree create — verifies the install and self-heals a stale 
 
       expect(linkWasDetached).toBe(true);
       expect(result).toEqual({ linked: false, installed: true, healed: false });
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('replaces a dangling modules link with the shared install', () => {
+    const f = makeFixture();
+    try {
+      const srcModules = path.join(f.projectRoot, 'node_modules');
+      const destModules = path.join(f.worktreePath, 'node_modules');
+      const staleModules = path.join(f.tmp, 'stale-node-modules');
+      populate(f.projectRoot);
+      fs.mkdirSync(staleModules);
+      try {
+        fs.symlinkSync(staleModules, destModules, process.platform === 'win32' ? 'junction' : 'dir');
+      } catch (error) {
+        if (['EPERM', 'EACCES', 'ENOSYS', 'UV_EPERM'].includes(error.code)) return;
+        throw error;
+      }
+      fs.rmSync(staleModules, { recursive: true, force: true });
+
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => ({ status: 0 }),
+        fsApi: fs,
+        platform: process.platform,
+      });
+
+      expect(result).toEqual({ linked: true, installed: false, healed: false });
+      expect(fs.realpathSync(destModules)).toBe(fs.realpathSync(srcModules));
     } finally {
       fs.rmSync(f.tmp, { recursive: true, force: true });
     }

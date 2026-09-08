@@ -806,10 +806,17 @@ function spawnShard(shard, options = {}) {
 
     let child;
     let settled = false;
+    let stderrDrainListener = null;
     const stderrTail = createStderrTailCollector();
+    const clearStderrDrainListener = () => {
+      if (!stderrDrainListener) return;
+      stderrStream.off('drain', stderrDrainListener);
+      stderrDrainListener = null;
+    };
     const finish = (code, output, signal) => {
       if (settled) return;
       settled = true;
+      clearStderrDrainListener();
       processTree.unregisterChild(reservation);
       const result = { code, index: shard.index, output };
       if (code !== 0) {
@@ -836,6 +843,7 @@ function spawnShard(shard, options = {}) {
       child.on('error', (error) => {
         if (settled) return;
         settled = true;
+        clearStderrDrainListener();
         processTree.unregisterChild(reservation);
         reject(error);
       });
@@ -855,8 +863,23 @@ function spawnShard(shard, options = {}) {
         return;
       }
       child.stderr?.on('data', (chunk) => {
-        stderrStream.write(chunk);
+        const canContinue = stderrStream.write(chunk);
         stderrTail.write(chunk);
+        if (
+          canContinue === false
+          && !stderrDrainListener
+          && typeof child.stderr.pause === 'function'
+          && typeof child.stderr.resume === 'function'
+          && typeof stderrStream.once === 'function'
+          && typeof stderrStream.off === 'function'
+        ) {
+          child.stderr.pause();
+          stderrDrainListener = () => {
+            stderrDrainListener = null;
+            if (!settled) child.stderr.resume();
+          };
+          stderrStream.once('drain', stderrDrainListener);
+        }
       });
     } catch (error) {
       if (!settled) processTree.unregisterChild(reservation);
