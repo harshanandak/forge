@@ -422,6 +422,37 @@ describe('forge worktree create — verifies the install and self-heals a stale 
     }
   });
 
+  test('accepts a root-linked Bun dependency that is another declared workspace package', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      for (const root of [f.projectRoot, f.worktreePath]) {
+        fs.writeFileSync(path.join(root, 'packages', 'skills', 'package.json'), JSON.stringify({
+          name: '@forge/skills',
+          dependencies: { '@forge/memory-contracts': 'workspace:*' },
+        }));
+        const contractsDir = path.join(root, 'packages', 'memory-contracts');
+        fs.mkdirSync(contractsDir, { recursive: true });
+        fs.writeFileSync(path.join(contractsDir, 'package.json'), JSON.stringify({ name: '@forge/memory-contracts' }));
+      }
+      const rootContract = path.join(f.projectRoot, 'node_modules', '@forge', 'memory-contracts');
+      fs.mkdirSync(rootContract, { recursive: true });
+      fs.writeFileSync(path.join(rootContract, 'package.json'), JSON.stringify({ name: '@forge/memory-contracts' }));
+      f.fsApi.symlinkSync = (target, dest) => fs.cpSync(target, dest, { recursive: true });
+      const calls = [];
+
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => { calls.push({ cmd, args }); return { status: 0 }; },
+        fsApi: f.fsApi,
+        platform: 'linux',
+      });
+
+      expect(result).toEqual({ linked: true, installed: false, healed: false });
+      expect(calls).toHaveLength(0);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
   test('does not treat a coincidental root package as a Bun-isolated workspace dependency', () => {
     const f = makeWorkspaceFixture();
     try {
