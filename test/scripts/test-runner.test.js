@@ -203,10 +203,12 @@ describe('scripts/test pre-push runner', () => {
       'test/forge-commands.test.js',
       'test/freshness-token.test.js',
       'test/lefthook-check.test.js',
+      'test/mutation-config.test.js',
       'test/runtime-health.test.js',
       'test/scripts/preflight.test.js',
       'test/scripts/test-runner.test.js',
       'test/setup-workflow-removal.test.js',
+      'test/test-dashboard.test.js',
       ...riskTargets,
     ]);
   });
