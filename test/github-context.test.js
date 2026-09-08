@@ -21,7 +21,7 @@ function fakeRunner(calls, { account = null, liveLogin = account, token = 'token
     if (command === 'git' && args[0] === 'config') return '';
     if (command === 'gh' && args[0] === 'auth') return `${token}\n`;
     if (command === 'gh' && args[0] === 'api') return `${liveLogin}\n`;
-    throw new Error(`unexpected ${command}`);
+    return '';
   };
 }
 
@@ -43,9 +43,9 @@ describe('github context', () => {
     writeGithubAccount('/repo', 'Work-Login', { runner });
     unsetGithubAccount('/repo', { runner });
 
-    expect(calls[0]).toMatchObject({ command: 'git', args: ['config', '--local', '--get', 'github.account'] });
-    expect(calls[1]).toMatchObject({ command: 'git', args: ['config', '--local', 'github.account', 'Work-Login'] });
-    expect(calls[2]).toMatchObject({ command: 'git', args: ['config', '--local', '--unset', 'github.account'] });
+    expect(calls[0]).toMatchObject({ command: 'git', args: ['config', '--local', '--get', 'github.account'], options: { cwd: '/repo' } });
+    expect(calls[1]).toMatchObject({ command: 'git', args: ['config', '--local', 'github.account', 'Work-Login'], options: { cwd: '/repo' } });
+    expect(calls[2]).toMatchObject({ command: 'git', args: ['config', '--local', '--unset', 'github.account'], options: { cwd: '/repo' } });
   });
 
   test('unbound preparation performs one local lookup and no gh or environment work', () => {
@@ -80,7 +80,10 @@ describe('github context', () => {
     expect(calls[1].options.env).not.toHaveProperty('GITHUB_TOKEN');
     expect(calls[1].options.env).not.toHaveProperty('GH_HOST');
     expect(calls[1].options.env).not.toHaveProperty('gh_token');
-    expect(calls[2].options.env).toMatchObject({ GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com', Path: 'kept' });
+    expect(calls[2]).toMatchObject({
+      args: ['api', '--hostname', 'github.com', 'user', '--jq', '.login'],
+      options: { env: { GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com', Path: 'kept' } },
+    });
     expect(JSON.stringify(context)).not.toContain('token-canary');
   });
 
@@ -90,12 +93,24 @@ describe('github context', () => {
       runner: fakeRunner(calls, { account: 'octo', liveLogin: 'octo', token: 'token-canary' }),
       baseEnv: { PATH: 'kept', GH_TOKEN: 'ambient' },
     });
-    const childEnv = context.buildChildEnv({ CUSTOM: 'value' });
+    context.runChild('trusted-agent', ['--flag'], { env: { CUSTOM: 'value' } });
 
-    expect(childEnv).toMatchObject({ PATH: 'kept', CUSTOM: 'value', GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com' });
+    expect(calls.at(-1).options.env).toMatchObject({ PATH: 'kept', CUSTOM: 'value', GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com' });
+    expect(context).not.toHaveProperty('buildChildEnv');
     expect(context).not.toHaveProperty('token');
     expect(JSON.stringify(context)).not.toContain('token-canary');
     expect(() => JSON.stringify(context)).not.toThrow();
+  });
+
+  test('unbound child execution preserves the injected base environment without account overrides', () => {
+    const calls = [];
+    const baseEnv = { PATH: 'kept', GH_TOKEN: 'ambient-token', GITHUB_TOKEN: 'ambient-token-2', GH_HOST: 'ambient.example' };
+    const context = createGithubContext('/repo', { runner: fakeRunner(calls), baseEnv });
+
+    context.runGh(['api', 'user']);
+    expect(calls[1].options.env).toEqual(baseEnv);
+    expect(calls[1].args).toEqual(['api', 'user']);
+    expect(JSON.stringify(context)).not.toContain('ambient-token');
   });
 
   test('redacts selected credentials from gh output and leaves process.env unchanged', () => {
@@ -147,6 +162,53 @@ describe('github context', () => {
       },
     })).toThrow(/upgrade|GitHub CLI|gh auth login/i);
     expect(unsupportedCalls).toHaveLength(1);
+  });
+
+  test('redacts token-bearing live-login and child failures without changing process.env', () => {
+    const before = { ...process.env };
+    let phase = 'token';
+    const runner = (command, args) => {
+      if (command === 'git') return 'octo\n';
+      if (args[0] === 'auth') return 'token-canary\n';
+      if (phase === 'live') {
+        const error = new Error('token-canary in message');
+        error.stdout = Buffer.from('token-canary');
+        error.stderr = Buffer.from('token-canary');
+        throw error;
+      }
+      return 'octo\n';
+    };
+    phase = 'live';
+    let liveError;
+    try {
+      createGithubContext('/repo', { runner, baseEnv: { GH_TOKEN: 'ambient' } });
+    } catch (error) {
+      liveError = error;
+    }
+    expect(liveError).toMatchObject({ code: 'GITHUB_AUTH_FAILED' });
+    expect(liveError.message).not.toContain('token-canary');
+    expect({ ...process.env }).toEqual(before);
+
+    phase = 'child';
+    const childErrorRunner = (command, args) => {
+      if (command === 'git') return 'octo\n';
+      if (args[0] === 'auth') return 'token-canary\n';
+      if (args[0] === 'api' && args[1] === '--hostname') return 'octo\n';
+      const error = new Error('token-canary in message');
+      error.stdout = Buffer.from('token-canary');
+      error.stderr = Buffer.from('token-canary');
+      throw error;
+    };
+    const childContext = createGithubContext('/repo', { runner: childErrorRunner, baseEnv: { GH_TOKEN: 'ambient' } });
+    let childError;
+    try {
+      childContext.runGh(['api', 'user']);
+    } catch (error) {
+      childError = error;
+    }
+    expect(childError).toMatchObject({ code: 'GITHUB_COMMAND_FAILED' });
+    expect(childError.message).not.toContain('token-canary');
+    expect({ ...process.env }).toEqual(before);
   });
 
   test('validates account before named-token subprocess and redacts credential-bearing failures', () => {
