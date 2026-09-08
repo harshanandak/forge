@@ -12,6 +12,10 @@
 - Registry metadata is validated. Context preparation runs after local stage enforcement and before the handler.
 - Supported-route coverage includes foreground commands, detached monitor wakes, dashboard snapshot generation, and full behavioral-eval PR attribution. Unrelated Git, test, and browser children remain credential-free.
 - The packaged public CLI aliases all target `bin/forge.js`. Direct developer invocation of the unshipped legacy `bin/forge-cmd.js` is outside the V1 guarantee and is locked as an explicit boundary rather than silently implied.
+- `github use` verifies a supplied login through the private context before writing the clone-local binding. The public CLI parser stops consuming options at `github run --`, so child flags remain child flags.
+- Mixed-purpose team Bash processes never receive selected credentials. Their existing `GH_CMD` executable seam points to a checked-in, secret-free bridge that re-enters the same Forge runtime, which scopes the credential to the final `gh` child.
+- Detached monitor/watch workers re-enter Forge and prepare their own context from the clone-local binding. Snapshot generation prepares context inside the worker and scopes it to `gh`; neither design delegates a token to unrelated descendants.
+- The new `github` command participates in normal skill-coverage validation; it receives no exemption.
 
 ## Plan-review evidence
 
@@ -27,3 +31,9 @@
 - Observed failures included temporary Git `ENOTCONN`, 5-second worktree-test timeouts under full-suite contention, and missing `chalk` in the `packages/skills` workspace. No feature production code existed during this run.
 - Focused rerun `bun test test/patch-intent.test.js test/eval/eval-runner.test.js test/scripts/dep-guard.test.js` completed with 56 pass and 0 fail; the first two observed contention failures did not reproduce.
 - Validation must use the repository's resource-aware full-suite runner after dependencies are synchronized. The baseline failure is recorded, not rounded up to green.
+
+## Dev integration recheck
+
+- An independent Astra read-only pass traced Tasks 2-5 through the live execution graph at `10e5ef4193f91bf2b22ff13f4bf4adcdccebce37`.
+- It found and the task map corrected: pre-write account preparation, top-level parser capture of child flags, missing skill-coverage ownership, mixed-purpose team credential leakage, and over-broad background worker inheritance.
+- The corrections preserve the approved product contract while reducing token propagation: child workers resolve clone-local context themselves and only actual `gh` processes receive selected credentials.
