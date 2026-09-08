@@ -321,6 +321,56 @@ describe('foreground GitHub account route matrix', () => {
     expect(call[2]).toEqual({ stdio: 'inherit' });
   });
 
+  test('bound team removes case-insensitive ambient GitHub credentials from its copied Bash env', async () => {
+    const env = Object.freeze({
+      GH_TOKEN: CANARY, gh_token: CANARY, GITHUB_TOKEN: CANARY, GitHub_Token: CANARY,
+      GH_HOST: CANARY, Gh_Host: CANARY, RETAINED: 'yes',
+    });
+    const before = { ...process.env };
+    let call;
+    await team.handler(['verify'], {}, ROOT, {
+      githubContext: { bound: true }, env, execFileSync: (...values) => { call = values; },
+    });
+    expect(call[2].env.RETAINED).toBe('yes');
+    expect(Object.keys(call[2].env).some(key => ['gh_token', 'github_token', 'gh_host'].includes(key.toLowerCase()))).toBe(false);
+    assertNotSelected(call);
+    expect(env.GH_TOKEN === CANARY && env.Gh_Host === CANARY).toBe(true);
+    expect(isDeepStrictEqual({ ...process.env }, before)).toBe(true);
+  });
+
+  test.each([
+    [['-p', ROOT, 'verify'], ['verify']],
+    [[`--path=${ROOT}`, 'workload', '--me'], ['workload', '--me']],
+  ])('team path flags prepare once and are removed before Bash dispatch: %j', async (rawArgs, dispatchedArgs) => {
+    const args = Object.freeze(rawArgs);
+    let preparations = 0;
+    let call;
+    const result = await executeCommand(new Map([['team', team]]), 'team', args, {}, ROOT, {
+      skipEnsureHome: true,
+      prepareGithubContext: () => { preparations++; return { bound: true }; },
+      commandOpts: { env: { RETAINED: 'yes' }, execFileSync: (...values) => { call = values; } },
+    });
+    expect(result.success).toBe(true);
+    expect(preparations).toBe(1);
+    expect(call[1]).toEqual([path.join(ROOT, 'scripts', 'forge-team', 'index.sh'), ...dispatchedArgs]);
+    expect(args).toEqual(rawArgs);
+  });
+
+  test.each([
+    [['-p', ROOT, 'verify']],
+    [[`--path=${ROOT}`, 'workload', '--me']],
+  ])('team path flags cannot bypass failed account preparation: %j', async args => {
+    let calls = 0;
+    const result = await executeCommand(new Map([['team', team]]), 'team', args, {}, ROOT, {
+      skipEnsureHome: true,
+      prepareGithubContext: () => { throw new Error(CANARY); },
+      commandOpts: { execFileSync: () => { calls++; } },
+    });
+    expect(result.success).toBe(false);
+    expect(calls).toBe(0);
+    assertNotSelected(result);
+  });
+
   test.each([false, true])('shipped bridge preserves exact argv, streams and status (compiled=%s)', compiled => {
     expect(fs.existsSync(path.join(ROOT, BRIDGE))).toBe(true);
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-gh-bridge-'));
