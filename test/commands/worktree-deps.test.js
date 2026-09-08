@@ -283,6 +283,34 @@ describe('forge worktree create — verifies the install and self-heals a stale 
     });
   }
 
+  test('ignores hidden directories excluded by a workspace wildcard', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      const hiddenPackage = path.join(f.worktreePath, 'packages', '.fixture');
+      fs.mkdirSync(hiddenPackage);
+      fs.writeFileSync(path.join(hiddenPackage, 'package.json'), JSON.stringify({
+        name: 'hidden-fixture',
+        dependencies: { 'never-installed': '^1.0.0' },
+      }));
+      const calls = [];
+
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => {
+          calls.push({ cmd, args });
+          populateWorkspaceDependency(f.worktreePath);
+          return { status: 0 };
+        },
+        fsApi: f.fsApi,
+        platform: 'linux',
+      });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(calls.map(({ args }) => args)).toEqual([['install']]);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
   test('detaches a newly-created root modules link before installing workspace dependencies', () => {
     const f = makeWorkspaceFixture();
     try {
