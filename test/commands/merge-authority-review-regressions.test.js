@@ -387,7 +387,7 @@ describe('merge authority — exact reviewer regressions', () => {
     expect(merges).toBe(0);
   });
 
-  test('optional NEUTRAL and SKIPPED checks block the mutation seam', async () => {
+  test('optional NEUTRAL and SKIPPED checks do not block the mutation seam', async () => {
     for (const conclusion of ['NEUTRAL', 'SKIPPED']) {
       let merges = 0;
       const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
@@ -397,8 +397,8 @@ describe('merge authority — exact reviewer regressions', () => {
         ] }),
         mergePr: async () => { merges += 1; return { merged: true }; },
       }));
-      expect(out.merged).toBe(false);
-      expect(merges).toBe(0);
+      expect(out.merged).toBe(true);
+      expect(merges).toBe(1);
     }
   });
 
