@@ -568,11 +568,11 @@ No test scenarios section.`;
 				featureSlug: 'test-feature',
 				title: 'feat: test',
 				dryRun: true, // Simulation mode
+				createPr: async () => ({ success: true, prUrl: 'https://github.com/example/repo/pull/1' }),
 			});
 
-			if (result.success) {
-				expect(result.prUrl || result.message).toBeTruthy();
-			}
+			expect(result.success).toBe(true);
+			expect(result.prUrl).toBe('https://github.com/example/repo/pull/1');
 		});
 	});
 
@@ -583,9 +583,15 @@ No test scenarios section.`;
 				title: 'feat: test',
 				body: 'Test',
 				dryRun: true,
+				exec: (command) => {
+					if (command === 'gh') return 'gh version test';
+					throw new Error('not a git repository');
+				},
 			});
 
 			expect(result.success !== undefined).toBeTruthy();
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('Not in a git repository');
 		});
 
 		test('should handle file read errors', () => {

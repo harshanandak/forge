@@ -70,6 +70,23 @@ function makeSpawnSync(exitCode = 0) {
 }
 
 describe('scripts/test pre-push runner', () => {
+  test.each(['pr', 'ship', 'merge', 'team', 'clean'])('foreground %s changes select exact native and account-route suites', name => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({ changedFiles: `lib/commands/${name}.js\n` }));
+    expect(plan.mode).toBe('targeted');
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual([
+      ...[`test/commands/${name}.test.js`, 'test/commands/github-route-matrix.test.js'].sort((a, b) => a.localeCompare(b)),
+      ...riskTargets,
+    ]);
+  });
+
+  test('the GitHub bridge selects the account-route suite', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({ changedFiles: 'scripts/github-context-bridge.sh\n' }));
+    expect(plan.mode).toBe('targeted');
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual(['test/commands/github-route-matrix.test.js', ...riskTargets]);
+  });
+
   test('registry changes directly select both core and GitHub-context regression suites', () => {
     expect(getTestCandidatesForChangedFile('lib/commands/_registry.js')).toEqual([
       'test/commands/_registry.test.js',
@@ -279,6 +296,7 @@ describe('scripts/test pre-push runner', () => {
 
   test.each([
     ['lib/commands/shepherd.js', [
+      'test/commands/github-route-matrix.test.js',
       'test/commands/shepherd.test.js',
       'test/pr-monitor/arm-on-push.test.js',
       'test/pr-monitor/shepherd-watch.test.js',
@@ -594,6 +612,7 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[0].args).toEqual([
       'run',
       'test',
+      'test/commands/github-route-matrix.test.js',
       'test/commands/ship.test.js',
       ...riskTargets,
     ]);
