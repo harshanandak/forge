@@ -3,6 +3,7 @@
 const { describe, expect, test } = require('bun:test');
 const { EventEmitter } = require('node:events');
 const path = require('node:path');
+const { getTestCandidatesForChangedFile } = require('../../lib/commands/test');
 
 const {
   ALWAYS_RUN_RISK_TEST_TARGETS,
@@ -69,6 +70,23 @@ function makeSpawnSync(exitCode = 0) {
 }
 
 describe('scripts/test pre-push runner', () => {
+  test('registry changes directly select both core and GitHub-context regression suites', () => {
+    expect(getTestCandidatesForChangedFile('lib/commands/_registry.js')).toEqual([
+      'test/commands/_registry.test.js',
+      'test/commands/_registry-github-context.test.js',
+    ]);
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: 'lib/commands/_registry.js\n',
+    }));
+    expect(plan.mode).toBe('targeted');
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual([
+      'test/commands/_registry-github-context.test.js',
+      'test/commands/_registry.test.js',
+      ...riskTargets,
+    ]);
+  });
+
   test('stripGitHookEnv removes git hook environment variables', () => {
     const env = stripGitHookEnv({
       GIT_DIR: '.git',
