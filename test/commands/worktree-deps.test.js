@@ -422,32 +422,52 @@ describe('forge worktree create — verifies the install and self-heals a stale 
     }
   });
 
-  test('accepts a root-linked Bun dependency that is another declared workspace package', () => {
+  test('reinstalls when shared Bun workspace links resolve into the main checkout', () => {
     const f = makeWorkspaceFixture();
     try {
       for (const root of [f.projectRoot, f.worktreePath]) {
         fs.writeFileSync(path.join(root, 'packages', 'skills', 'package.json'), JSON.stringify({
           name: '@forge/skills',
-          dependencies: { '@forge/memory-contracts': 'workspace:*' },
+          dependencies: { '@forge/memory-contracts': '0.1.0-beta.6' },
         }));
         const contractsDir = path.join(root, 'packages', 'memory-contracts');
         fs.mkdirSync(contractsDir, { recursive: true });
         fs.writeFileSync(path.join(contractsDir, 'package.json'), JSON.stringify({ name: '@forge/memory-contracts' }));
       }
       const rootContract = path.join(f.projectRoot, 'node_modules', '@forge', 'memory-contracts');
-      fs.mkdirSync(rootContract, { recursive: true });
-      fs.writeFileSync(path.join(rootContract, 'package.json'), JSON.stringify({ name: '@forge/memory-contracts' }));
-      f.fsApi.symlinkSync = (target, dest) => fs.cpSync(target, dest, { recursive: true });
+      fs.mkdirSync(path.dirname(rootContract), { recursive: true });
+      fs.symlinkSync(
+        path.join(f.projectRoot, 'packages', 'memory-contracts'),
+        rootContract,
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+      const staleLocalContract = path.join(f.worktreePath, 'packages', 'skills', 'node_modules', '@forge', 'memory-contracts');
+      fs.mkdirSync(staleLocalContract, { recursive: true });
+      fs.writeFileSync(path.join(staleLocalContract, 'package.json'), JSON.stringify({ name: '@forge/memory-contracts' }));
+      f.fsApi.symlinkSync = (target, dest, type) => fs.symlinkSync(target, dest, type);
       const calls = [];
 
       const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
-        spawnFn: (cmd, args) => { calls.push({ cmd, args }); return { status: 0 }; },
+        spawnFn: (cmd, args) => {
+          calls.push({ cmd, args });
+          const localContract = path.join(f.worktreePath, 'node_modules', '@forge', 'memory-contracts');
+          fs.rmSync(staleLocalContract, { recursive: true, force: true });
+          fs.mkdirSync(path.dirname(localContract), { recursive: true });
+          fs.symlinkSync(
+            path.join(f.worktreePath, 'packages', 'memory-contracts'),
+            localContract,
+            process.platform === 'win32' ? 'junction' : 'dir',
+          );
+          return { status: 0 };
+        },
         fsApi: f.fsApi,
-        platform: 'linux',
+        platform: process.platform,
       });
 
-      expect(result).toEqual({ linked: true, installed: false, healed: false });
-      expect(calls).toHaveLength(0);
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(calls.map(({ args }) => args)).toEqual([['install']]);
+      expect(fs.realpathSync(path.join(f.worktreePath, 'node_modules', '@forge', 'memory-contracts')))
+        .toBe(fs.realpathSync(path.join(f.worktreePath, 'packages', 'memory-contracts')));
     } finally {
       fs.rmSync(f.tmp, { recursive: true, force: true });
     }
