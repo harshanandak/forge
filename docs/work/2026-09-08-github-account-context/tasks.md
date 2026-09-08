@@ -31,11 +31,11 @@
 
 ### Task 3: Registry metadata and guard
 
-**Owns:** `lib/commands/_registry.js`, `test/commands/_registry-github-context.test.js`
+**Owns:** `lib/commands/_registry.js`, `test/commands/_registry-github-context.test.js`, `lib/commands/test.js`, `scripts/test.js`, `test/scripts/test-runner.test.js`
 
 1. Write failing tests for `githubAuth: true`, predicate true/false, invalid metadata, help bypass, unmarked commands, and context-preparation failure.
 2. Validate metadata as absent, boolean, or function. After successful stage enforcement and before handler entry, resolve the private context and merge it into the handler-options seam without mutating `process.env`.
-3. Prove local/unmarked commands perform no account lookup and marked unbound commands continue with existing behavior after one local Git-config lookup.
+3. Prove local/unmarked commands perform no account lookup and marked unbound commands continue with existing behavior after one local Git-config lookup. Keep both the core registry and GitHub-context suites in the targeted-test selectors for registry changes.
 
 **Exit:** one registry path guards only declared GitHub routes and passes a private runner to handlers.
 

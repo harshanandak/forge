@@ -18,6 +18,7 @@
 - The new `github` command participates in normal skill-coverage validation; it receives no exemption.
 - Repository access resolves a validated `owner/repo` and passes it explicitly to `gh`. HTTPS and direct GitHub SSH work directly; custom SSH aliases are accepted only when local `ssh -G` resolves their host to `github.com`. Insecure HTTP/Git and non-GitHub origins fail before repository access or binding writes.
 - Changes to the GitHub command or public CLI select both lifecycle and launcher regression suites through Forge's normal targeted-test maps.
+- Registry changes select both the existing registry suite and the GitHub-context guard suite. Positional `help` is not a universal bypass; only actual `--help`/`-h` flags before a child delimiter skip account preparation.
 
 ## Plan-review evidence
 
