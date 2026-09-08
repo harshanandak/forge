@@ -318,6 +318,7 @@ describe('scripts/test pre-push runner', () => {
       'test/pr-monitor/reconcile.test.js',
     ]],
     ['lib/pr-monitor/reconcile-executor.js', [
+      'test/commands/github-indirect-routes.test.js',
       'test/pr-monitor/auto-trigger-containment.test.js',
       'test/pr-monitor/reconcile-daemon-owner-authority.test.js',
       'test/pr-monitor/reconcile-executor-owner-authority.test.js',
@@ -331,6 +332,7 @@ describe('scripts/test pre-push runner', () => {
       'test/pr-monitor/watch.test.js',
     ]],
     ['lib/pr-monitor/watch-lifecycle.js', [
+      'test/commands/github-indirect-routes.test.js',
       'test/pr-monitor/watch-lifecycle.test.js',
       'test/pr-monitor/watch-owner-launch-contention.test.js',
       'test/pr-monitor/watch-owner-launch-gate.test.js',

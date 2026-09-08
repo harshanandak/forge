@@ -156,6 +156,7 @@ function createPrAdapter(projectRoot, execFile = execFileSync) {
 }
 
 async function resolveAttribution(projectRoot, head, env, deps = {}) {
+  const prExec = deps.runGh ? (_command, args, options) => deps.runGh(args, options) : deps.execFileSync;
   const branch = resolveBranch(projectRoot, deps.execFileSync);
   const requestedIssueId = env.FORGE_EVAL_ISSUE_ID;
   if (requestedIssueId && !UUID.test(String(requestedIssueId))) {
@@ -172,11 +173,11 @@ async function resolveAttribution(projectRoot, head, env, deps = {}) {
   }
   const pr = explicitPr
     ? Number(env.FORGE_EVAL_PR)
-    : resolvePrFromGh(projectRoot, deps.execFileSync);
+    : resolvePrFromGh(projectRoot, prExec);
   if (!pr) throw new Error('attribution.pr_unavailable');
   let state;
   try {
-    const adapter = deps.prAdapter || createPrAdapter(projectRoot, deps.execFileSync);
+    const adapter = deps.prAdapter || createPrAdapter(projectRoot, prExec);
     state = await adapter.readState(pr);
   } catch {
     throw new Error('attribution.pr_unavailable');

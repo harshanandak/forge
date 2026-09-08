@@ -4,7 +4,8 @@ const { describe, test, expect } = require('bun:test');
 
 const shepherd = require('../../lib/commands/shepherd');
 const executor = require('../../lib/pr-monitor/reconcile-executor');
-const { startPrWatcherDetached } = require('../../lib/pr-monitor/watch-lifecycle');
+const { startPrWatcherDetached: launchWatcher } = require('../../lib/pr-monitor/watch-lifecycle');
+const startPrWatcherDetached = opts => launchWatcher({ readGithubAccount: () => null, ...opts });
 
 const REPOSITORY = 'acme/forge';
 const PR = 42;

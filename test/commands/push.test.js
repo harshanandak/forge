@@ -695,6 +695,10 @@ function makeDeps(overrides = {}) {
 		existsSync: overrides.existsSync || (() => true), // bun.lock exists by default
 		log: overrides.log || (() => {}),
 		writeForgeToken: overrides.writeForgeToken || (() => {}),
+		fireAndForget: () => {},
+		_ensureBackingIssue: async () => null,
+		_kernelDriver: {},
+		_kernelBroker: {},
 		...(overrides.env ? { env: overrides.env } : {}),
 	};
 }

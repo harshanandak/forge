@@ -10,7 +10,7 @@ const NOTES = [{ note: 'Kernel is the single source of truth', timestamp: '2026-
 const READY = [{ id: 'r1', title: 'Wire auto-file rail' }];
 
 function run(args, opts) {
-  return hooks.handler(args, {}, '/root', { fireAndForget: () => {}, ...opts });
+  return hooks.handler(args, {}, '/root', { fireAndForget: () => {}, fetchInbox: () => [], ...opts });
 }
 
 describe('forge hooks session-start (context hook — memory push)', () => {

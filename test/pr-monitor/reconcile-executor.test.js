@@ -519,6 +519,7 @@ describe('daemon dispatch and diagnostics', () => {
 		let unref = false;
 		const result = launchDaemon({
 			projectRoot: '/repo/worktree', gitCommonDir: '/repo/.git',
+			readGithubAccount: () => null,
 			spawnProcess: (bin, args, options) => {
 				spawnCall = { bin, args, options };
 				return { pid: 99, on: () => {}, unref: () => { unref = true; } };
@@ -534,6 +535,7 @@ describe('daemon dispatch and diagnostics', () => {
 		let call;
 		const result = launchDaemon({
 			projectRoot: '/repo/worktree', gitCommonDir: '/repo/.git',
+			readGithubAccount: () => null,
 			harness: { hasBgShell: true, runBgShell: (args, options) => { call = { args, options }; } },
 		});
 		expect(result).toEqual({ launched: true, via: 'bg-shell' });
