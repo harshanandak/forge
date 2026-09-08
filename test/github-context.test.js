@@ -4,6 +4,7 @@ const { describe, test, expect } = require('bun:test');
 
 const {
   createGithubContext,
+  prepareGithubAccount,
   prepareGithubContext,
   readGithubAccount,
   unsetGithubAccount,
@@ -85,6 +86,43 @@ describe('github context', () => {
       options: { env: { GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com', Path: 'kept' } },
     });
     expect(JSON.stringify(context)).not.toContain('token-canary');
+  });
+
+  test('prepares a supplied account without reading or writing Git config', () => {
+    const calls = [];
+    const context = prepareGithubAccount('/repo', 'Work-Login', {
+      runner: fakeRunner(calls, { account: 'unused', liveLogin: 'work-login', token: 'token-canary' }),
+      baseEnv: { PATH: 'kept', GH_TOKEN: 'ambient' },
+    });
+
+    expect(context.status).toEqual({ state: 'ready', account: 'Work-Login', login: 'work-login' });
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.command !== 'git')).toBe(true);
+    expect(calls[0]).toMatchObject({
+      command: 'gh',
+      args: ['auth', 'token', '--hostname', 'github.com', '--user', 'Work-Login'],
+    });
+  });
+
+  test('validates a supplied account before any subprocess', () => {
+    const calls = [];
+    expect(() => prepareGithubAccount('/repo', 'bad value', { runner: fakeRunner(calls) })).toThrow(/login|account/i);
+    expect(calls).toHaveLength(0);
+  });
+
+  test('keeps supplied-account mismatch failures secret-clean', () => {
+    const calls = [];
+    let failure;
+    try {
+      prepareGithubAccount('/repo', 'octo', {
+        runner: fakeRunner(calls, { account: 'unused', liveLogin: 'other', token: 'token-canary' }),
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: 'GITHUB_ACCOUNT_MISMATCH' });
+    expect(failure.message).not.toContain('token-canary');
+    expect(calls.every((call) => call.command !== 'git')).toBe(true);
   });
 
   test('private child helpers use selected variables without exposing the token in public values', () => {
