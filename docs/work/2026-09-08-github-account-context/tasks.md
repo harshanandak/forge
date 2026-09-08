@@ -54,7 +54,7 @@
 
 ### Task 5: Background and indirect GitHub consumers
 
-**Owns:** `lib/commands/push.js`, `lib/commands/hooks.js`, `lib/commands/serve.js`, `lib/commands/skill.js`, `lib/pr-monitor/reconcile-executor.js`, `web/dashboard/generate-snapshot.mjs`, `scripts/lib/behavioral-eval-runtime.js`, `test/commands/github-indirect-routes.test.js`
+**Owns:** `lib/commands/push.js`, `lib/commands/hooks.js`, `lib/commands/serve.js`, `lib/commands/skill.js`, `lib/pr-monitor/reconcile-executor.js`, `lib/pr-monitor/watch-lifecycle.js`, `web/dashboard/generate-snapshot.mjs`, `scripts/lib/behavioral-eval-runtime.js`, `test/commands/github-indirect-routes.test.js`, the affected focused fixture suites, and the targeted-test maps
 
 1. Write failing tests for push/session-start monitor wake, serve snapshot generation, and `skill eval --full` PR attribution.
 2. Let detached monitor/watch children re-enter the public Forge CLI and prepare their own clone-local context; do not inherit a selected-token environment into the worker. Prepare once inside snapshot generation and route only its actual `gh` calls through the private runner; never expose the selected environment to Git/Forge descendants, browser openers, or unrelated children.

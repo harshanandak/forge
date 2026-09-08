@@ -47,3 +47,10 @@
 - Independent spec and quality reviews found and corrected two boundary bugs before Task 4 exit: mixed-purpose Team Bash inherited ambient GitHub variables, and whole-argv global-flag stripping removed Team's documented `claim <id> --force` option.
 - At the reviewed Task 4 head (`2c362fddb846d2cd835352b3bdbb91b8702f6a70`), Team removes ambient GitHub variables case-insensitively, normalizes Forge routing flags through one shared path, and preserves Team-owned flags verbatim.
 - The fresh pinned-Bun 1.3.12 route proof completed with 398 pass, 4 existing skips, and 0 failures across 17 files; targeted lint, Bash syntax, manifest drift, embedded assets, Windows background spawns, and diff checks passed. Both independent reviewers returned PASS.
+
+## Task 5 review evidence
+
+- The Task 5 map expanded to the existing `lib/pr-monitor/watch-lifecycle.js` launch boundary because per-PR watcher children—not only the daemon—must re-enter the public CLI without inheriting a selected token. This is the shared root boundary for source and compiled watcher launches.
+- Bound daemon, watcher, snapshot, and browser launch environments remove ambient GitHub variables case-insensitively after one clone-local binding read. Unbound launches retain native environment behavior. The re-entered GitHub worker prepares and verifies its own context.
+- Snapshot generation prepares once internally and delegates only `gh` calls to the private runner. Full skill evaluation delegates the runner only to PR resolution and attribution; Git, Forge, browser, and evaluation-harness descendants remain separate.
+- At the reviewed Task 5 head (`f06d2260d12b9361cfab549d8eab3d740d5c68b6`), the fresh pinned-Bun 1.3.12 proof completed with 384 pass and 0 failures across 18 files; targeted lint, manifest generation, Windows background-spawn, and diff checks passed. Independent spec and quality reviewers returned PASS.
