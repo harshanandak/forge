@@ -91,7 +91,7 @@ describe('Validate Command - Validation Orchestration', () => {
 		test('keeps ordinary validation commands bounded and preserves the external Bun fallback', () => {
 			const source = fs.readFileSync(path.join(__dirname, '..', '..', 'lib', 'commands', 'validate.js'), 'utf8');
 			expect(source).toMatch(/VALIDATION_COMMAND_TIMEOUT_MS\s*=\s*600000/);
-			expect(source).toMatch(/timeout:\s*VALIDATION_COMMAND_TIMEOUT_MS/);
+			expect(source).toMatch(/timeout:\s*fullSuite\s*\?\s*FULL_SUITE_TIMEOUT_MS\s*:\s*VALIDATION_COMMAND_TIMEOUT_MS/);
 			// External repositories retain the raw Bun fallback and its per-test timeout.
 			expect(source).toMatch(/\[\s*'test'\s*,\s*'--timeout'\s*,\s*'30000'\s*\]/);
 			expect(source).not.toContain('timed out after 2 minutes');
