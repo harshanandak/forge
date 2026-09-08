@@ -939,7 +939,7 @@ describe('scripts/test-full-suite.js', () => {
       registerChild: () => true,
       unregisterChild: () => {},
     };
-    const stderrPrefix = 'start-of-stream-' + 'discarded-prefix-'.repeat(1024);
+    const stderrPrefix = 'start-of-stream-' + 'discarded-prefix-'.repeat(1024) + '\n';
     const secret = 'sk-shardsecret123456';
     const stderrSuffix = `fatal shard detail ${secret}`;
     const forwarded = [];
@@ -974,6 +974,47 @@ describe('scripts/test-full-suite.js', () => {
       expect(result.stderrTail).not.toContain('start-of-stream');
       expect(result.stderrTail.length).toBeLessThanOrEqual(4096);
       expect(forwarded.join('')).toBe(stderrPrefix + stderrSuffix);
+    } finally {
+      fs.rmSync(reportDirectory, { force: true, recursive: true });
+    }
+  });
+  test('spawnShard omits an oversized secret line before retaining its tail', async () => {
+    const reportDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-stderr-secret-'));
+    const processTree = {
+      reserveChild: () => ({ id: 'stderr-secret' }),
+      registerChild: () => true,
+      unregisterChild: () => {},
+    };
+    const rawSuffix = 'raw-secret-suffix';
+    const spawn = (_command, args) => {
+      const child = new EventEmitter();
+      child.pid = 9091;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      fs.writeFileSync(args[args.indexOf('--reporter-outfile') + 1], passingShardReceipt);
+      process.nextTick(() => {
+        child.stderr.emit('data', 'fatal tok');
+        child.stderr.emit('data', `en=${'x'.repeat(5000)}${rawSuffix}\n`);
+        child.stderr.emit('data', 'plain failure detail\n');
+        child.emit('close', 1, null);
+      });
+      return child;
+    };
+
+    try {
+      const result = await spawnShard({ files: ['test/a.test.js'], index: 0 }, {
+        labelPrefix: unitLabelPrefix,
+        processTree,
+        reportDirectory,
+        spawn,
+        stderrStream: { write: () => {} },
+      });
+
+      expect(result.stderrTail).toContain('[stderr line omitted]');
+      expect(result.stderrTail).toContain('plain failure detail');
+      expect(result.stderrTail).not.toContain(rawSuffix);
+      expect(JSON.stringify(result.stderrTail)).not.toContain(rawSuffix);
+      expect(result.stderrTail.length).toBeLessThanOrEqual(4096);
     } finally {
       fs.rmSync(reportDirectory, { force: true, recursive: true });
     }

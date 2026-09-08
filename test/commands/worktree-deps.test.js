@@ -148,11 +148,11 @@ describe('forge worktree create — verifies the install and self-heals a stale 
     fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: 'left-pad' }));
   }
 
-  function makeWorkspaceFixture(lockfile = 'bun.lock') {
+  function makeWorkspaceFixture(lockfile = 'bun.lock', workspaces = ['packages/*']) {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-wt-workspace-heal-'));
     const projectRoot = path.join(tmp, 'main');
     const worktreePath = path.join(projectRoot, '.worktrees', 'heal-workspace');
-    const rootPackage = JSON.stringify({ name: 'root', workspaces: ['packages/*'] });
+    const rootPackage = JSON.stringify({ name: 'root', workspaces });
     const workspacePackage = JSON.stringify({ name: '@forge/skills', dependencies: { chalk: '^6.0.0' } });
 
     for (const root of [projectRoot, worktreePath]) {
@@ -247,6 +247,32 @@ describe('forge worktree create — verifies the install and self-heals a stale 
       fs.rmSync(f.tmp, { recursive: true, force: true });
     }
   });
+
+  for (const [label, workspaces] of [
+    ['object-form workspace packages', { packages: ['packages/*'] }],
+    ['an exact workspace path', ['packages/skills']],
+  ]) {
+    test(`installs a missing Bun dependency declared through ${label}`, () => {
+      const f = makeWorkspaceFixture('bun.lock', workspaces);
+      try {
+        const calls = [];
+        const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+          spawnFn: (cmd, args) => {
+            calls.push({ cmd, args });
+            populateWorkspaceDependency(f.worktreePath);
+            return { status: 0 };
+          },
+          fsApi: f.fsApi,
+          platform: 'linux',
+        });
+
+        expect(result).toEqual({ linked: false, installed: true, healed: false });
+        expect(calls.map(({ args }) => args)).toEqual([['install']]);
+      } finally {
+        fs.rmSync(f.tmp, { recursive: true, force: true });
+      }
+    });
+  }
 
   test('detaches a newly-created root modules link before installing workspace dependencies', () => {
     const f = makeWorkspaceFixture();
@@ -503,6 +529,32 @@ describe('forge worktree create — verifies the install and self-heals a stale 
       expect(gitCalls.some(({ cmd, args }) => cmd === 'git'
         && args[0] === '-C' && args[1] === f.projectRoot
         && args.includes('worktree') && args.includes('add'))).toBe(true);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('repairs stale dependencies when reusing an existing worktree', async () => {
+    const f = makeFixture();
+    try {
+      const installCalls = [];
+      const gitCalls = [];
+      const result = await mod.handler(
+        ['create', 'healme'], {}, f.projectRoot,
+        {
+          _exec: gitStub(gitCalls),
+          _spawn: staleStoreSpawn(f.worktreePath, installCalls),
+          _fs: fs,
+          _platform: 'linux',
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.reused).toBe(true);
+      expect(result.depsHealed).toBe(true);
+      expect(result.message).toMatch(/healed dependencies/i);
+      expect(installCalls.map(({ args }) => args)).toEqual([['install'], ['install', '--force']]);
+      expect(gitCalls.some(({ args }) => args.includes('worktree') && args.includes('add'))).toBe(false);
     } finally {
       fs.rmSync(f.tmp, { recursive: true, force: true });
     }

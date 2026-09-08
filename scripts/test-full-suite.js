@@ -34,6 +34,7 @@ const RESOURCE_LANE_RANK = new Map([
 ]);
 const DEFAULT_SHARD_TIMEOUT_MS = 30000;
 const STDERR_TAIL_LIMIT = 4096;
+const STDERR_OMITTED_LINE = '[stderr line omitted]\n';
 const JS_FAMILY_EXTENSIONS = ['.js', '.cjs', '.mjs', '.jsx', '.ts', '.cts', '.mts', '.tsx'];
 const FORGE_COORDINATION_ENV = new Set([
   'FORGE_ACTOR',
@@ -670,6 +671,48 @@ function classifyShardFailure(result) {
   return 'incomplete-receipt';
 }
 
+function createStderrTailCollector() {
+  let tail = '';
+  let pending = '';
+  let discardingLine = false;
+  const append = (value) => {
+    tail = (tail + value).slice(-STDERR_TAIL_LIMIT);
+  };
+
+  return {
+    write(chunk) {
+      let text = String(chunk);
+      if (discardingLine) {
+        const newline = text.indexOf('\n');
+        if (newline === -1) return;
+        text = text.slice(newline + 1);
+        discardingLine = false;
+      }
+      pending += text;
+      while (pending) {
+        const newline = pending.indexOf('\n');
+        if (newline !== -1) {
+          const line = pending.slice(0, newline + 1);
+          pending = pending.slice(newline + 1);
+          append(line.length > STDERR_TAIL_LIMIT ? STDERR_OMITTED_LINE : redact(line));
+          continue;
+        }
+        if (pending.length > STDERR_TAIL_LIMIT) {
+          pending = '';
+          discardingLine = true;
+          append(STDERR_OMITTED_LINE);
+        }
+        break;
+      }
+    },
+    value() {
+      if (!discardingLine && pending) append(redact(pending));
+      pending = '';
+      return tail;
+    },
+  };
+}
+
 function writeDurationProfile({ allTests, label, outputPath, runReportDir }) {
   const files = walkProfileFiles(runReportDir, '.xml');
   if (files.length === 0) return false;
@@ -763,7 +806,7 @@ function spawnShard(shard, options = {}) {
 
     let child;
     let settled = false;
-    let stderrTail = '';
+    const stderrTail = createStderrTailCollector();
     const finish = (code, output, signal) => {
       if (settled) return;
       settled = true;
@@ -771,7 +814,8 @@ function spawnShard(shard, options = {}) {
       const result = { code, index: shard.index, output };
       if (code !== 0) {
         if (signal) result.signal = signal;
-        if (stderrTail) result.stderrTail = redact(stderrTail).slice(-STDERR_TAIL_LIMIT);
+        const retainedStderr = stderrTail.value();
+        if (retainedStderr) result.stderrTail = retainedStderr;
       }
       resolve(result);
     };
@@ -812,7 +856,7 @@ function spawnShard(shard, options = {}) {
       }
       child.stderr?.on('data', (chunk) => {
         stderrStream.write(chunk);
-        stderrTail = (stderrTail + String(chunk)).slice(-STDERR_TAIL_LIMIT);
+        stderrTail.write(chunk);
       });
     } catch (error) {
       if (!settled) processTree.unregisterChild(reservation);
