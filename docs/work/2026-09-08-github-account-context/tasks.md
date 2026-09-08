@@ -41,7 +41,7 @@
 
 ### Task 4: Foreground GitHub route matrix
 
-**Owns:** `lib/commands/pr.js`, `lib/commands/ship.js`, `lib/commands/merge.js`, `lib/commands/shepherd.js`, `lib/commands/team.js`, `lib/commands/clean.js`, new secret-free `GH_CMD` bridge under `scripts/`, `test/commands/github-route-matrix.test.js`
+**Owns:** `lib/commands/pr.js`, `lib/commands/ship.js`, `lib/commands/merge.js`, `lib/commands/shepherd.js`, `lib/commands/team.js`, `lib/commands/clean.js`, new secret-free `GH_CMD` bridge under `scripts/`, `test/commands/github-route-matrix.test.js`, `test/commands/ship.test.js`, and the targeted-test maps in `lib/commands/test.js`, `scripts/test.js`, and `test/scripts/test-runner.test.js`
 
 1. Write failing routing tests for standalone and `pr` facade commands, clean's split Git/gh runner, and team predicates.
 2. Mark `ship`, `merge`, and `shepherd`; mark `pr ship|merge|shepherd` but not `preflight`/help.
