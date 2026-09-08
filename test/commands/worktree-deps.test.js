@@ -473,6 +473,42 @@ describe('forge worktree create — verifies the install and self-heals a stale 
     }
   });
 
+  test('does not let a valid root workspace link mask a wrong local package', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      fs.writeFileSync(path.join(f.worktreePath, 'packages', 'skills', 'package.json'), JSON.stringify({
+        name: '@forge/skills',
+        dependencies: { '@forge/memory-contracts': '0.1.0-beta.6' },
+      }));
+      const contractsDir = path.join(f.worktreePath, 'packages', 'memory-contracts');
+      fs.mkdirSync(contractsDir, { recursive: true });
+      fs.writeFileSync(path.join(contractsDir, 'package.json'), JSON.stringify({ name: '@forge/memory-contracts' }));
+
+      const rootContract = path.join(f.worktreePath, 'node_modules', '@forge', 'memory-contracts');
+      fs.mkdirSync(path.dirname(rootContract), { recursive: true });
+      fs.symlinkSync(contractsDir, rootContract, process.platform === 'win32' ? 'junction' : 'dir');
+      const staleLocalContract = path.join(f.worktreePath, 'packages', 'skills', 'node_modules', '@forge', 'memory-contracts');
+      fs.mkdirSync(staleLocalContract, { recursive: true });
+      fs.writeFileSync(path.join(staleLocalContract, 'package.json'), JSON.stringify({ name: '@forge/memory-contracts' }));
+      const calls = [];
+
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => {
+          calls.push({ cmd, args });
+          fs.rmSync(staleLocalContract, { recursive: true, force: true });
+          return { status: 0 };
+        },
+        fsApi: f.fsApi,
+        platform: process.platform,
+      });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(calls.map(({ args }) => args)).toEqual([['install']]);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
   test('does not treat a coincidental root package as a Bun-isolated workspace dependency', () => {
     const f = makeWorkspaceFixture();
     try {

@@ -1538,10 +1538,29 @@ describe('scripts/test-full-suite.js', () => {
     const failedReceipt = (detail) => `<testsuites tests="1" assertions="1" failures="1" skipped="0">
       <testsuite><testcase name="failure"><failure>${detail}</failure></testcase></testsuite>
     </testsuites>`;
+    const unrelatedFailureWithPassingTimeoutName = `<testsuites tests="2" assertions="2" failures="1" skipped="0">
+      <testsuite><testcase name="accepts timeout configuration" />
+      <testcase name="unrelated failure"><failure>expected true to be false</failure></testcase></testsuite>
+    </testsuites>`;
+    const passingTimeoutName = `<testsuites tests="1" assertions="1" failures="0" skipped="0">
+      <testsuite><testcase name="accepts timeout configuration" /></testsuite>
+    </testsuites>`;
     const cases = [
       [{ code: 1, output: passingShardReceipt, signal: 'SIGTERM' }, 'signal'],
       [{ code: 1, output: failedReceipt('this test timed out after 5000ms') }, 'test-timeout'],
       [{ code: 1, output: null, stderrTail: 'spawnSync node ETIMEDOUT' }, 'test-timeout'],
+      [{ code: 1, output: unrelatedFailureWithPassingTimeoutName }, 'test-failure'],
+      [{ code: 1, output: passingTimeoutName, stderrTail: '(pass) accepts timeout configuration [0.12ms]' }, 'post-junit-exit'],
+      [{
+        code: 1,
+        output: failedReceipt('expected true to be false'),
+        stderrTail: '(fail) should report a timeout when spawnSync reports ETIMEDOUT with a null status [0.12ms]',
+      }, 'test-failure'],
+      [{
+        code: 1,
+        output: passingTimeoutName,
+        stderrTail: '\u001b[32m(pass) handles spawnSync ETIMEDOUT output\u001b[0m',
+      }, 'post-junit-exit'],
       [{ code: 1, output: failedReceipt('expected true to be false') }, 'test-failure'],
       [{ code: 1, output: passingShardReceipt }, 'post-junit-exit'],
       [{ code: 1, output: null }, 'incomplete-receipt'],

@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn: defaultSpawn } = require('node:child_process');
+const { stripVTControlCharacters } = require('node:util');
 
 const {
   createDurationMap,
@@ -664,8 +665,17 @@ function classifyShardFailure(result) {
   const stderrTail = typeof result?.stderrTail === 'string' ? result.stderrTail : '';
   const parsed = parseShardReceipt(output);
   const failedReceipt = parsed && (parsed.failed > 0 || parsed.errors > 0);
-  const namesTimeout = (value) => /\b(?:etimedout|timed?\s*out|timeout)/i.test(value);
-  if ((failedReceipt && namesTimeout(output)) || namesTimeout(stderrTail)) return 'test-timeout';
+  const hasTimeoutDiagnostic = (value) => /\b(?:etimedout|timed?\s*out|timeout\s*(?:error|exception))\b/i.test(value);
+  const failedOutput = failedReceipt
+    ? parseJUnitTestcases(output)
+      .map(({ body }) => body)
+      .filter(body => /<(?:failure|error)\b/.test(body))
+      .join('\n')
+    : '';
+  const stderrDiagnostics = stripVTControlCharacters(stderrTail).split(/\r?\n/)
+    .filter(line => !/^\s*\((?:pass|fail|skip|todo)\)(?:\s|$)/i.test(line))
+    .join('\n');
+  if (hasTimeoutDiagnostic(failedOutput) || hasTimeoutDiagnostic(stderrDiagnostics)) return 'test-timeout';
   if (failedReceipt) return 'test-failure';
   if (parsed) return 'post-junit-exit';
   return 'incomplete-receipt';
