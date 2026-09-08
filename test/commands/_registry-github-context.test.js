@@ -65,10 +65,34 @@ describe('registry GitHub context', () => {
   });
 
   test.each([
-    [['--help'], {}], [['-h'], {}], [['help'], {}], [['--path', '/repo', 'help'], {}], [[], { help: true }], [[], { '--help': true }],
+    [['--help'], {}], [['-h'], {}], [['--path', '/repo', '--help'], {}], [[], { help: true }], [[], { '--help': true }], [[], { '-h': true }],
   ])('help bypasses predicate and preparation: %j', async (args, flags) => {
     const mod = command({ githubAuth: () => { throw new Error('predicate must not run'); } });
     expect((await execute(mod, args, flags, { prepareGithubContext: () => { throw new Error('must not prepare'); } })).success).toBe(true);
+  });
+
+  test.each([[['help']], [['--path', '/repo', 'help']]])('positional help remains an operational ship invocation: %j', async args => {
+    const order = [];
+    const context = { bound: true };
+    const mod = command({ name: 'ship', githubAuth: true, handler: (_a, _f, _r, opts) => {
+      order.push('handler');
+      expect(opts.githubContext).toBe(context);
+      return { success: true };
+    } });
+    const result = await execute(mod, args, {}, {
+      prepareGithubContext: () => { order.push('context'); return context; },
+    });
+    expect(result.success).toBe(true);
+    expect(order).toEqual(['context', 'handler']);
+  });
+
+  test('positional help cannot bypass an account mismatch', async () => {
+    let entered = false;
+    const result = await execute(command({ name: 'ship', githubAuth: true, handler: () => { entered = true; } }), ['help'], {}, {
+      prepareGithubContext: () => { throw new GithubContextError('GITHUB_ACCOUNT_MISMATCH', 'mismatch'); },
+    });
+    expect(result.success).toBe(false);
+    expect(entered).toBe(false);
   });
 
   test('child help after a delimiter is not a registry help bypass', async () => {
