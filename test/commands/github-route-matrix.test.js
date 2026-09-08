@@ -338,6 +338,31 @@ describe('foreground GitHub account route matrix', () => {
     expect(isDeepStrictEqual({ ...process.env }, before)).toBe(true);
   });
 
+  test.each([true, false])('team preserves claim force and local flags after routing flags (bound=%s)', async bound => {
+    for (const [rawArgs, expected] of [
+      [['claim', 'issue-id', '--force'], ['claim', 'issue-id', '--force']],
+      [['-p', ROOT, 'claim', 'issue-id', '--force'], ['claim', 'issue-id', '--force']],
+      [['claim', '-p', ROOT, 'issue-id', '--force'], ['claim', 'issue-id', '--force']],
+      [['claim', 'issue-id', `--path=${ROOT}`, '--force'], ['claim', 'issue-id', '--force']],
+      [['--force', '-p', ROOT, 'claim', 'issue-id'], ['claim', 'issue-id']],
+      [['workload', '--me', '--format=json', `--path=${ROOT}`], ['workload', '--me', '--format=json']],
+      [['add', '--github=test-user'], ['add', '--github=test-user']],
+    ]) {
+      const args = Object.freeze(rawArgs);
+      let preparations = 0;
+      let call;
+      const result = await executeCommand(new Map([['team', team]]), 'team', args, {}, ROOT, {
+        skipEnsureHome: true,
+        prepareGithubContext: () => { preparations++; return bound ? { bound: true } : unboundContext(); },
+        commandOpts: { env: { RETAINED: 'yes' }, execFileSync: (...values) => { call = values; } },
+      });
+      expect(result.success).toBe(true);
+      expect(preparations).toBe(1);
+      expect(call[1]).toEqual([path.join(ROOT, 'scripts', 'forge-team', 'index.sh'), ...expected]);
+      if (!bound) expect(call[2]).toEqual({ stdio: 'inherit' });
+    }
+  });
+
   test.each([
     [['-p', ROOT, 'verify'], ['verify']],
     [[`--path=${ROOT}`, 'workload', '--me'], ['workload', '--me']],
