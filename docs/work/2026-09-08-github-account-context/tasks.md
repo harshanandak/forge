@@ -18,12 +18,12 @@
 
 ### Task 2: `forge github` lifecycle and launcher
 
-**Owns:** `lib/commands/github.js`, `bin/forge.js`, `test/commands/github.test.js`, `test/github-launcher.test.js`, `skills/coverage.json`, `package.json`, `bun.lock`, generated `lib/commands/_manifest.js`
+**Owns:** `lib/commands/github.js`, `bin/forge.js`, `lib/commands/test.js`, `scripts/test.js`, `test/commands/github.test.js`, `test/github-launcher.test.js`, `test/scripts/test-runner.test.js`, `skills/coverage.json`, `package.json`, `bun.lock`, generated `lib/commands/_manifest.js`
 
 1. Write failing command tests for `use`, `status`, `status --json`, `run --`, and `unset`. Prove `use` prepares and verifies the supplied account before writing only clone-local `github.account`; failures leave any previous binding unchanged; missing accounts never trigger login/switch; status reports classified data only.
 2. Add `cross-spawn` as a direct runtime dependency and test interactive launch on POSIX/direct executables, Windows `.exe`, Windows `.cmd`, missing programs, spaced arguments, metacharacter arguments, signals, and exit-code propagation without caller-built shell strings. Make the public parser stop interpreting options after `github run --`; prove child `--help`, `--version`, `-p`, and `--path=...` arguments arrive unchanged.
 3. For `run`, set `GH_TOKEN`, `GITHUB_TOKEN`, and `GH_HOST=github.com` only on the explicit child. Add canaries for credential-bearing remotes, helper commands, subprocess errors, and JSON output.
-4. Regenerate and drift-check the command manifest, and map `github` to its normal owning skill in `skills/coverage.json`.
+4. Regenerate and drift-check the command manifest, map `github` to its normal owning skill in `skills/coverage.json`, and map both lifecycle and launcher suites into Forge's targeted-test selectors.
 
 **Exit:** one-time clone binding and cross-harness launching work without changing native `gh` active-account state or leaking credentials.
 
