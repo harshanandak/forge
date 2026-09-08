@@ -194,18 +194,45 @@ describe('deterministic Bun lockfile transition proof', () => {
 		expect(verifyBunLockfileRegeneration(root, { spawnSync: spawn }).allowed).toBe(false);
 	});
 
+	test('accepts an exact clean re-resolution only after a seeded byte mismatch', () => {
+		const root = tempRepo();
+		commitBase(root);
+		const proposed = 'clean-resolution\n';
+		stageProof(root, { name: 'fixture', version: '1.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, proposed);
+		const attempts = [];
+		const result = verifyBunLockfileRegeneration(root, {
+			spawnSync: (command, args, options) => {
+				if (args.includes('install')) {
+					expect(args).toContain('--ignore-scripts');
+					expect(args).toContain('--lockfile-only');
+				}
+				return fakeBun((_manifest, installOptions) => {
+					const lockPath = path.join(installOptions.projectRoot, 'bun.lock');
+					const seed = fs.existsSync(lockPath) ? fs.readFileSync(lockPath, 'utf8') : null;
+					attempts.push({ root: installOptions.projectRoot, seed });
+					return seed === null ? proposed : 'seeded-resolution\n';
+				})(command, args, options);
+			},
+		});
+		expect(result).toMatchObject({ allowed: true });
+		expect(attempts.map(attempt => attempt.seed)).toEqual(['base-lock\n', null]);
+		expect(attempts[0].root).not.toBe(attempts[1].root);
+		for (const attempt of attempts) expect(fs.existsSync(attempt.root)).toBe(false);
+	});
+
 	test('never seeds regeneration from an arbitrary proposed lock', () => {
 		const root = tempRepo();
 		commitBase(root);
 		stageProof(root, { name: 'fixture', version: '2.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, 'attacker-controlled\n');
-		let seed;
+		const seeds = [];
 		const result = verifyBunLockfileRegeneration(root, {
 			spawnSync: fakeBun((_manifest, options) => {
-				seed = fs.readFileSync(path.join(options.projectRoot, 'bun.lock'), 'utf8');
+				const lockPath = path.join(options.projectRoot, 'bun.lock');
+				seeds.push(fs.existsSync(lockPath) ? fs.readFileSync(lockPath, 'utf8') : null);
 				return 'generated:2.0.0\n';
 			}),
 		});
-		expect(seed).toBe('base-lock\n');
+		expect(seeds).toEqual(['base-lock\n', null]);
 		expect(result).toMatchObject({ allowed: false, reason: 'Regenerated bun.lock does not match the staged content' });
 	});
 
@@ -235,6 +262,39 @@ describe('deterministic Bun lockfile transition proof', () => {
 			allowed: false,
 			reason: 'Installed Bun does not match root packageManager',
 		});
+	});
+
+	test('fails closed on clean retry process errors and rechecks the pinned runtime', () => {
+		for (const failure of ['failed', 'timed-out', 'wrong-version']) {
+			const root = tempRepo();
+			commitBase(root);
+			stageProof(root, { name: 'fixture', version: '1.0.0', packageManager: RUNTIME_PACKAGE_MANAGER }, 'clean-resolution\n');
+			let versions = 0;
+			let installs = 0;
+			const result = verifyBunLockfileRegeneration(root, {
+				spawnSync: (_command, args, options) => {
+					if (args[0] === '--version') {
+						versions += 1;
+						const version = versions === 2 && failure === 'wrong-version' ? MISMATCH_BUN_VERSION : RUNTIME_BUN_VERSION;
+						return { status: 0, stdout: `${version}\n`, stderr: '' };
+					}
+					installs += 1;
+					if (installs === 1) {
+						fs.writeFileSync(path.join(options.cwd, 'bun.lock'), 'seeded-resolution\n');
+						return { status: 0, stdout: '', stderr: '' };
+					}
+					return failure === 'failed'
+						? { status: 1, stderr: 'resolution failed' }
+						: { status: null, signal: 'SIGTERM', error: { code: 'ETIMEDOUT' } };
+				},
+			});
+			expect(versions).toBe(2);
+			expect(installs).toBe(failure === 'wrong-version' ? 1 : 2);
+			expect(result).toMatchObject({
+				allowed: false,
+				reason: failure === 'wrong-version' ? 'Installed Bun does not match root packageManager' : 'Bun lockfile regeneration failed',
+			});
+		}
 	});
 
 	test('rejects ambiguous pins, workspace escapes, symlinks, and index races', () => {
