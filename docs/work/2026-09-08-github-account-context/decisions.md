@@ -11,7 +11,7 @@
 - The interactive launcher uses a direct `cross-spawn` runtime dependency. This avoids reimplementing Windows `.cmd` escaping and supports Codex/T3 shims as well as native executables.
 - Registry metadata is validated. Context preparation runs after local stage enforcement and before the handler.
 - Supported-route coverage includes foreground commands, detached monitor wakes, dashboard snapshot generation, and full behavioral-eval PR attribution. Unrelated Git, test, and browser children remain credential-free.
-- The packaged public CLI aliases all target `bin/forge.js`. Direct developer invocation of the unshipped legacy `bin/forge-cmd.js` is outside the V1 guarantee and is locked as an explicit boundary rather than silently implied.
+- The packaged workflow aliases target `bin/forge.js`; the dedicated `forge-preflight` prerequisite binary is separate. Direct developer invocation of the unshipped legacy `bin/forge-cmd.js` is outside the V1 guarantee and is locked as an explicit boundary rather than silently implied.
 - `github use` verifies a supplied login through the private context before writing the clone-local binding. The public CLI parser stops consuming options at `github run --`, so child flags remain child flags.
 - Mixed-purpose team Bash processes never receive selected credentials. Their existing `GH_CMD` executable seam points to a checked-in, secret-free bridge that re-enters the same Forge runtime, which scopes the credential to the final `gh` child.
 - Detached monitor/watch workers re-enter Forge and prepare their own context from the clone-local binding. Snapshot generation prepares context inside the worker and scopes it to `gh`; neither design delegates a token to unrelated descendants.
@@ -62,3 +62,69 @@
 - The unbound public route matched direct native-child behavior, including ambient GitHub variables. Array-based spawning preserved child flags, spaces, metacharacters, and empty arguments without a shell.
 - `forge` and `forge-workflow` remain the shipped aliases of `bin/forge.js`; `forge-preflight` retains its dedicated prerequisite entrypoint and unaliased `bin/forge-cmd.js` remains outside the V1 guarantee.
 - At the reviewed Task 6 head (`02e5f335ed72126dc39dc500262099599690e471`), the fresh pinned-Bun 1.3.12 proof completed with 204 pass and 0 failures across nine files; lint, manifest, and diff checks passed. Independent spec and quality reviewers returned PASS.
+
+## Task 7 documentation and release evidence
+
+Documentation describes the opt-in workflow in `docs/reference/github-accounts.md`,
+linked from installation prerequisites and the canonical setup skill. Ordinary
+setup remains unbound. API identity, commit author, Git transport, and the explicit
+trusted-child authority boundary are separate; CuraPod adoption waits for the
+merged, installed, accepted Forge build.
+
+### Local validation (Windows, Bun 1.3.12)
+
+The validation checkout started at `e0af0f36fb5b536dbb095dabe8d476f3d993ac53`.
+All account checks used injected/fake providers and disposable Git repositories,
+never real stored credentials. Full-suite processes used an empty temporary
+`GH_CONFIG_DIR`, removed inherited GitHub token/host variables in their own
+environment, and disabled incidental shepherd wakes.
+
+- `bun test --timeout 15000 test/github-context.test.js test/github-launcher.test.js test/commands/github.test.js test/commands/_registry-github-context.test.js test/commands/github-route-matrix.test.js test/commands/github-indirect-routes.test.js test/integration/github-account-context.test.js test/structural/github-account-public-surface.test.js test/commands/_manifest.test.js test/docs-consistency.test.js`: 214 pass, 0 fail, 1,188 assertions, ten files, 12.07 seconds.
+- The first `bun run test:full:parallel` completed with 8,325 tests: 8,289 pass, three fail, 33 skip, zero errors, 26,584 assertions. Receipts: `test-results/full-suite-HvcpvL/`. It exposed three feature integration omissions, not a green baseline: the exact exclusive-test list omitted both new subprocess suites; the setup skill did not yet document its mapped `github` command; the synthetic `/wt` Shepherd registry fixture lacked the new preparation seam.
+- Scheduler RED: `bun test --timeout 30000 test/scripts/test-full-suite.test.js --test-name-pattern 'the discovered suite has complete exact resource-lane coverage'`: zero pass, one fail, 8.22 seconds. Adding exactly the two discovered exclusive files preserved equality and scheduling assertions. GREEN: `bun test --timeout 30000 test/scripts/test-full-suite.test.js`: 44 pass, zero fail, 199 assertions, 6.59 seconds.
+- Skill/Shepherd RED: `bun test --timeout 15000 test/skill-accuracy.test.js test/shepherd-merge-safety.test.js`: 46 pass, two fail, 73 assertions, 0.862 seconds. The narrow fixes documented the optional command in the canonical setup skill and injected an unbound context in the existing synthetic test, without changing production guard/verdict behavior. The same command then passed: 48 pass, zero fail, 78 assertions, 0.902 seconds.
+- `node scripts/sync-agent-skills.js` generated the required committed setup mirror through normal authorization; no mirror was hand-edited. The generic external skill validator rejects Forge's pre-existing `terminal` frontmatter; that unrelated schema was not changed. Forge's own skill accuracy, coverage, context-cost, and mirror checks remain the authoritative repository gates.
+- `bun test --timeout 15000 test/skill-accuracy.test.js test/skill-coverage.test.js test/structural/skills-sync-drift.test.js test/skills/context-cost.test.js test/shepherd-merge-safety.test.js test/scripts/test-full-suite.test.js`: 119 pass, zero fail, 522 assertions, six files, 11.43 seconds, after mirror generation.
+- A subsequent full run was stopped after the setup documentation change exposed its stale static scorecard, to avoid spending a complete run on a known generated-artifact mismatch. Focused RED `bun test --timeout 15000 test/skill-eval.test.js --test-name-pattern 'canonical AND mirror scorecard.json each equal the recomputed card'` reported only setup canonical/mirror drift (one fail, 0.368 seconds). `node bin/forge.js skill eval setup --static` regenerated only the setup card; normal mirror sync propagated it. The honest score delta is body lines 74 to 92, token-cost score 43 to 41, composite 83 to 82; no scoring thresholds changed.
+- Final generated-artifact preflight: `bun test --timeout 15000 test/skill-eval.test.js test/commands/skill.test.js test/skill-accuracy.test.js test/skill-coverage.test.js test/structural/skills-sync-drift.test.js test/skills/context-cost.test.js test/shepherd-merge-safety.test.js test/scripts/test-full-suite.test.js test/windows-hide-background-spawns.test.js`: 192 pass, zero fail, nine files, 12.70 seconds.
+- Final `bun run test:full:parallel`: **PASS**, exit zero, 8,325 tests (8,292 pass, 33 skip, zero failures/errors), 26,603 assertions, all 606 files in 27 resource-aware shards, 600.63 seconds elapsed. Windows worker budget stayed four: unit concurrency four, subprocess concurrency two at cost two, exclusive concurrency one. This supersedes the failed/incomplete runs above for the final documented tree; skipped tests are not represented as executed proof.
+- `bun run lint` and `node scripts/gen-command-manifest.js --check` passed (62 commands). ESLint emitted only the existing Node module-type advisory, not a lint warning/failure.
+
+### Compiled executable evidence
+
+`bun run build:binary` succeeded, embedding 186 asset files and 38 executable
+assets and compiling 508 modules. The final rebuild includes the updated setup
+skill and its scorecard (bundle 184 ms, compile 1,114 ms). The local ignored artifact is
+`forge-bin.exe` (120,903,168 bytes), SHA-256
+`9751bc85b65a2eb73896d55f534d4e45dfb4cd4c9652e8a0f0ffee85fed95940`.
+
+A temporary fake `gh.exe` was compiled with `bun build --compile <fixture>/fake-gh.cjs --outfile <fixture>/gh.exe`.
+`node <fixture>/smoke.cjs <checkout>/forge-bin.exe` passed all seven checks:
+disposable repository initialization and origin, unbound compiled status, local
+binding, bound compiled status/access, wrong-account guard before handler entry,
+and exact compiled launcher argv (including child flags, spaces, metacharacters,
+and an empty argument). The fake provider rejected every unexpected invocation;
+captured stdout/stderr were checked for credential canaries before reporting only
+check labels and status. These are executed local checks (rung 4), not proof of
+native credential-manager behavior with real accounts.
+
+### POSIX CI and remaining acceptance
+
+No new workflow is needed for the source launcher lane. At this checkout,
+`.github/workflows/test.yml:141` defines PR `unit-shard` jobs on `ubuntu-latest`
+with Node 24 and Bun 1.3.12, invoking
+`bun run test:ci:shard -- --mode shard --shard-index <0-3> --shard-total 4 --label unit-shard-<index>`.
+Live local discovery via `scripts/test-ci-shard.js.listAllUnitTests()` and
+`scripts/test-full-suite.js.listAllFullSuiteTests()` included all three files:
+`test/github-launcher.test.js`, `test/integration/github-account-context.test.js`,
+and `test/structural/github-account-public-surface.test.js`. The PR follow-up
+matrix also includes Ubuntu Node 24 and uses the existing targeted maps. Feature
+changes to `bin/` and `package.json` select the full OS/Node matrix as well.
+
+This is inspected CI configuration plus executed discovery, not a remote green
+receipt: the exact pushed PR head must still pass its Ubuntu launcher lane before
+merge. The existing Linux compiled-binary PR job smokes version/setup/ready,
+not the account-specific compiled path. Account-specific compiled smoke was run
+on Windows only. Real Windows credential-store acceptance with two stored
+accounts remains a parent-owned, redaction-safe release gate; no such receipt is
+claimed here. No CuraPod clone/account configuration was changed.

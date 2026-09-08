@@ -155,6 +155,10 @@ installed and on your `PATH`:
 These are runtime prerequisites checked by `forge`'s own health checks; the
 installer does not install them for you.
 
+Using personal and work GitHub accounts together? See the optional
+[per-clone GitHub account guide](github-accounts.md). Ordinary single-account
+setup is unchanged.
+
 ---
 
 ## Uninstall
