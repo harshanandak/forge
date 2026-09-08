@@ -2,6 +2,9 @@
 
 const { describe, test, expect } = require('bun:test');
 const { handler } = require('../../lib/commands/github');
+const { getTestCandidatesForChangedFile } = require('../../lib/commands/test');
+const { classifyPushTests } = require('../../scripts/test');
+const path = require('node:path');
 
 const CANARY = 'test-only-sensitive-canary';
 
@@ -20,8 +23,9 @@ function fixture(overrides = {}) {
       if (args.includes('user.name')) return 'Example Author';
       if (args.includes('user.email')) return 'author@example.test';
       if (args.includes('credential.helper')) return `!gh auth git-credential # ${CANARY}`;
-      if (args[0] === 'remote') return overrides.remote || `https://user:${CANARY}@github.com/org/project.git`;
+      if (args[0] === 'remote') return overrides.remote || 'https://github.com/org/project.git';
     }
+    if (command === 'ssh') return `hostname ${overrides.sshHostname || 'github.com'}\nuser git\n`;
     if (command === 'gh') {
       if (args[0] === 'auth') {
         if (overrides.authError) throw new Error(CANARY);
@@ -45,11 +49,12 @@ describe('forge github lifecycle', () => {
     expect(result.success).toBe(true);
     expect(f.account()).toBe('work');
     expect(f.calls.map(c => [c.command, c.args[0]])).toEqual([
-      ['gh', 'auth'], ['gh', 'api'], ['gh', 'repo'], ['git', 'config'],
+      ['gh', 'auth'], ['gh', 'api'], ['git', 'remote'], ['gh', 'repo'], ['git', 'config'],
     ]);
     expect(f.calls[0].options.env.GH_TOKEN).toBeUndefined();
-    expect(f.calls[2].options.env.GH_TOKEN === CANARY).toBe(true);
-    expect(f.calls[3].args).toEqual(['config', '--local', 'github.account', 'work']);
+    expect(f.calls[3].options.env.GH_TOKEN === CANARY).toBe(true);
+    expect(f.calls[3].args).toEqual(['repo', 'view', 'github.com/org/project', '--json', 'nameWithOwner']);
+    expect(f.calls[4].args).toEqual(['config', '--local', 'github.account', 'work']);
     expect(JSON.stringify(result).includes(CANARY)).toBe(false);
   });
 
@@ -58,7 +63,7 @@ describe('forge github lifecycle', () => {
     const result = await handler(['use', 'work'], {}, '/repo', f.options);
     expect(result.success).toBe(false);
     expect(f.account()).toBe('personal');
-    expect(f.calls.some(c => c.command === 'git')).toBe(false);
+    expect(f.calls.some(c => c.command === 'git' && c.args[0] === 'config')).toBe(false);
     expect(f.calls.some(c => ['login', 'switch'].includes(c.args[1]))).toBe(false);
     expect(JSON.stringify(result).includes(CANARY)).toBe(false);
   });
@@ -117,5 +122,45 @@ describe('forge github lifecycle', () => {
     expect((await handler(['use', 'work', 'extra'], {}, '/repo', f.options)).success).toBe(false);
     expect((await handler(['unknown'], {}, '/repo', f.options)).success).toBe(false);
     expect(f.calls).toHaveLength(0);
+  });
+
+  test.each(['github-work', 'github-personal'])('use and bound status resolve SSH alias %s before querying an explicit GitHub repository', async host => {
+    const f = fixture({ account: 'work', remote: `git@${host}:org/project.git` });
+    expect((await handler(['use', 'work'], {}, '/repo', f.options)).success).toBe(true);
+    expect((await handler(['status', '--json'], {}, '/repo', f.options)).status.state).toBe('ready');
+    const ssh = f.calls.filter(c => c.command === 'ssh');
+    expect(ssh).toHaveLength(2);
+    expect(ssh.every(c => c.args.join(' ') === `-G ${host}`)).toBe(true);
+    expect(ssh.every(c => c.options.env?.GH_TOKEN === undefined)).toBe(true);
+    expect(f.calls.filter(c => c.command === 'gh' && c.args[0] === 'repo').every(c => c.args[2] === 'github.com/org/project')).toBe(true);
+  });
+
+  test.each([
+    { remote: 'https://gitlab.com/org/project.git' },
+    { remote: 'https://github.com/org/project/extra' },
+    { remote: `https://user:${CANARY}@github.com/org/project.git` },
+    { remote: 'git@github-work:org/project.git', sshHostname: 'gitlab.com' },
+    { remote: 'git@github-work:org/project.git', sshHostname: CANARY },
+  ])('invalid or non-GitHub origins fail safely without querying or changing the binding: %j', async remote => {
+    const f = fixture(remote);
+    const result = await handler(['use', 'work'], {}, '/repo', f.options);
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('GITHUB_REPOSITORY_INVALID');
+    expect(f.account()).toBe('personal');
+    expect(f.calls.some(c => c.command === 'gh' && c.args[0] === 'repo')).toBe(false);
+    expect(JSON.stringify(result).includes(CANARY)).toBe(false);
+    const bound = fixture({ account: 'work', ...remote });
+    const report = await handler(['status', '--json'], {}, '/repo', bound.options);
+    expect(report.status.state).toBe('no_repository_access');
+    expect(report.status.repositoryAccess).toBe(false);
+    expect(JSON.stringify(report).includes(CANARY)).toBe(false);
+  });
+
+  test.each(['bin/forge.js', 'lib/commands/github.js'])('targeted selection always includes the launcher for %s', file => {
+    expect(getTestCandidatesForChangedFile(file)).toContain('test/github-launcher.test.js');
+    if (file.startsWith('lib/')) expect(getTestCandidatesForChangedFile(file)).toContain('test/commands/github.test.js');
+    const plan = classifyPushTests(path.resolve(__dirname, '../..'), (_command, args) => args[0] === 'diff' ? `${file}\n` : 'origin/feature');
+    expect(plan.runFullSuite).toBe(false);
+    expect(plan.testTargets).toContain('test/github-launcher.test.js');
   });
 });

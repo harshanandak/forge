@@ -223,6 +223,7 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.testTargets).toEqual([
       'test/cli-flags.test.js',
       'test/forge-cli-registry.test.js',
+      'test/github-launcher.test.js',
       'test/setup-runtime-flags.test.js',
       ...riskTargets,
     ]);
