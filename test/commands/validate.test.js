@@ -165,6 +165,33 @@ describe('Validate Command - Validation Orchestration', () => {
 	});
 
 	describe('Full validate orchestration', () => {
+		test.each([
+			['PASS', 2, 1, 0, 1, true, 'Tests: PASS'],
+			['FAIL', 3, 1, 1, 1, false, 'Checks failed: tests'],
+			['INCOMPLETE', 2, 1, 0, 1, false, 'Checks failed: tests'],
+			['PASS', 0, 0, 0, 0, true, 'Tests: SKIPPED'],
+		])('distinguishes skipped-test counts from a skipped check (%s, %s tests)', async (status, total, passed, failed, skipped, success, summary) => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-skip-summary-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'forge-workflow', bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
+				const aggregate = `Full suite aggregate: status=${status} tests=${total} assertions=1 passed=${passed} failed=${failed} errors=0 skipped=${skipped}`;
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), `console.log(${JSON.stringify(aggregate)});`);
+				const result = await executeValidate({
+					rootDir, skip: ['conflictMarkers', 'typeCheck', 'lint', 'security'],
+				});
+				expect(result.success).toBe(success);
+				expect(result.checks.tests.skipped).toBe(total === 0 ? true : skipped);
+				expect(result.summary).toContain(summary);
+				if (!success) expect(result.failedChecks).toEqual(['tests']);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
 		test('should fail fast when conflict markers are present', async () => {
 			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-conflicts-'));
 			try {
@@ -747,9 +774,9 @@ describe('Validate Command - Validation Orchestration', () => {
 });
 
 // getCheckStatus is internal; re-derive the same rule the summary uses for the
-// assertions above (skipped => SKIPPED, else PASS/FAIL).
+// assertions above (boolean skipped => SKIPPED, else PASS/FAIL).
 function getCheckStatus(check) {
 	if (!check) return null;
-	if (check.skipped) return 'SKIPPED';
+	if (check.skipped === true) return 'SKIPPED';
 	return check.success ? 'PASS' : 'FAIL';
 }
