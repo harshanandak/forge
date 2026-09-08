@@ -259,7 +259,9 @@ describe('scripts/test pre-push runner', () => {
       'test/cli-flags.test.js',
       'test/forge-cli-registry.test.js',
       'test/github-launcher.test.js',
+      'test/integration/github-account-context.test.js',
       'test/setup-runtime-flags.test.js',
+      'test/structural/github-account-public-surface.test.js',
       ...riskTargets,
     ]);
   });

@@ -64,6 +64,7 @@ const KNOWN_TARGETABLE_FILES = new Set([
   'lib/kernel/sqlite-driver.js',
   'lib/commands/shepherd.js',
   'lib/commands/github.js',
+  'lib/github-context.js',
   'lib/commands/_registry.js',
   'lib/commands/pr.js',
   'lib/commands/ship.js',
