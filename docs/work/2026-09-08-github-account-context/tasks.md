@@ -64,7 +64,7 @@
 
 ### Task 6: Concurrent isolation and public-surface boundary
 
-**Owns:** `test/integration/github-account-context.test.js`, `test/structural/github-account-public-surface.test.js`
+**Owns:** `test/integration/github-account-context.test.js`, `test/structural/github-account-public-surface.test.js`, and the targeted-test maps
 
 1. Create two temporary repositories and two fake named accounts; run bound GitHub children concurrently and assert each observes only its own login while neither credential appears in output.
 2. Prove a wrong-account handler never starts, unbound behavior preserves the baseline, and wrong ambient token/host variables cannot redirect a bound route.

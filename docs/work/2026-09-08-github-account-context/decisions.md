@@ -54,3 +54,11 @@
 - Bound daemon, watcher, snapshot, and browser launch environments remove ambient GitHub variables case-insensitively after one clone-local binding read. Unbound launches retain native environment behavior. The re-entered GitHub worker prepares and verifies its own context.
 - Snapshot generation prepares once internally and delegates only `gh` calls to the private runner. Full skill evaluation delegates the runner only to PR resolution and attribution; Git, Forge, browser, and evaluation-harness descendants remain separate.
 - At the reviewed Task 5 head (`f06d2260d12b9361cfab549d8eab3d740d5c68b6`), the fresh pinned-Bun 1.3.12 proof completed with 384 pass and 0 failures across 18 files; targeted lint, manifest generation, Windows background-spawn, and diff checks passed. Independent spec and quality reviewers returned PASS.
+
+## Task 6 review evidence
+
+- Two real public Forge subprocesses ran concurrently against distinct temporary repositories and fully controlled fake named accounts. A readiness barrier proved overlap before release; each child observed only its selected login and repository.
+- Wrong ambient GitHub variables could not redirect either bound child. Wrong-account and provider-error paths stopped before guarded handler entry, and fake credential canaries remained absent from stdout, stderr, errors, and serialized results.
+- The unbound public route matched direct native-child behavior, including ambient GitHub variables. Array-based spawning preserved child flags, spaces, metacharacters, and empty arguments without a shell.
+- `forge` and `forge-workflow` remain the shipped aliases of `bin/forge.js`; `forge-preflight` retains its dedicated prerequisite entrypoint and unaliased `bin/forge-cmd.js` remains outside the V1 guarantee.
+- At the reviewed Task 6 head (`02e5f335ed72126dc39dc500262099599690e471`), the fresh pinned-Bun 1.3.12 proof completed with 204 pass and 0 failures across nine files; lint, manifest, and diff checks passed. Independent spec and quality reviewers returned PASS.
