@@ -86,6 +86,13 @@ describe('lib/base-remote', () => {
 		expect(remoteHasTrackingBase(exec, '/repo', 'origin')).toBe(false);
 	});
 
+	test('fails closed when the remote name is missing', () => {
+		const exec = fakeExec({});
+
+		expect(resolveRemoteHeadTarget(exec, '/repo', undefined)).toBeNull();
+		expect(remoteHasTrackingBase(exec, '/repo', undefined)).toBe(false);
+	});
+
 	// One implementation, two surfaces: `/ship` picks the PR base with these, and
 	// scripts/protected-state-check.js resolves merge provenance with them. If they
 	// ever diverge, a fork-published protected change could pass the ancestry gate.

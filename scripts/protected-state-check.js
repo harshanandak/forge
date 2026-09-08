@@ -228,9 +228,21 @@ function baseRemoteProbe(_command, args) {
 // fork-style checkout the feature branch tracks the contributor-owned fork, and
 // trusting it would let a change merged from the fork's default branch pass as
 // "already published on the base" when it never reached the official repo.
+// Fail closed when the official `upstream` remote is configured but has no
+// fetched tracking refs: falling through to `origin` would change trust domains
+// and let fork-only content pass as already published upstream.
 // Returns a fully-qualified ref name, or null when it cannot be established.
 function canonicalUpstreamRef() {
-	const remote = resolveBaseRemote(baseRemoteProbe, process.cwd());
+	const cwd = process.cwd();
+	const remote = resolveBaseRemote(baseRemoteProbe, cwd);
+	if (remote === 'origin') {
+		try {
+			gitCapture(['remote', 'get-url', 'upstream']);
+			return null;
+		} catch {
+			// No upstream configured; origin fallback is legitimate.
+		}
+	}
 	try {
 		const remotes = gitCapture(['remote']).split(/\r?\n/).map(line => line.trim());
 		if (!remotes.includes(remote)) return null;

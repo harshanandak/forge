@@ -876,4 +876,21 @@ describe('scripts/protected-state-check.js merge awareness', () => {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	}, 60_000);
+
+	test('blocks a fork-only merge when upstream is configured but has no fetched tracking refs', () => {
+		const root = createTempDir();
+		try {
+			const work = initForkRepo(root);
+			startForkMerge(work, { publishUpstream: false });
+			// Simulate an unfetched official remote: upstream exists but has no
+			// tracking refs, so falling through to origin would change trust domains.
+			runGit(work, ['remote', 'set-head', 'upstream', '-d']);
+			runGit(work, ['update-ref', '-d', 'refs/remotes/upstream/master']);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
 });
