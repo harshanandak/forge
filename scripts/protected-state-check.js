@@ -93,16 +93,39 @@ function getStagedContent(file) {
 	}
 }
 
-function getCurrentHead() {
+
+function getCurrentHead(execGit = execFileSync) {
+	let output;
 	try {
-		const head = execFileSync('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
+		output = execGit('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
 			encoding: 'utf8',
 			stdio: ['ignore', 'pipe', 'pipe'],
-		}).trim();
-		return isValidGitObjectId(head) ? head : null;
-	} catch {
-		return null;
+		});
+	} catch (headError) {
+		let symbolicRef;
+		try {
+			symbolicRef = execGit('git', ['symbolic-ref', '-q', 'HEAD'], {
+				encoding: 'utf8',
+				stdio: ['ignore', 'pipe', 'pipe'],
+			}).trim();
+		} catch {
+			throw headError;
+		}
+		if (!/^refs\/heads\/[^\0\r\n]+$/.test(symbolicRef)) throw headError;
+		try {
+			execGit('git', ['show-ref', '--verify', '--quiet', symbolicRef], {
+				encoding: 'utf8',
+				stdio: ['ignore', 'pipe', 'pipe'],
+			});
+		} catch (refError) {
+			if (refError.status === 1) return null;
+			throw headError;
+		}
+		throw headError;
 	}
+	const head = output.trim();
+	if (!isValidGitObjectId(head)) throw new Error('Current HEAD did not resolve to one full Git object id.');
+	return head;
 }
 
 async function main() {
@@ -145,6 +168,7 @@ async function main() {
 	const authorization = await authorizeAndConsumeProtectedStateWrites(
 		process.cwd(),
 		protectedProbes.map(entry => entry.request),
+		{ sourceHead },
 	);
 	let authorizationIndex = 0;
 	const decisions = probes
@@ -152,11 +176,15 @@ async function main() {
 			if (entry.directDecision) return entry.directDecision;
 			if (!entry.request) return entry.probe;
 			const trustedDecision = authorization.decisions[authorizationIndex++];
+			if (!trustedDecision && authorization.batchDecision) return { ...entry.probe, allowed: true };
 			return trustedDecision.allowed
 				? trustedDecision
 				: { ...entry.probe, ...trustedDecision, repairHint: entry.probe.repairHint };
 		})
 		.filter(decision => !decision.allowed);
+	if (authorization.batchDecision && !authorization.batchDecision.allowed) {
+		decisions.push(authorization.batchDecision);
+	}
 
 	for (const decision of decisions) {
 		const audit = recordProtectedStateAuditEvent(decision, { cwd: process.cwd() });
@@ -182,7 +210,11 @@ async function main() {
 	process.exit(1);
 }
 
-main().catch(error => {
-	console.error(`Protected state check failed: ${error.message}`);
-	process.exit(1);
-});
+if (require.main === module) {
+	main().catch(error => {
+		console.error(`Protected state check failed: ${error.message}`);
+		process.exit(1);
+	});
+}
+
+module.exports = { getCurrentHead };

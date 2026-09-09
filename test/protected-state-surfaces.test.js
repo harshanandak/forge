@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { getCurrentHead } = require('../scripts/protected-state-check');
 
 const {
 	PROTECTED_SURFACES,
@@ -392,6 +393,24 @@ describe('protected state surfaces', () => {
 describe('scripts/protected-state-check.js', () => {
 	const scriptPath = path.join(__dirname, '..', 'scripts', 'protected-state-check.js');
 
+	test('distinguishes a verified unborn branch from HEAD lookup failures', () => {
+		const headError = Object.assign(new Error('injected HEAD lookup failure'), { status: 128 });
+		const unbornGit = (_command, args) => {
+			if (args[0] === 'rev-parse') throw headError;
+			if (args[0] === 'symbolic-ref') return 'refs/heads/main\n';
+			throw Object.assign(new Error('missing branch ref'), { status: 1 });
+		};
+		expect(getCurrentHead(unbornGit)).toBe(null);
+
+		const existingRefGit = (_command, args) => {
+			if (args[0] === 'rev-parse') throw headError;
+			if (args[0] === 'symbolic-ref') return 'refs/heads/main\n';
+			return '';
+		};
+		expect(() => getCurrentHead(existingRefGit)).toThrow('injected HEAD lookup failure');
+		expect(() => getCurrentHead(() => 'not-a-full-object-id\n')).toThrow('full Git object id');
+	});
+
 	test('fails staged direct edits to protected state with repair hints', () => {
 		const result = spawnSync('node', [scriptPath], {
 			cwd: path.join(__dirname, '..'),
@@ -413,6 +432,10 @@ describe('scripts/protected-state-check.js', () => {
 	test('writes the blocked decision to the audit log without warning about a missing CLI', () => {
 		const root = createTempDir();
 		try {
+			runGit(root, ['init', '--quiet']);
+			runGit(root, ['config', 'user.email', 'forge-test@example.invalid']);
+			runGit(root, ['config', 'user.name', 'Forge Test']);
+			runGit(root, ['commit', '--allow-empty', '-m', 'base']);
 			const result = spawnSync('node', [scriptPath], {
 				cwd: root,
 				stdio: 'pipe',

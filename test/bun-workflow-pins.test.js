@@ -22,6 +22,7 @@ const {
 } = require('../lib/bun-workflow-pins');
 
 const TEST_HEAD = 'a'.repeat(40);
+const repoRoot = path.resolve(__dirname, '..');
 
 function fixtureContent(spec, version = '1.3.12') {
 	if (spec.path.endsWith('build-binary.yml')) {
@@ -40,7 +41,18 @@ function createFixture() {
 		fs.mkdirSync(path.dirname(fullPath), { recursive: true });
 		fs.writeFileSync(fullPath, fixtureContent(spec));
 	}
+	const npmPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+	fs.mkdirSync(path.dirname(npmPath), { recursive: true });
+	fs.writeFileSync(npmPath, renderNpmPublishWorkflow('1.3.12'));
 	return root;
+}
+
+function batchFixtureOptions() {
+	return {
+		readSourcePackageManifest: () => Buffer.from('{"packageManager":"bun@1.3.12"}'),
+		readSourceNpmPublishWorkflow: () => Buffer.from(renderNpmPublishWorkflow('1.3.12')),
+		readIndexedNpmPublishWorkflow: () => Buffer.from(renderNpmPublishWorkflow('1.3.12')),
+	};
 }
 
 describe('Forge-owned Bun workflow pins', () => {
@@ -71,6 +83,7 @@ describe('Forge-owned Bun workflow pins', () => {
 		let npmCalls = 0;
 		try {
 			const result = await updateBunWorkflowPins(root, {
+				...batchFixtureOptions(),
 				actor: 'bun-pin-test',
 				expectedHead: TEST_HEAD,
 				resolveHead: () => TEST_HEAD,
@@ -121,6 +134,7 @@ describe('Forge-owned Bun workflow pins', () => {
 		try {
 			fs.appendFileSync(path.join(root, BUN_WORKFLOW_SPECS[0].path), '# unrelated\n');
 			const result = await updateBunWorkflowPins(root, {
+				...batchFixtureOptions(),
 				expectedHead: TEST_HEAD,
 				resolveHead: () => TEST_HEAD,
 				readIndexedPackageManifest: () => fs.readFileSync(path.join(root, 'package.json')),
@@ -144,11 +158,48 @@ describe('Forge-owned Bun workflow pins', () => {
 		}
 	});
 
+	test('rejects pre-existing npm workflow edits before issuing any batch authority', async () => {
+		for (const staged of [false, true]) {
+			const root = createFixture();
+			let authorityCalls = 0;
+			try {
+				if (!staged) fs.appendFileSync(path.join(root, NPM_PUBLISH_WORKFLOW_PATH), '# unrelated\n');
+				const result = await updateBunWorkflowPins(root, {
+					...batchFixtureOptions(),
+					expectedHead: TEST_HEAD,
+					resolveHead: () => TEST_HEAD,
+					readIndexedPackageManifest: () => fs.readFileSync(path.join(root, 'package.json')),
+					readSourceWorkflow: (_root, _head, workflowPath) => Buffer.from(fixtureContent(
+						BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
+					)),
+					readIndexedWorkflow: (_root, workflowPath) => Buffer.from(fixtureContent(
+						BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
+					)),
+					...(staged ? { readIndexedNpmPublishWorkflow: () => Buffer.from('name: unrelated staged npm workflow\n') } : {}),
+					issueAuthorization: async () => {
+						authorityCalls += 1;
+						return { success: true };
+					},
+				});
+
+				expect(result).toMatchObject({ success: false });
+				expect(result.error).toContain(staged ? 'unrelated staged edits' : 'unrelated local edits');
+				expect(authorityCalls).toBe(0);
+				for (const spec of BUN_WORKFLOW_SPECS) {
+					expect(fs.readFileSync(path.join(root, spec.path), 'utf8')).toBe(fixtureContent(spec));
+				}
+			} finally {
+				fs.rmSync(root, { recursive: true, force: true });
+			}
+		}
+	});
+
 	test('fails before authority or writes when the working Bun pin differs from the index', async () => {
 		const root = createFixture();
 		let authorityCalls = 0;
 		try {
 			const result = await updateBunWorkflowPins(root, {
+				...batchFixtureOptions(),
 				expectedHead: TEST_HEAD,
 				resolveHead: () => TEST_HEAD,
 				readIndexedPackageManifest: () => Buffer.from('{"packageManager":"bun@1.3.12"}'),
@@ -174,6 +225,7 @@ describe('Forge-owned Bun workflow pins', () => {
 		const first = BUN_WORKFLOW_SPECS[0];
 		try {
 			const result = await updateBunWorkflowPins(root, {
+				...batchFixtureOptions(),
 				expectedHead: TEST_HEAD,
 				resolveHead: () => TEST_HEAD,
 				readIndexedPackageManifest: () => fs.readFileSync(path.join(root, 'package.json')),
@@ -226,6 +278,7 @@ describe('Forge-owned Bun workflow pins', () => {
 			let completionCalls = 0;
 			try {
 				const result = await updateBunWorkflowPins(root, {
+					...batchFixtureOptions(),
 					expectedHead: TEST_HEAD,
 					resolveHead: () => TEST_HEAD,
 					readIndexedPackageManifest: () => fs.readFileSync(path.join(root, 'package.json')),
@@ -301,6 +354,7 @@ describe('Forge-owned Bun workflow pins', () => {
 		const second = BUN_WORKFLOW_SPECS[1];
 		try {
 			const result = await updateBunWorkflowPins(root, {
+				...batchFixtureOptions(),
 				expectedHead: TEST_HEAD,
 				resolveHead: () => TEST_HEAD,
 				readIndexedPackageManifest: () => fs.readFileSync(path.join(root, 'package.json')),
@@ -340,7 +394,7 @@ describe('Forge-owned Bun workflow pins', () => {
 			});
 
 			expect(result).toMatchObject({ success: false, error: 'npm failed after write', recovery: { allowed: false } });
-			expect(fs.existsSync(path.join(root, NPM_PUBLISH_WORKFLOW_PATH))).toBe(false);
+			expect(fs.readFileSync(path.join(root, NPM_PUBLISH_WORKFLOW_PATH), 'utf8')).toBe(renderNpmPublishWorkflow('1.3.12'));
 			expect(fs.readFileSync(path.join(root, first.path), 'utf8')).toBe(fixtureContent(first));
 			expect(fs.readFileSync(path.join(root, second.path), 'utf8')).toContain('1.4.2');
 			expect(result.recovery.files.find(file => file.path === second.path).reason).toBe('injected recovery failure');
@@ -352,12 +406,13 @@ describe('Forge-owned Bun workflow pins', () => {
 	test('preserves an npm workflow changed after batch preflight and restores earlier writes', async () => {
 		const root = createFixture();
 		const npmPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
-		const originalNpm = Buffer.from('name: original npm workflow\n');
+		const originalNpm = Buffer.from(renderNpmPublishWorkflow('1.3.12'));
 		const concurrentNpm = Buffer.from('name: concurrent npm workflow\n');
 		fs.mkdirSync(path.dirname(npmPath), { recursive: true });
 		fs.writeFileSync(npmPath, originalNpm);
 		try {
 			const result = await updateBunWorkflowPins(root, {
+				...batchFixtureOptions(),
 				expectedHead: TEST_HEAD,
 				resolveHead: () => TEST_HEAD,
 				readIndexedPackageManifest: () => fs.readFileSync(path.join(root, 'package.json')),
@@ -477,6 +532,7 @@ describe('Forge-owned Bun workflow pins', () => {
 				sourceHead: TEST_HEAD,
 			}], {
 				worktreeScope,
+				validateCompleteBunPinBatch: () => ({ success: true }),
 				deps: {
 					kernelBroker: { config: {} },
 					kernelDriver: {
@@ -536,6 +592,123 @@ describe('Forge-owned Bun workflow pins', () => {
 		});
 		expect(rejected).toMatchObject({ success: false });
 	});
+
+	test('the commit boundary rejects incomplete Bun pin batches before consuming authority', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bun-complete-batch-'));
+		const run = args => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+		try {
+			expect(run(['init']).status).toBe(0);
+			expect(run(['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+			expect(run(['config', 'user.name', 'Forge Test']).status).toBe(0);
+			fs.writeFileSync(path.join(root, 'package.json'), '{"name":"forge-workflow","packageManager":"bun@1.3.12"}');
+			for (const spec of BUN_WORKFLOW_SPECS) {
+				const fullPath = path.join(root, spec.path);
+				fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+				fs.writeFileSync(fullPath, fixtureContent(spec));
+			}
+			const npmPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+			fs.writeFileSync(npmPath, renderNpmPublishWorkflow('1.3.12'));
+			expect(run(['add', '.']).status).toBe(0);
+			expect(run(['commit', '-m', 'base']).status).toBe(0);
+			const sourceHead = run(['rev-parse', 'HEAD']).stdout.trim();
+
+			fs.writeFileSync(path.join(root, 'package.json'), '{"name":"forge-workflow","packageManager":"bun@1.4.2"}');
+			expect(run(['add', 'package.json']).status).toBe(0);
+			let kernelReads = 0;
+			const blocked = await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(root, [{
+				actor: 'bun-pin-test',
+				path: BUN_WORKFLOW_SPECS[0].path,
+				surface: 'workflows',
+				content: Buffer.from(fixtureContent(BUN_WORKFLOW_SPECS[0], '1.4.2')),
+				sourceHead,
+			}], {
+				deps: {
+					kernelBroker: { config: {} },
+					kernelDriver: { listKernelEvents: async () => { kernelReads += 1; return []; } },
+				},
+			});
+			expect(blocked).toMatchObject({ success: false });
+			expect(blocked.batchDecision.reason).toContain(BUN_WORKFLOW_SPECS[0].path);
+			expect(kernelReads).toBe(0);
+
+			const hook = spawnSync(process.execPath, [path.join(repoRoot, 'scripts', 'protected-state-check.js')], {
+				cwd: root,
+				encoding: 'utf8',
+				env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: 'bun-pin-test' },
+			});
+			expect(hook.status).toBe(1);
+			expect(`${hook.stdout}${hook.stderr}`).toContain('complete generated workflow set');
+
+			for (const spec of BUN_WORKFLOW_SPECS) {
+				fs.writeFileSync(path.join(root, spec.path), fixtureContent(spec, '1.4.2'));
+			}
+			expect(run(['add', ...BUN_WORKFLOW_SPECS.map(spec => spec.path)]).status).toBe(0);
+			const withoutNpm = await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(root, []);
+			expect(withoutNpm).toMatchObject({ success: false });
+			expect(withoutNpm.batchDecision.reason).toContain(NPM_PUBLISH_WORKFLOW_PATH);
+
+			fs.writeFileSync(npmPath, renderNpmPublishWorkflow('1.4.2'));
+			expect(run(['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
+			expect(await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(root, []))
+				.toEqual({ success: true, decisions: [] });
+
+			const workflowPath = BUN_WORKFLOW_SPECS[0].path;
+			const content = Buffer.from(fixtureContent(BUN_WORKFLOW_SPECS[0], '1.4.2'));
+			const worktreeScope = 'complete-batch-race-scope';
+			const capabilityId = 'complete-batch-race-capability';
+			const event = (eventType, operation) => ({
+				entity_type: 'protected_state',
+				entity_id: protectedStateAuthority.authorizationEntityId(worktreeScope, workflowPath),
+				event_type: eventType,
+				actor: 'bun-pin-test',
+				origin: 'cli',
+				payload_json: JSON.stringify({
+					version: 1,
+					capabilityId,
+					actor: 'bun-pin-test',
+					path: workflowPath,
+					surface: 'workflows',
+					contentHash: hashProtectedContent(content),
+					sourceHead,
+					worktreeScope,
+					writeIntent: 'update',
+					targetBunVersion: '1.4.2',
+					operation,
+					viaForgeApi: true,
+					sourceCommand: 'forge release update-bun-pins',
+				}),
+			});
+			let consumed = 0;
+			const raced = await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(root, [{
+				actor: 'bun-pin-test',
+				path: workflowPath,
+				surface: 'workflows',
+				content,
+				sourceHead,
+			}], {
+				worktreeScope,
+				deps: {
+					kernelBroker: { config: {} },
+					kernelDriver: {
+						listKernelEvents: async () => {
+							fs.writeFileSync(path.join(root, workflowPath), fixtureContent(BUN_WORKFLOW_SPECS[0]));
+							expect(run(['add', workflowPath]).status).toBe(0);
+							return [
+								event(protectedStateAuthority.PROTECTED_STATE_AUTHORIZATION_ISSUED, 'update_bun_workflow_pin'),
+								event(protectedStateAuthority.PROTECTED_STATE_WRITE_COMPLETED, 'update_bun_workflow_pin_completed'),
+							];
+						},
+						insertKernelEvent: async () => { consumed += 1; },
+					},
+				},
+			});
+			expect(raced).toMatchObject({ success: false });
+			expect(raced.batchDecision.reason).toContain(workflowPath);
+			expect(consumed).toBe(0);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
 
 	test('public authority cannot replace the immutable Git baseline through test seams', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bun-authority-'));
