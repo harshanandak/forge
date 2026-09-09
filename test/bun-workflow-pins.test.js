@@ -9,7 +9,11 @@ const { spawnSync } = require('node:child_process');
 const releaseCommand = require('../lib/commands/release');
 const protectedStateAuthority = require('../lib/protected-state-authority');
 const { hashProtectedContent } = require('../lib/protected-state-surfaces');
-const { NPM_PUBLISH_WORKFLOW_PATH, renderNpmPublishWorkflow } = require('../lib/npm-publish-workflow');
+const {
+	NPM_PUBLISH_WORKFLOW_PATH,
+	generateNpmPublishWorkflow,
+	renderNpmPublishWorkflow,
+} = require('../lib/npm-publish-workflow');
 const {
 	BUN_WORKFLOW_SPECS,
 	readPinnedBunVersion,
@@ -307,6 +311,57 @@ describe('Forge-owned Bun workflow pins', () => {
 			expect(fs.readFileSync(path.join(root, first.path), 'utf8')).toBe(fixtureContent(first));
 			expect(fs.readFileSync(path.join(root, second.path), 'utf8')).toContain('1.4.2');
 			expect(result.recovery.files.find(file => file.path === second.path).reason).toBe('injected recovery failure');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('preserves an npm workflow changed after batch preflight and restores earlier writes', async () => {
+		const root = createFixture();
+		const npmPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+		const originalNpm = Buffer.from('name: original npm workflow\n');
+		const concurrentNpm = Buffer.from('name: concurrent npm workflow\n');
+		fs.mkdirSync(path.dirname(npmPath), { recursive: true });
+		fs.writeFileSync(npmPath, originalNpm);
+		try {
+			const result = await updateBunWorkflowPins(root, {
+				expectedHead: TEST_HEAD,
+				resolveHead: () => TEST_HEAD,
+				readSourceWorkflow: (_root, _head, workflowPath) => Buffer.from(fixtureContent(
+					BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
+				)),
+				readIndexedWorkflow: (_root, workflowPath) => Buffer.from(fixtureContent(
+					BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
+				)),
+				issueAuthorization: async () => ({ success: true, capabilityId: 'cap' }),
+				completeAuthorization: async () => ({ success: true }),
+				writeProtectedFile: (projectRoot, workflowPath, content, options) => {
+					const fullPath = path.join(projectRoot, workflowPath);
+					if (!fs.readFileSync(fullPath).equals(Buffer.from(options.expectedContent))) {
+						return { allowed: false, reason: 'compare-and-swap mismatch' };
+					}
+					fs.writeFileSync(fullPath, content);
+					return { allowed: true, contentHash: 'hash' };
+				},
+				recordProtectedStateAuditEvent: () => ({ success: true }),
+				generateNpmPublishWorkflow: async (projectRoot, options) => {
+					fs.writeFileSync(npmPath, concurrentNpm);
+					return generateNpmPublishWorkflow(projectRoot, {
+						...options,
+						prepareNpmPublishWorkflowAuthorization: async () => {
+							throw new Error('authority must not run after snapshot drift');
+						},
+					});
+				},
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('changed after Bun pin batch preflight');
+			expect(result.recovery.allowed).toBe(false);
+			expect(fs.readFileSync(npmPath)).toEqual(concurrentNpm);
+			for (const spec of BUN_WORKFLOW_SPECS) {
+				expect(fs.readFileSync(path.join(root, spec.path), 'utf8')).toBe(fixtureContent(spec));
+			}
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
