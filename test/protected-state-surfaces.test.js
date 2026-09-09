@@ -893,4 +893,38 @@ describe('scripts/protected-state-check.js merge awareness', () => {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	}, 60_000);
+
+	test('blocks a merge carry-over when the upstream base branch is ambiguous', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			// Both conventional defaults exist with no authoritative HEAD, so
+			// candidate-order trust would pick main even when master is real.
+			runGit(work, ['checkout', '--quiet', '-B', 'main', 'master']);
+			runGit(work, ['push', '--quiet', 'origin', 'main']);
+			runGit(work, ['fetch', '--quiet', 'origin']);
+			runGit(work, ['remote', 'set-head', 'origin', '-d']);
+			// Protected change published only to main (the candidate-order pick).
+			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
+			runGit(work, ['checkout', '--quiet', '-B', 'ambiguous-work', 'master']);
+			writeRepoFile(work, WORKFLOW, 'name: base\njobs: {}\n');
+			runGit(work, ['add', WORKFLOW]);
+			runGit(work, ['commit', '--quiet', '-m', 'workflow change']);
+			runGit(work, ['push', '--quiet', 'origin', 'ambiguous-work:main']);
+			runGit(work, ['fetch', '--quiet', 'origin']);
+			// Delete HEAD after the final fetch: fetch recreates the tracking
+			// HEAD, so remove it again to keep the base genuinely ambiguous.
+			runGit(work, ['remote', 'set-head', 'origin', '-d']);
+			runGit(work, ['checkout', '--quiet', 'feature']);
+			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+			runGit(work, ['add', 'lib/safe.js']);
+			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
+			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'ambiguous-work']);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
 });

@@ -231,6 +231,10 @@ function baseRemoteProbe(_command, args) {
 // Fail closed when the official `upstream` remote is configured but has no
 // fetched tracking refs: falling through to `origin` would change trust domains
 // and let fork-only content pass as already published upstream.
+// Fail closed when the base branch is ambiguous: with no authoritative HEAD
+// and both conventional defaults present, candidate order would trust main
+// even when master is the real integration branch, letting content published
+// only to the wrong branch pass as already published on the base.
 // Returns a fully-qualified ref name, or null when it cannot be established.
 function canonicalUpstreamRef() {
 	const cwd = process.cwd();
@@ -251,11 +255,19 @@ function canonicalUpstreamRef() {
 	}
 
 	const candidates = [];
+	let head = null;
 	try {
-		const head = gitCapture(['symbolic-ref', '--quiet', `refs/remotes/${remote}/HEAD`]);
-		if (head) candidates.push(head);
+		const resolved = gitCapture(['symbolic-ref', '--quiet', `refs/remotes/${remote}/HEAD`]);
+		if (resolved) head = resolved;
 	} catch {
 		// no remote HEAD recorded; fall through to the resolved default branch
+	}
+	if (head) {
+		candidates.push(head);
+	} else {
+		const hasMain = Boolean(resolveCommit(`refs/remotes/${remote}/main`));
+		const hasMaster = Boolean(resolveCommit(`refs/remotes/${remote}/master`));
+		if (hasMain && hasMaster) return null;
 	}
 	candidates.push(`refs/remotes/${remote}/${resolveBaseBranch(baseRemoteProbe, process.cwd(), remote)}`);
 	candidates.push(`refs/remotes/${remote}/main`, `refs/remotes/${remote}/master`);
