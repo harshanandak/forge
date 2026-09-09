@@ -74,15 +74,16 @@ describe('Forge-owned Bun workflow pins', () => {
 				actor: 'bun-pin-test',
 				expectedHead: TEST_HEAD,
 				resolveHead: () => TEST_HEAD,
+				readIndexedPackageManifest: () => fs.readFileSync(path.join(root, 'package.json')),
 				readSourceWorkflow: (_root, _head, workflowPath) => Buffer.from(fixtureContent(
 					BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
 				)),
 				readIndexedWorkflow: (_root, workflowPath) => Buffer.from(fixtureContent(
 					BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
 				)),
-				issueAuthorization: async (_root, params) => {
+				issueAuthorization: async (_root, params, authorizationOptions) => {
 					issued.push(params.path);
-					return { success: true, capabilityId: `cap-${issued.length}` };
+					return { success: true, capabilityId: authorizationOptions.capabilityId };
 				},
 				completeAuthorization: async (_root, params) => {
 					completed.push(params.path);
@@ -122,6 +123,7 @@ describe('Forge-owned Bun workflow pins', () => {
 			const result = await updateBunWorkflowPins(root, {
 				expectedHead: TEST_HEAD,
 				resolveHead: () => TEST_HEAD,
+				readIndexedPackageManifest: () => fs.readFileSync(path.join(root, 'package.json')),
 				readSourceWorkflow: (_root, _head, workflowPath) => Buffer.from(fixtureContent(
 					BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
 				)),
@@ -142,6 +144,31 @@ describe('Forge-owned Bun workflow pins', () => {
 		}
 	});
 
+	test('fails before authority or writes when the working Bun pin differs from the index', async () => {
+		const root = createFixture();
+		let authorityCalls = 0;
+		try {
+			const result = await updateBunWorkflowPins(root, {
+				expectedHead: TEST_HEAD,
+				resolveHead: () => TEST_HEAD,
+				readIndexedPackageManifest: () => Buffer.from('{"packageManager":"bun@1.3.12"}'),
+				issueAuthorization: async () => {
+					authorityCalls += 1;
+					return { success: true };
+				},
+			});
+
+			expect(result).toMatchObject({ success: false });
+			expect(result.error).toContain('differs from the Git index');
+			expect(authorityCalls).toBe(0);
+			for (const spec of BUN_WORKFLOW_SPECS) {
+				expect(fs.readFileSync(path.join(root, spec.path), 'utf8')).toBe(fixtureContent(spec));
+			}
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test('restores the compare-and-swap snapshot when completion fails', async () => {
 		const root = createFixture();
 		const first = BUN_WORKFLOW_SPECS[0];
@@ -149,14 +176,16 @@ describe('Forge-owned Bun workflow pins', () => {
 			const result = await updateBunWorkflowPins(root, {
 				expectedHead: TEST_HEAD,
 				resolveHead: () => TEST_HEAD,
+				readIndexedPackageManifest: () => fs.readFileSync(path.join(root, 'package.json')),
 				readSourceWorkflow: (_root, _head, workflowPath) => Buffer.from(fixtureContent(
 					BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
 				)),
 				readIndexedWorkflow: (_root, workflowPath) => Buffer.from(fixtureContent(
 					BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
 				)),
-				issueAuthorization: async () => ({ success: true, capabilityId: 'cap-1' }),
+				issueAuthorization: async (_root, _params, authorizationOptions) => ({ success: true, capabilityId: authorizationOptions.capabilityId }),
 				completeAuthorization: async () => ({ success: false, error: 'injected completion failure' }),
+				cancelAuthorizations: async (_root, records) => ({ success: true, results: records.map(record => ({ ...record, success: true })) }),
 				writeProtectedFile: (projectRoot, workflowPath, content, options) => {
 					const fullPath = path.join(projectRoot, workflowPath);
 					if (!fs.readFileSync(fullPath).equals(Buffer.from(options.expectedContent))) {
@@ -199,17 +228,18 @@ describe('Forge-owned Bun workflow pins', () => {
 				const result = await updateBunWorkflowPins(root, {
 					expectedHead: TEST_HEAD,
 					resolveHead: () => TEST_HEAD,
+					readIndexedPackageManifest: () => fs.readFileSync(path.join(root, 'package.json')),
 					readSourceWorkflow: (_root, _head, workflowPath) => Buffer.from(fixtureContent(
 						BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
 					)),
 					readIndexedWorkflow: (_root, workflowPath) => Buffer.from(fixtureContent(
 						BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
 					)),
-					issueAuthorization: async () => {
+					issueAuthorization: async (_root, _params, authorizationOptions) => {
 						const call = authorizationCalls++;
 						if (call === 1 && scenario === 'authorization throw') throw new Error('authorization throw');
 						if (call === 1 && scenario === 'authorization failure') return { success: false, error: 'authorization failure' };
-						return { success: true, capabilityId: `cap-${call}` };
+						return { success: true, capabilityId: authorizationOptions.capabilityId };
 					},
 					completeAuthorization: async () => {
 						const call = completionCalls++;
@@ -246,6 +276,7 @@ describe('Forge-owned Bun workflow pins', () => {
 						if (call === 1 && scenario === 'audit failure') return { success: false, error: 'audit failure' };
 						return { success: true };
 					},
+					cancelAuthorizations: async (_root, records) => ({ success: true, results: records.map(record => ({ ...record, success: true })) }),
 					generateNpmPublishWorkflow: async () => {
 						if (scenario === 'npm throw') throw new Error('npm throw');
 						if (scenario === 'npm failure') return { success: false, error: 'npm failure' };
@@ -272,14 +303,16 @@ describe('Forge-owned Bun workflow pins', () => {
 			const result = await updateBunWorkflowPins(root, {
 				expectedHead: TEST_HEAD,
 				resolveHead: () => TEST_HEAD,
+				readIndexedPackageManifest: () => fs.readFileSync(path.join(root, 'package.json')),
 				readSourceWorkflow: (_root, _head, workflowPath) => Buffer.from(fixtureContent(
 					BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
 				)),
 				readIndexedWorkflow: (_root, workflowPath) => Buffer.from(fixtureContent(
 					BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
 				)),
-				issueAuthorization: async () => ({ success: true, capabilityId: 'cap' }),
+				issueAuthorization: async (_root, _params, authorizationOptions) => ({ success: true, capabilityId: authorizationOptions.capabilityId }),
 				completeAuthorization: async () => ({ success: true }),
+				cancelAuthorizations: async (_root, records) => ({ success: true, results: records.map(record => ({ ...record, success: true })) }),
 				writeProtectedFile: (projectRoot, workflowPath, content, options) => {
 					const fullPath = path.join(projectRoot, workflowPath);
 					if (options.operation === 'recover_bun_workflow_pin' && workflowPath === second.path) {
@@ -327,14 +360,16 @@ describe('Forge-owned Bun workflow pins', () => {
 			const result = await updateBunWorkflowPins(root, {
 				expectedHead: TEST_HEAD,
 				resolveHead: () => TEST_HEAD,
+				readIndexedPackageManifest: () => fs.readFileSync(path.join(root, 'package.json')),
 				readSourceWorkflow: (_root, _head, workflowPath) => Buffer.from(fixtureContent(
 					BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
 				)),
 				readIndexedWorkflow: (_root, workflowPath) => Buffer.from(fixtureContent(
 					BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
 				)),
-				issueAuthorization: async () => ({ success: true, capabilityId: 'cap' }),
+				issueAuthorization: async (_root, _params, authorizationOptions) => ({ success: true, capabilityId: authorizationOptions.capabilityId }),
 				completeAuthorization: async () => ({ success: true }),
+				cancelAuthorizations: async (_root, records) => ({ success: true, results: records.map(record => ({ ...record, success: true })) }),
 				writeProtectedFile: (projectRoot, workflowPath, content, options) => {
 					const fullPath = path.join(projectRoot, workflowPath);
 					if (!fs.readFileSync(fullPath).equals(Buffer.from(options.expectedContent))) {
@@ -409,6 +444,7 @@ describe('Forge-owned Bun workflow pins', () => {
 				sourceHead: TEST_HEAD,
 				worktreeScope,
 				writeIntent: 'update',
+				targetBunVersion: '1.4.2',
 				operation,
 				viaForgeApi: true,
 				sourceCommand: 'forge release update-bun-pins',
@@ -427,6 +463,63 @@ describe('Forge-owned Bun workflow pins', () => {
 			sourceHead: TEST_HEAD,
 			worktreeScope,
 		}, rows)).toMatchObject({ allowed: true, capabilityId });
+		const stagedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bun-hook-target-'));
+		try {
+			const run = args => spawnSync('git', args, { cwd: stagedRoot, encoding: 'utf8' });
+			expect(run(['init']).status).toBe(0);
+			fs.writeFileSync(path.join(stagedRoot, 'package.json'), '{"packageManager":"bun@1.4.3"}');
+			expect(run(['add', 'package.json']).status).toBe(0);
+			const hook = await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(stagedRoot, [{
+				actor: 'bun-pin-test',
+				path: workflowPath,
+				surface: 'workflows',
+				content,
+				sourceHead: TEST_HEAD,
+			}], {
+				worktreeScope,
+				deps: {
+					kernelBroker: { config: {} },
+					kernelDriver: {
+						listKernelEvents: async () => rows,
+						insertKernelEvent: async () => {
+							throw new Error('changed target must be rejected before consumption');
+						},
+					},
+				},
+			});
+			expect(hook).toMatchObject({ success: false });
+			expect(hook.decisions[0].reason).toContain('changed after workflow generation');
+		} finally {
+			fs.rmSync(stagedRoot, { recursive: true, force: true });
+		}
+		const kernelRows = [...rows];
+		const cancellation = await protectedStateAuthority.cancelBunWorkflowBatchAuthorizations('C:/repo', [{
+			actor: 'bun-pin-test',
+			path: workflowPath,
+			sourceHead: TEST_HEAD,
+			capabilityId,
+		}], {
+			worktreeScope,
+			deps: {
+				kernelBroker: { config: {} },
+				kernelDriver: {
+					listKernelEvents: async () => kernelRows,
+					insertKernelEvent: async event => {
+						kernelRows.push(event);
+						return event;
+					},
+				},
+			},
+		});
+		expect(cancellation).toMatchObject({ success: true });
+		expect(protectedStateAuthority.evaluateAuthorization({
+			actor: 'bun-pin-test',
+			path: workflowPath,
+			surface: 'workflows',
+			content,
+			sourceHead: TEST_HEAD,
+			worktreeScope,
+		}, kernelRows)).toMatchObject({ allowed: false });
 		expect(protectedStateAuthority.evaluateAuthorization({
 			actor: 'bun-pin-test',
 			path: '.github/workflows/npm-publish.yml',
@@ -455,11 +548,27 @@ describe('Forge-owned Bun workflow pins', () => {
 			expect(run(['add', 'package.json']).status).toBe(0);
 			expect(run(['commit', '-m', 'base']).status).toBe(0);
 			const head = run(['rev-parse', 'HEAD']).stdout.trim();
+			const mismatchedNpmIssue = await protectedStateAuthority.issueNpmPublishWorkflowAuthorization(root, {
+				actor: 'bun-pin-test',
+				sourceHead: head,
+				bunVersion: '1.3.12',
+				targetBunVersion: '1.4.2',
+			});
+			const mismatchedNpmCompletion = await protectedStateAuthority.completeNpmPublishWorkflowAuthorization(root, {
+				actor: 'bun-pin-test',
+				sourceHead: head,
+				capabilityId: 'mismatched-npm-capability',
+				bunVersion: '1.3.12',
+				targetBunVersion: '1.4.2',
+			});
+			expect(mismatchedNpmIssue).toMatchObject({ success: false });
+			expect(mismatchedNpmCompletion).toMatchObject({ success: false });
 
 			const result = await protectedStateAuthority.issueBunWorkflowAuthorization(root, {
 				actor: 'bun-pin-test',
 				path: BUN_WORKFLOW_SPECS[0].path,
 				sourceHead: head,
+				targetBunVersion: '1.4.2',
 			}, {
 				readSourceWorkflow: () => Buffer.from('run: attacker-controlled\nenv:\n  BUN_VERSION: 1.3.12\n'),
 			});
@@ -494,6 +603,7 @@ describe('Forge-owned Bun workflow pins', () => {
 				actor: 'bun-pin-test',
 				path: spec.path,
 				sourceHead,
+				targetBunVersion: '1.4.2',
 			});
 			expect(stale).toMatchObject({ success: false });
 			expect(stale.error).toContain('source HEAD changed');
@@ -504,6 +614,7 @@ describe('Forge-owned Bun workflow pins', () => {
 				actor: 'bun-pin-test',
 				path: spec.path,
 				sourceHead: currentHead,
+				targetBunVersion: '1.4.2',
 			}, {
 				deps: {
 					kernelBroker: { config: {} },
@@ -520,7 +631,7 @@ describe('Forge-owned Bun workflow pins', () => {
 				},
 			});
 			expect(raced).toMatchObject({ success: false });
-			expect(raced.error).toContain('target changed');
+			expect(raced.error).toMatch(/target changed|pin differs/);
 			expect(inserts).toBe(0);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
