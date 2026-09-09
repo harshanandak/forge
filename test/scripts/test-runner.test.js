@@ -405,6 +405,7 @@ describe('scripts/test pre-push runner', () => {
       'test/docs-shepherd.test.js',
       'test/embedded-assets-drift.test.js',
       'test/forge-commands.test.js',
+      'test/npm-publish-workflow.test.js',
       'test/rules-sync.test.js',
       'test/setup-workflow-removal.test.js',
       'test/stage-naming.test.js',
