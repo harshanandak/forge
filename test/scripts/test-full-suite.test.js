@@ -13,6 +13,7 @@ const {
   buildResourceLanePlan,
   buildShardTestArgs,
   buildShardSpecs,
+  classifyShardFailure,
   classifyTestResource,
   extractFailedTestCases,
   getDefaultShardCount,
@@ -931,7 +932,139 @@ describe('scripts/test-full-suite.js', () => {
       remove.mockRestore();
     }
   });
-  test('registers each shard and starts it in an owned process group while preserving stdio', async () => {
+  test('spawnShard retains a close signal and bounded stderr tail for nonzero exits', async () => {
+    const reportDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-stderr-tail-'));
+    const processTree = {
+      reserveChild: () => ({ id: 'stderr-tail' }),
+      registerChild: () => true,
+      unregisterChild: () => {},
+    };
+    const stderrPrefix = 'start-of-stream-' + 'discarded-prefix-'.repeat(1024) + '\n';
+    const secret = 'sk-shardsecret123456';
+    const stderrSuffix = `fatal shard detail ${secret}`;
+    const forwarded = [];
+    const spawn = (_command, args) => {
+      const child = new EventEmitter();
+      child.pid = 9090;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      fs.writeFileSync(args[args.indexOf('--reporter-outfile') + 1], passingShardReceipt);
+      process.nextTick(() => {
+        child.stderr.emit('data', stderrPrefix + stderrSuffix);
+        child.emit('close', null, 'SIGTERM');
+      });
+      return child;
+    };
+
+    try {
+      const result = await spawnShard({ files: ['test/a.test.js'], index: 0 }, {
+        labelPrefix: unitLabelPrefix,
+        processTree,
+        reportDirectory,
+        spawn,
+        stderrStream: { write: (chunk) => forwarded.push(String(chunk)) },
+      });
+
+      expect(result.code).toBe(1);
+      expect(result.output).toBe(passingShardReceipt);
+      expect(result.signal).toBe('SIGTERM');
+      expect(result.stderrTail).toEndWith('fatal shard detail [REDACTED]');
+      expect(result.stderrTail).not.toContain(secret);
+      expect(result.stderrTail).toContain('[REDACTED]');
+      expect(result.stderrTail).not.toContain('start-of-stream');
+      expect(result.stderrTail.length).toBeLessThanOrEqual(4096);
+      expect(forwarded.join('')).toBe(stderrPrefix + stderrSuffix);
+    } finally {
+      fs.rmSync(reportDirectory, { force: true, recursive: true });
+    }
+  });
+  test('spawnShard pauses stderr until a backpressured destination drains', async () => {
+    const reportDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-stderr-pressure-'));
+    const processTree = {
+      reserveChild: () => ({ id: 'stderr-pressure' }),
+      registerChild: () => true,
+      unregisterChild: () => {},
+    };
+    const events = [];
+    const stderrStream = new EventEmitter();
+    stderrStream.write = () => { events.push('write'); return false; };
+    const spawn = (_command, args) => {
+      const child = new EventEmitter();
+      child.pid = 9092;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stderr.pause = () => events.push('pause');
+      child.stderr.resume = () => events.push('resume');
+      fs.writeFileSync(args[args.indexOf('--reporter-outfile') + 1], passingShardReceipt);
+      process.nextTick(() => {
+        child.stderr.emit('data', 'blocked stderr');
+        process.nextTick(() => {
+          stderrStream.emit('drain');
+          child.stderr.emit('data', 'blocked again');
+          child.emit('close', 0, null);
+          stderrStream.emit('drain');
+        });
+      });
+      return child;
+    };
+
+    try {
+      await spawnShard({ files: ['test/a.test.js'], index: 0 }, {
+        labelPrefix: unitLabelPrefix,
+        processTree,
+        reportDirectory,
+        spawn,
+        stderrStream,
+      });
+
+      expect(events).toEqual(['write', 'pause', 'resume', 'write', 'pause']);
+      expect(stderrStream.listenerCount('drain')).toBe(0);
+    } finally {
+      fs.rmSync(reportDirectory, { force: true, recursive: true });
+    }
+  });
+  test('spawnShard omits an oversized secret line before retaining its tail', async () => {
+    const reportDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-stderr-secret-'));
+    const processTree = {
+      reserveChild: () => ({ id: 'stderr-secret' }),
+      registerChild: () => true,
+      unregisterChild: () => {},
+    };
+    const rawSuffix = 'raw-secret-suffix';
+    const spawn = (_command, args) => {
+      const child = new EventEmitter();
+      child.pid = 9091;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      fs.writeFileSync(args[args.indexOf('--reporter-outfile') + 1], passingShardReceipt);
+      process.nextTick(() => {
+        child.stderr.emit('data', 'fatal tok');
+        child.stderr.emit('data', `en=${'x'.repeat(5000)}${rawSuffix}\n`);
+        child.stderr.emit('data', 'plain failure detail\n');
+        child.emit('close', 1, null);
+      });
+      return child;
+    };
+
+    try {
+      const result = await spawnShard({ files: ['test/a.test.js'], index: 0 }, {
+        labelPrefix: unitLabelPrefix,
+        processTree,
+        reportDirectory,
+        spawn,
+        stderrStream: { write: () => {} },
+      });
+
+      expect(result.stderrTail).toContain('[stderr line omitted]');
+      expect(result.stderrTail).toContain('plain failure detail');
+      expect(result.stderrTail).not.toContain(rawSuffix);
+      expect(JSON.stringify(result.stderrTail)).not.toContain(rawSuffix);
+      expect(result.stderrTail.length).toBeLessThanOrEqual(4096);
+    } finally {
+      fs.rmSync(reportDirectory, { force: true, recursive: true });
+    }
+  });
+  test('registers each shard and starts it in an owned process group while preserving stdout', async () => {
     const events = [];
     const processTree = {
       reserveChild: (metadata) => {
@@ -967,7 +1100,10 @@ describe('scripts/test-full-suite.js', () => {
     expect(events.filter((event) => event[0] === 'register')).toHaveLength(2);
     expect(calls.every(({ options }) => options.detached === true)).toBe(true);
     expect(calls.every(({ options }) => options.windowsHide === true)).toBe(true);
-    expect(calls.every(({ options }) => options.stdio === 'inherit')).toBe(true);
+    expect(calls.map(({ options }) => options.stdio)).toEqual([
+      ['inherit', 'inherit', 'pipe'],
+      ['inherit', 'inherit', 'pipe'],
+    ]);
   });
 
   test('kills a child immediately when process registration fails after spawn', async () => {
@@ -1049,6 +1185,43 @@ describe('scripts/test-full-suite.js', () => {
     expect(retained).toBe(true);
   });
 
+  test('runFullSuiteInParallel reports the close signal and bounded stderr tail for a nonzero shard', async () => {
+    const errors = [];
+    const secret = 'sk-shardsecret123456';
+    const error = spyOn(console, 'error').mockImplementation((message) => errors.push(message));
+    const spawn = (_command, args) => {
+      const child = new EventEmitter();
+      child.pid = 9250;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      fs.writeFileSync(args[args.indexOf('--reporter-outfile') + 1], passingShardReceipt);
+      process.nextTick(() => {
+        child.stderr.emit('data', `fatal shard detail ${secret}\n`);
+        child.emit('close', null, 'SIGTERM');
+      });
+      return child;
+    };
+
+    try {
+      expect(await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
+        allTests: ['test/a.test.js'],
+        classify: () => 'unit',
+        durationMap: new Map(),
+        processTree: fakeProcessTree(),
+        spawn,
+        stderrStream: { write: () => {} },
+      })).toBe(1);
+    } finally {
+      error.mockRestore();
+    }
+
+    expect(errors).toEqual([
+      'Full suite non-zero shards: 0:unit:exit=1 cause=signal signal=SIGTERM stderr="fatal shard detail [REDACTED]"',
+    ]);
+    expect(errors.join('\n')).not.toContain(secret);
+    expect(errors.join('\n')).toContain('[REDACTED]');
+  });
+
   test('mixed resource lanes aggregate every receipt and clean up once', async () => {
     const cleanupSignals = [];
     const calls = [];
@@ -1090,7 +1263,7 @@ describe('scripts/test-full-suite.js', () => {
       'exclusive.test.js',
     ]);
     expect(cleanupSignals).toEqual(['SIGTERM']);
-    expect(errors).toEqual(['Full suite non-zero shards: 1:subprocess:exit=1']);
+    expect(errors).toEqual(['Full suite non-zero shards: 1:subprocess:exit=1 cause=post-junit-exit']);
   });
 
   test('runFullSuiteInParallel reports a child process error as incomplete', async () => {
@@ -1359,6 +1532,43 @@ describe('scripts/test-full-suite.js', () => {
     expect(aggregateShardReceipts([
       { code: 0, index: 0, output: ' ' + String.fromCharCode(10) + '<?xml version="1.0" encoding="UTF-8"?>' + String.fromCharCode(10) + passingShardReceipt + String.fromCharCode(10) },
     ], 1).status).toBe('PASS');
+  });
+
+  test('classifyShardFailure names each bounded nonzero cause', () => {
+    const failedReceipt = (detail) => `<testsuites tests="1" assertions="1" failures="1" skipped="0">
+      <testsuite><testcase name="failure"><failure>${detail}</failure></testcase></testsuite>
+    </testsuites>`;
+    const unrelatedFailureWithPassingTimeoutName = `<testsuites tests="2" assertions="2" failures="1" skipped="0">
+      <testsuite><testcase name="accepts timeout configuration" />
+      <testcase name="unrelated failure"><failure>expected true to be false</failure></testcase></testsuite>
+    </testsuites>`;
+    const passingTimeoutName = `<testsuites tests="1" assertions="1" failures="0" skipped="0">
+      <testsuite><testcase name="accepts timeout configuration" /></testsuite>
+    </testsuites>`;
+    const cases = [
+      [{ code: 1, output: passingShardReceipt, signal: 'SIGTERM' }, 'signal'],
+      [{ code: 1, output: failedReceipt('this test timed out after 5000ms') }, 'test-timeout'],
+      [{ code: 1, output: null, stderrTail: 'spawnSync node ETIMEDOUT' }, 'test-timeout'],
+      [{ code: 1, output: unrelatedFailureWithPassingTimeoutName }, 'test-failure'],
+      [{ code: 1, output: passingTimeoutName, stderrTail: '(pass) accepts timeout configuration [0.12ms]' }, 'post-junit-exit'],
+      [{
+        code: 1,
+        output: failedReceipt('expected true to be false'),
+        stderrTail: '(fail) should report a timeout when spawnSync reports ETIMEDOUT with a null status [0.12ms]',
+      }, 'test-failure'],
+      [{
+        code: 1,
+        output: passingTimeoutName,
+        stderrTail: '\u001b[32m(pass) handles spawnSync ETIMEDOUT output\u001b[0m',
+      }, 'post-junit-exit'],
+      [{ code: 1, output: failedReceipt('expected true to be false') }, 'test-failure'],
+      [{ code: 1, output: passingShardReceipt }, 'post-junit-exit'],
+      [{ code: 1, output: null }, 'incomplete-receipt'],
+    ];
+
+    for (const [result, expected] of cases) {
+      expect(classifyShardFailure(result)).toBe(expected);
+    }
   });
 
   test('extractFailedTestCases does not attach a later failure to a self-closing testcase', () => {
