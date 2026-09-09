@@ -114,9 +114,12 @@ describe('Forge-owned npm publish workflow', () => {
 	test('the checked-in workflow is exactly the deterministic generator output', () => {
 		const generated = renderNpmPublishWorkflow();
 		const checkedIn = fs.readFileSync(path.join(repoRoot, NPM_PUBLISH_WORKFLOW_PATH), 'utf8');
+		const bunVersion = require('../package.json').packageManager.slice('bun@'.length);
 
 		expect(renderNpmPublishWorkflow()).toBe(generated);
 		expect(normalizeNewlines(checkedIn)).toBe(generated);
+		expect(generated.match(new RegExp(`bun-version: ${bunVersion}`, 'g'))).toHaveLength(2);
+		expect(renderNpmPublishWorkflow('9.8.7').match(/bun-version: 9\.8\.7/g)).toHaveLength(2);
 	});
 
 	test('resolves one tag SHA and pins the complete suite and publish to it', () => {

@@ -360,7 +360,7 @@ describe('deterministic Bun lockfile transition proof', () => {
 
 	test('rejects path escapes and unsupported Bun versions', () => {
 		const root = tempRepo();
-		expect(require('../package.json').packageManager).toBe('bun@1.3.12');
+		expect(require('../package.json').packageManager).toBe('bun@1.4.2');
 		expect(() => resolveContainedPath(root, '../package.json')).toThrow(/escape/i);
 		expect(() => resolveContainedPath(root, 'C:\\outside\\package.json')).toThrow(/escape/i);
 		expect(() => resolveContainedPath(root, 'C:/outside/package.json')).toThrow(/escape/i);
