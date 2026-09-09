@@ -9,6 +9,7 @@ const { spawnSync } = require('node:child_process');
 const releaseCommand = require('../lib/commands/release');
 const protectedStateAuthority = require('../lib/protected-state-authority');
 const { hashProtectedContent } = require('../lib/protected-state-surfaces');
+const { NPM_PUBLISH_WORKFLOW_PATH, renderNpmPublishWorkflow } = require('../lib/npm-publish-workflow');
 const {
 	BUN_WORKFLOW_SPECS,
 	readPinnedBunVersion,
@@ -165,6 +166,147 @@ describe('Forge-owned Bun workflow pins', () => {
 
 			expect(result).toMatchObject({ success: false, recovery: { allowed: true } });
 			expect(fs.readFileSync(path.join(root, first.path), 'utf8')).toBe(fixtureContent(first));
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('restores every earlier workflow for each post-preflight failure path', async () => {
+		const scenarios = [
+			'authorization failure',
+			'authorization throw',
+			'write denied',
+			'write throw after mutation',
+			'audit failure',
+			'audit throw',
+			'completion failure',
+			'completion throw',
+			'npm failure',
+			'npm throw',
+		];
+
+		for (const scenario of scenarios) {
+			const root = createFixture();
+			let authorizationCalls = 0;
+			let writeCalls = 0;
+			let auditCalls = 0;
+			let completionCalls = 0;
+			try {
+				const result = await updateBunWorkflowPins(root, {
+					expectedHead: TEST_HEAD,
+					resolveHead: () => TEST_HEAD,
+					readSourceWorkflow: (_root, _head, workflowPath) => Buffer.from(fixtureContent(
+						BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
+					)),
+					readIndexedWorkflow: (_root, workflowPath) => Buffer.from(fixtureContent(
+						BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
+					)),
+					issueAuthorization: async () => {
+						const call = authorizationCalls++;
+						if (call === 1 && scenario === 'authorization throw') throw new Error('authorization throw');
+						if (call === 1 && scenario === 'authorization failure') return { success: false, error: 'authorization failure' };
+						return { success: true, capabilityId: `cap-${call}` };
+					},
+					completeAuthorization: async () => {
+						const call = completionCalls++;
+						if (call === 1 && scenario === 'completion throw') throw new Error('completion throw');
+						if (call === 1 && scenario === 'completion failure') return { success: false, error: 'completion failure' };
+						return { success: true };
+					},
+					writeProtectedFile: (projectRoot, workflowPath, content, options) => {
+						const fullPath = path.join(projectRoot, workflowPath);
+						if (!fs.readFileSync(fullPath).equals(Buffer.from(options.expectedContent))) {
+							return { allowed: false, reason: 'compare-and-swap mismatch' };
+						}
+						if (options.operation === 'update_bun_workflow_pin') {
+							const call = writeCalls++;
+							if (call === 1 && scenario === 'write denied') return { allowed: false, reason: 'write denied' };
+							fs.writeFileSync(fullPath, content);
+							if (call === 1 && scenario === 'write throw after mutation') throw new Error('write throw after mutation');
+						} else {
+							fs.writeFileSync(fullPath, content);
+						}
+						return { allowed: true, contentHash: 'hash' };
+					},
+					removeProtectedFile: (projectRoot, workflowPath, options) => {
+						const fullPath = path.join(projectRoot, workflowPath);
+						if (!fs.readFileSync(fullPath).equals(Buffer.from(options.expectedContent))) {
+							return { allowed: false, reason: 'compare-and-swap mismatch' };
+						}
+						fs.rmSync(fullPath);
+						return { allowed: true };
+					},
+					recordProtectedStateAuditEvent: () => {
+						const call = auditCalls++;
+						if (call === 1 && scenario === 'audit throw') throw new Error('audit throw');
+						if (call === 1 && scenario === 'audit failure') return { success: false, error: 'audit failure' };
+						return { success: true };
+					},
+					generateNpmPublishWorkflow: async () => {
+						if (scenario === 'npm throw') throw new Error('npm throw');
+						if (scenario === 'npm failure') return { success: false, error: 'npm failure' };
+						return { success: true, path: NPM_PUBLISH_WORKFLOW_PATH };
+					},
+				});
+
+				expect(result.success, scenario).toBe(false);
+				expect(result.recovery.allowed, scenario).toBe(true);
+				for (const spec of BUN_WORKFLOW_SPECS) {
+					expect(fs.readFileSync(path.join(root, spec.path), 'utf8'), scenario).toBe(fixtureContent(spec));
+				}
+			} finally {
+				fs.rmSync(root, { recursive: true, force: true });
+			}
+		}
+	});
+
+	test('removes a partially generated npm workflow and continues after a recovery failure', async () => {
+		const root = createFixture();
+		const first = BUN_WORKFLOW_SPECS[0];
+		const second = BUN_WORKFLOW_SPECS[1];
+		try {
+			const result = await updateBunWorkflowPins(root, {
+				expectedHead: TEST_HEAD,
+				resolveHead: () => TEST_HEAD,
+				readSourceWorkflow: (_root, _head, workflowPath) => Buffer.from(fixtureContent(
+					BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
+				)),
+				readIndexedWorkflow: (_root, workflowPath) => Buffer.from(fixtureContent(
+					BUN_WORKFLOW_SPECS.find(spec => spec.path === workflowPath),
+				)),
+				issueAuthorization: async () => ({ success: true, capabilityId: 'cap' }),
+				completeAuthorization: async () => ({ success: true }),
+				writeProtectedFile: (projectRoot, workflowPath, content, options) => {
+					const fullPath = path.join(projectRoot, workflowPath);
+					if (options.operation === 'recover_bun_workflow_pin' && workflowPath === second.path) {
+						throw new Error('injected recovery failure');
+					}
+					if (!fs.readFileSync(fullPath).equals(Buffer.from(options.expectedContent))) {
+						return { allowed: false, reason: 'compare-and-swap mismatch' };
+					}
+					fs.writeFileSync(fullPath, content);
+					return { allowed: true, contentHash: 'hash' };
+				},
+				removeProtectedFile: (projectRoot, workflowPath, options) => {
+					const fullPath = path.join(projectRoot, workflowPath);
+					expect(fs.readFileSync(fullPath)).toEqual(Buffer.from(options.expectedContent));
+					fs.rmSync(fullPath);
+					return { allowed: true };
+				},
+				recordProtectedStateAuditEvent: () => ({ success: true }),
+				generateNpmPublishWorkflow: async projectRoot => {
+					const npmPath = path.join(projectRoot, NPM_PUBLISH_WORKFLOW_PATH);
+					fs.mkdirSync(path.dirname(npmPath), { recursive: true });
+					fs.writeFileSync(npmPath, renderNpmPublishWorkflow('1.4.2'));
+					throw new Error('npm failed after write');
+				},
+			});
+
+			expect(result).toMatchObject({ success: false, error: 'npm failed after write', recovery: { allowed: false } });
+			expect(fs.existsSync(path.join(root, NPM_PUBLISH_WORKFLOW_PATH))).toBe(false);
+			expect(fs.readFileSync(path.join(root, first.path), 'utf8')).toBe(fixtureContent(first));
+			expect(fs.readFileSync(path.join(root, second.path), 'utf8')).toContain('1.4.2');
+			expect(result.recovery.files.find(file => file.path === second.path).reason).toBe('injected recovery failure');
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
