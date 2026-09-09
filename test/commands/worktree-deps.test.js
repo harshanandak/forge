@@ -31,6 +31,12 @@ function gitStub(calls = []) {
   };
 }
 
+function missingLstat() {
+  const error = new Error('missing');
+  error.code = 'ENOENT';
+  throw error;
+}
+
 describe('forge worktree create — node_modules link to shared install', () => {
   function runLinkScenario() {
     const projectRoot = '/fake/root';
@@ -44,6 +50,7 @@ describe('forge worktree create — node_modules link to shared install', () => 
       mkdirSync: () => {},
       // Main repo has node_modules; the new worktree does not yet.
       existsSync: (p) => p === srcModules,
+      lstatSync: missingLstat,
       symlinkSync: (target, dest, type) => { symlinkCalls.push({ target, dest, type }); },
       readdirSync: () => [],
       cpSync: () => {},
@@ -90,6 +97,7 @@ describe('forge worktree create — surfaces dependency failures', () => {
     const mockFs = {
       mkdirSync: () => {},
       existsSync: (p) => p.endsWith('package.json') || p.endsWith('bun.lock'),
+      lstatSync: missingLstat,
       symlinkSync: () => {},
       readdirSync: () => [],
       cpSync: () => {},
@@ -110,6 +118,7 @@ describe('forge worktree create — surfaces dependency failures', () => {
     const mockFs = {
       mkdirSync: () => {},
       existsSync: (p) => p.endsWith('package.json'),
+      lstatSync: missingLstat,
       symlinkSync: () => {},
       readdirSync: () => [],
       cpSync: () => {},
@@ -146,6 +155,42 @@ describe('forge worktree create — verifies the install and self-heals a stale 
     const pkgDir = path.join(worktreePath, 'node_modules', 'left-pad');
     fs.mkdirSync(pkgDir, { recursive: true });
     fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: 'left-pad' }));
+  }
+
+  function makeWorkspaceFixture(lockfile = 'bun.lock', workspaces = ['packages/*']) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-wt-workspace-heal-'));
+    const projectRoot = path.join(tmp, 'main');
+    const worktreePath = path.join(projectRoot, '.worktrees', 'heal-workspace');
+    const rootPackage = JSON.stringify({ name: 'root', workspaces });
+    const workspacePackage = JSON.stringify({ name: '@forge/skills', dependencies: { chalk: '^6.0.0' } });
+
+    for (const root of [projectRoot, worktreePath]) {
+      fs.mkdirSync(path.join(root, 'packages', 'skills'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'package.json'), rootPackage);
+      fs.writeFileSync(path.join(root, 'packages', 'skills', 'package.json'), workspacePackage);
+    }
+    fs.writeFileSync(path.join(projectRoot, lockfile), '');
+    fs.mkdirSync(path.join(projectRoot, 'node_modules', '.bun'), { recursive: true });
+
+    const fsApi = {
+      ...fs,
+      symlinkSync: (_target, dest) => fs.mkdirSync(dest, { recursive: true }),
+      unlinkSync: dest => fs.rmSync(dest, { recursive: true }),
+    };
+    return { tmp, projectRoot, worktreePath, fsApi };
+  }
+
+  function populateWorkspaceDependency(worktreePath, workspacePath = path.join('packages', 'skills')) {
+    const pkgDir = path.join(worktreePath, workspacePath, 'node_modules', 'chalk');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: 'chalk' }));
+  }
+
+  function nestWorkspace(f) {
+    for (const root of [f.projectRoot, f.worktreePath]) {
+      fs.mkdirSync(path.join(root, 'packages', 'group'), { recursive: true });
+      fs.renameSync(path.join(root, 'packages', 'skills'), path.join(root, 'packages', 'group', 'skills'));
+    }
   }
 
   // Plain install exits 0 without writing anything (the "no changes" stale-store
@@ -192,6 +237,513 @@ describe('forge worktree create — verifies the install and self-heals a stale 
       expect(result.installed).toBe(true);
       expect(result.healed).toBe(false);
       expect(calls).toHaveLength(1);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('installs a missing Bun-isolated workspace dependency after linking the shared root store', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      const calls = [];
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => {
+          calls.push({ cmd, args });
+          populateWorkspaceDependency(f.worktreePath);
+          return { status: 0 };
+        },
+        fsApi: f.fsApi,
+        platform: 'linux',
+      });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(calls.map(({ args }) => args)).toEqual([['install']]);
+      expect(fs.existsSync(path.join(f.worktreePath, 'packages', 'skills', 'node_modules', 'chalk', 'package.json'))).toBe(true);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  for (const [label, workspaces] of [
+    ['object-form workspace packages', { packages: ['packages/*'] }],
+    ['an exact workspace path', ['packages/skills']],
+  ]) {
+    test(`installs a missing Bun dependency declared through ${label}`, () => {
+      const f = makeWorkspaceFixture('bun.lock', workspaces);
+      try {
+        const calls = [];
+        const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+          spawnFn: (cmd, args) => {
+            calls.push({ cmd, args });
+            populateWorkspaceDependency(f.worktreePath);
+            return { status: 0 };
+          },
+          fsApi: f.fsApi,
+          platform: 'linux',
+        });
+
+        expect(result).toEqual({ linked: false, installed: true, healed: false });
+        expect(calls.map(({ args }) => args)).toEqual([['install']]);
+      } finally {
+        fs.rmSync(f.tmp, { recursive: true, force: true });
+      }
+    });
+  }
+
+  for (const pattern of ['packages/**', 'packages/*/*', 'packages/{group,other}/*']) {
+    test(`installs a dependency declared through nested workspace glob ${pattern}`, () => {
+      const f = makeWorkspaceFixture('bun.lock', [pattern]);
+      try {
+        nestWorkspace(f);
+        const decoy = path.join(f.worktreePath, 'packages', 'group', 'skills', 'node_modules', 'fixture');
+        fs.mkdirSync(decoy, { recursive: true });
+        fs.writeFileSync(path.join(decoy, 'package.json'), JSON.stringify({
+          name: 'fixture',
+          dependencies: { 'never-installed': '^1.0.0' },
+        }));
+        const calls = [];
+
+        const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+          spawnFn: (cmd, args) => {
+            calls.push({ cmd, args });
+            populateWorkspaceDependency(f.worktreePath, path.join('packages', 'group', 'skills'));
+            return { status: 0 };
+          },
+          fsApi: f.fsApi,
+          platform: 'linux',
+        });
+
+        expect(result).toEqual({ linked: false, installed: true, healed: false });
+        expect(calls.map(({ args }) => args)).toEqual([['install']]);
+      } finally {
+        fs.rmSync(f.tmp, { recursive: true, force: true });
+      }
+    });
+  }
+
+  test('applies workspace exclusions instead of verifying excluded packages', () => {
+    const f = makeWorkspaceFixture('bun.lock', ['packages/*', '!packages/skills']);
+    try {
+      const calls = [];
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => { calls.push({ cmd, args }); return { status: 0 }; },
+        fsApi: f.fsApi,
+        platform: 'linux',
+      });
+
+      expect(result).toEqual({ linked: true, installed: false, healed: false });
+      expect(calls).toHaveLength(0);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('treats case-variant Windows workspace paths as the same package', () => {
+    if (process.platform !== 'win32') return;
+    const f = makeWorkspaceFixture('bun.lock', ['packages/skills', 'PACKAGES/SKILLS']);
+    try {
+      f.fsApi.globSync = pattern => [pattern.startsWith('PACKAGES')
+        ? 'PACKAGES/SKILLS/package.json'
+        : 'packages/skills/package.json'];
+      const calls = [];
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => {
+          calls.push({ cmd, args });
+          populateWorkspaceDependency(f.worktreePath);
+          return { status: 0 };
+        },
+        fsApi: f.fsApi,
+        platform: 'win32',
+      });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(calls.map(({ args }) => args)).toEqual([['install']]);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('applies case-variant Windows workspace exclusions', () => {
+    if (process.platform !== 'win32') return;
+    const f = makeWorkspaceFixture('bun.lock', ['packages/skills', '!PACKAGES/SKILLS']);
+    try {
+      f.fsApi.globSync = pattern => [pattern.startsWith('PACKAGES')
+        ? 'PACKAGES/SKILLS/package.json'
+        : 'packages/skills/package.json'];
+      const calls = [];
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => { calls.push({ cmd, args }); return { status: 0 }; },
+        fsApi: f.fsApi,
+        platform: 'win32',
+      });
+
+      expect(result).toEqual({ linked: true, installed: false, healed: false });
+      expect(calls).toHaveLength(0);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects malformed workspace patterns instead of accepting incomplete evidence', () => {
+    const f = makeWorkspaceFixture('bun.lock', ['packages/*', 42]);
+    try {
+      expect(() => setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => ({ status: 0 }),
+        fsApi: f.fsApi,
+        platform: 'linux',
+      })).toThrow(/workspace pattern/i);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('surfaces workspace glob failures instead of accepting incomplete evidence', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      f.fsApi.globSync = () => { throw new Error('fixture glob failure'); };
+      expect(() => setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => ({ status: 0 }),
+        fsApi: f.fsApi,
+        platform: 'linux',
+      })).toThrow(/workspace glob.*fixture glob failure/i);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects duplicate workspace package names', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      for (const root of [f.projectRoot, f.worktreePath]) {
+        const duplicate = path.join(root, 'packages', 'duplicate');
+        fs.mkdirSync(duplicate, { recursive: true });
+        fs.writeFileSync(path.join(duplicate, 'package.json'), JSON.stringify({ name: '@forge/skills' }));
+      }
+      expect(() => setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => ({ status: 0 }),
+        fsApi: f.fsApi,
+        platform: 'linux',
+      })).toThrow(/duplicate workspace package name.*@forge\/skills/i);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects workspace patterns that escape the worktree', () => {
+    const f = makeWorkspaceFixture('bun.lock', ['../outside']);
+    try {
+      expect(() => setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => ({ status: 0 }),
+        fsApi: f.fsApi,
+        platform: 'linux',
+      })).toThrow(/workspace pattern.*outside the worktree/i);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('ignores hidden directories excluded by a workspace wildcard', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      const hiddenPackage = path.join(f.worktreePath, 'packages', '.fixture');
+      fs.mkdirSync(hiddenPackage);
+      fs.writeFileSync(path.join(hiddenPackage, 'package.json'), JSON.stringify({
+        name: 'hidden-fixture',
+        dependencies: { 'never-installed': '^1.0.0' },
+      }));
+      const calls = [];
+
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => {
+          calls.push({ cmd, args });
+          populateWorkspaceDependency(f.worktreePath);
+          return { status: 0 };
+        },
+        fsApi: f.fsApi,
+        platform: 'linux',
+      });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(calls.map(({ args }) => args)).toEqual([['install']]);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('detaches a newly-created root modules link before installing workspace dependencies', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      const destModules = path.join(f.worktreePath, 'node_modules');
+      let linkWasDetached = false;
+      let result;
+      try {
+        result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+          spawnFn: () => {
+            linkWasDetached = !fs.existsSync(destModules);
+            fs.mkdirSync(destModules, { recursive: true });
+            populateWorkspaceDependency(f.worktreePath);
+            return { status: 0 };
+          },
+          fsApi: fs,
+          platform: process.platform,
+        });
+      } catch (error) {
+        if (['EPERM', 'EACCES', 'ENOSYS', 'UV_EPERM'].includes(error.code)) return;
+        throw error;
+      }
+
+      expect(linkWasDetached).toBe(true);
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('detaches an existing root modules link before installing workspace dependencies', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      const srcModules = path.join(f.projectRoot, 'node_modules');
+      const destModules = path.join(f.worktreePath, 'node_modules');
+      try {
+        fs.symlinkSync(srcModules, destModules, process.platform === 'win32' ? 'junction' : 'dir');
+      } catch (error) {
+        if (['EPERM', 'EACCES', 'ENOSYS', 'UV_EPERM'].includes(error.code)) return;
+        throw error;
+      }
+      let linkWasDetached = false;
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => {
+          linkWasDetached = !fs.existsSync(destModules);
+          fs.mkdirSync(destModules, { recursive: true });
+          populateWorkspaceDependency(f.worktreePath);
+          return { status: 0 };
+        },
+        fsApi: fs,
+        platform: process.platform,
+      });
+
+      expect(linkWasDetached).toBe(true);
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('replaces a dangling modules link with the shared install', () => {
+    const f = makeFixture();
+    try {
+      const srcModules = path.join(f.projectRoot, 'node_modules');
+      const destModules = path.join(f.worktreePath, 'node_modules');
+      const staleModules = path.join(f.tmp, 'stale-node-modules');
+      populate(f.projectRoot);
+      fs.mkdirSync(staleModules);
+      try {
+        fs.symlinkSync(staleModules, destModules, process.platform === 'win32' ? 'junction' : 'dir');
+      } catch (error) {
+        if (['EPERM', 'EACCES', 'ENOSYS', 'UV_EPERM'].includes(error.code)) return;
+        throw error;
+      }
+      fs.rmSync(staleModules, { recursive: true, force: true });
+
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => ({ status: 0 }),
+        fsApi: fs,
+        platform: process.platform,
+      });
+
+      expect(result).toEqual({ linked: true, installed: false, healed: false });
+      expect(fs.realpathSync(destModules)).toBe(fs.realpathSync(srcModules));
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('preserves an existing real modules directory before installing workspace dependencies', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      const destModules = path.join(f.worktreePath, 'node_modules');
+      fs.mkdirSync(destModules, { recursive: true });
+      let realDirectoryWasPreserved = false;
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => {
+          realDirectoryWasPreserved = fs.existsSync(destModules) && !fs.lstatSync(destModules).isSymbolicLink();
+          populateWorkspaceDependency(f.worktreePath);
+          return { status: 0 };
+        },
+        fsApi: fs,
+        platform: process.platform,
+      });
+
+      expect(realDirectoryWasPreserved).toBe(true);
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('reinstalls when shared Bun workspace links resolve into the main checkout', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      for (const root of [f.projectRoot, f.worktreePath]) {
+        fs.writeFileSync(path.join(root, 'packages', 'skills', 'package.json'), JSON.stringify({
+          name: '@forge/skills',
+          dependencies: { '@forge/memory-contracts': '0.1.0-beta.6' },
+        }));
+        const contractsDir = path.join(root, 'packages', 'memory-contracts');
+        fs.mkdirSync(contractsDir, { recursive: true });
+        fs.writeFileSync(path.join(contractsDir, 'package.json'), JSON.stringify({ name: '@forge/memory-contracts' }));
+      }
+      const rootContract = path.join(f.projectRoot, 'node_modules', '@forge', 'memory-contracts');
+      fs.mkdirSync(path.dirname(rootContract), { recursive: true });
+      fs.symlinkSync(
+        path.join(f.projectRoot, 'packages', 'memory-contracts'),
+        rootContract,
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+      const staleLocalContract = path.join(f.worktreePath, 'packages', 'skills', 'node_modules', '@forge', 'memory-contracts');
+      fs.mkdirSync(staleLocalContract, { recursive: true });
+      fs.writeFileSync(path.join(staleLocalContract, 'package.json'), JSON.stringify({ name: '@forge/memory-contracts' }));
+      f.fsApi.symlinkSync = (target, dest, type) => fs.symlinkSync(target, dest, type);
+      const calls = [];
+
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => {
+          calls.push({ cmd, args });
+          const localContract = path.join(f.worktreePath, 'node_modules', '@forge', 'memory-contracts');
+          fs.rmSync(staleLocalContract, { recursive: true, force: true });
+          fs.mkdirSync(path.dirname(localContract), { recursive: true });
+          fs.symlinkSync(
+            path.join(f.worktreePath, 'packages', 'memory-contracts'),
+            localContract,
+            process.platform === 'win32' ? 'junction' : 'dir',
+          );
+          return { status: 0 };
+        },
+        fsApi: f.fsApi,
+        platform: process.platform,
+      });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(calls.map(({ args }) => args)).toEqual([['install']]);
+      expect(fs.realpathSync(path.join(f.worktreePath, 'node_modules', '@forge', 'memory-contracts')))
+        .toBe(fs.realpathSync(path.join(f.worktreePath, 'packages', 'memory-contracts')));
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('does not let a valid root workspace link mask a wrong local package', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      fs.writeFileSync(path.join(f.worktreePath, 'packages', 'skills', 'package.json'), JSON.stringify({
+        name: '@forge/skills',
+        dependencies: { '@forge/memory-contracts': '0.1.0-beta.6' },
+      }));
+      const contractsDir = path.join(f.worktreePath, 'packages', 'memory-contracts');
+      fs.mkdirSync(contractsDir, { recursive: true });
+      fs.writeFileSync(path.join(contractsDir, 'package.json'), JSON.stringify({ name: '@forge/memory-contracts' }));
+
+      const rootContract = path.join(f.worktreePath, 'node_modules', '@forge', 'memory-contracts');
+      fs.mkdirSync(path.dirname(rootContract), { recursive: true });
+      fs.symlinkSync(contractsDir, rootContract, process.platform === 'win32' ? 'junction' : 'dir');
+      const staleLocalContract = path.join(f.worktreePath, 'packages', 'skills', 'node_modules', '@forge', 'memory-contracts');
+      fs.mkdirSync(staleLocalContract, { recursive: true });
+      fs.writeFileSync(path.join(staleLocalContract, 'package.json'), JSON.stringify({ name: '@forge/memory-contracts' }));
+      const calls = [];
+
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => {
+          calls.push({ cmd, args });
+          fs.rmSync(staleLocalContract, { recursive: true, force: true });
+          return { status: 0 };
+        },
+        fsApi: f.fsApi,
+        platform: process.platform,
+      });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(calls.map(({ args }) => args)).toEqual([['install']]);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('does not treat a coincidental root package as a Bun-isolated workspace dependency', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      const rootChalk = path.join(f.projectRoot, 'node_modules', 'chalk');
+      fs.mkdirSync(rootChalk, { recursive: true });
+      fs.writeFileSync(path.join(rootChalk, 'package.json'), JSON.stringify({ name: 'chalk' }));
+      f.fsApi.symlinkSync = (target, dest) => fs.cpSync(target, dest, { recursive: true });
+      const calls = [];
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => {
+          calls.push({ cmd, args });
+          populateWorkspaceDependency(f.worktreePath);
+          return { status: 0 };
+        },
+        fsApi: f.fsApi,
+        platform: 'linux',
+      });
+
+      expect(result).toEqual({ linked: false, installed: true, healed: false });
+      expect(calls.map(({ args }) => args)).toEqual([['install']]);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('accepts a valid root-hoisted npm workspace dependency without installing', () => {
+    const f = makeWorkspaceFixture('package-lock.json');
+    try {
+      const rootChalk = path.join(f.projectRoot, 'node_modules', 'chalk');
+      fs.mkdirSync(rootChalk, { recursive: true });
+      fs.writeFileSync(path.join(rootChalk, 'package.json'), JSON.stringify({ name: 'chalk' }));
+      f.fsApi.symlinkSync = (target, dest) => fs.cpSync(target, dest, { recursive: true });
+      const calls = [];
+      const result = setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => { calls.push({ cmd, args }); return { status: 0 }; },
+        fsApi: f.fsApi,
+        platform: 'linux',
+      });
+
+      expect(result).toEqual({ linked: true, installed: false, healed: false });
+      expect(calls).toHaveLength(0);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed when install and heal leave a Bun-isolated workspace dependency missing', () => {
+    const f = makeWorkspaceFixture();
+    try {
+      const calls = [];
+      expect(() => setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => { calls.push({ cmd, args }); return { status: 0 }; },
+        fsApi: f.fsApi,
+        platform: 'linux',
+      })).toThrow(/bun install --force/);
+      expect(calls.map(({ args }) => args)).toEqual([['install'], ['install', '--force']]);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('a missing workspace base does not hide a missing root dependency', () => {
+    const f = makeFixture();
+    try {
+      fs.writeFileSync(path.join(f.worktreePath, 'package.json'), JSON.stringify({
+        name: 'wt',
+        workspaces: ['packages/*'],
+        dependencies: { 'left-pad': '^1.0.0' },
+      }));
+      const calls = [];
+      expect(() => setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: (cmd, args) => { calls.push({ cmd, args }); return { status: 0 }; },
+        fsApi: fs,
+        platform: 'linux',
+      })).toThrow(/bun install --force/);
+      expect(calls.map(({ args }) => args)).toEqual([['install'], ['install', '--force']]);
     } finally {
       fs.rmSync(f.tmp, { recursive: true, force: true });
     }
@@ -289,6 +841,32 @@ describe('forge worktree create — verifies the install and self-heals a stale 
       expect(gitCalls.some(({ cmd, args }) => cmd === 'git'
         && args[0] === '-C' && args[1] === f.projectRoot
         && args.includes('worktree') && args.includes('add'))).toBe(true);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('repairs stale dependencies when reusing an existing worktree', async () => {
+    const f = makeFixture();
+    try {
+      const installCalls = [];
+      const gitCalls = [];
+      const result = await mod.handler(
+        ['create', 'healme'], {}, f.projectRoot,
+        {
+          _exec: gitStub(gitCalls),
+          _spawn: staleStoreSpawn(f.worktreePath, installCalls),
+          _fs: fs,
+          _platform: 'linux',
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.reused).toBe(true);
+      expect(result.depsHealed).toBe(true);
+      expect(result.message).toMatch(/healed dependencies/i);
+      expect(installCalls.map(({ args }) => args)).toEqual([['install'], ['install', '--force']]);
+      expect(gitCalls.some(({ args }) => args.includes('worktree') && args.includes('add'))).toBe(false);
     } finally {
       fs.rmSync(f.tmp, { recursive: true, force: true });
     }

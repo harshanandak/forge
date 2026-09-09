@@ -2,6 +2,12 @@
 
 const { describe, test, expect } = require('bun:test');
 
+function missingLstat() {
+  const error = new Error('missing');
+  error.code = 'ENOENT';
+  throw error;
+}
+
 // ---------------------------------------------------------------------------
 // forge worktree command — test/forge-worktree.test.js
 // ---------------------------------------------------------------------------
@@ -98,6 +104,7 @@ describe('forge worktree command', () => {
         // worktree path does not exist yet
         return false;
       },
+      lstatSync: missingLstat,
       symlinkSync: (target, dest, type) => { symlinkCalls.push({ target, dest, type }); },
       readdirSync: () => [],
       cpSync: () => {},
@@ -357,6 +364,7 @@ describe('forge worktree command', () => {
         if (p.endsWith('bun.lockb')) return true;
         return false;
       },
+      lstatSync: missingLstat,
       symlinkSync: () => {},
       readdirSync: () => [],
       cpSync: () => {},
