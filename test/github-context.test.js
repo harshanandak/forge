@@ -257,8 +257,8 @@ describe('github context', () => {
       if (command === 'git') return 'octo\n';
       if (args[0] === 'auth') return 'token-canary\n';
       if (args[0] === 'api' && args[1] === '--hostname') return 'octo\n';
-      const error = new Error('HTTP 403 rate limit token-canary in message');
-      error.httpStatus = 403;
+      const error = new Error('HTTP 429 rate limit token-canary in message');
+      error.httpStatus = 429;
       error.retryAfter = 60;
       error.stdout = Buffer.from('token-canary');
       error.stderr = Buffer.from('token-canary');
