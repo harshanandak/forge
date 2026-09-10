@@ -717,6 +717,34 @@ describe('scripts/protected-state-check.js merge awareness', () => {
 		}
 	}, 60_000);
 
+	test('blocks a merge when local and advertised remote HEAD disagree', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
+			runGit(work, ['checkout', '--quiet', '-B', 'wrong-default', 'master']);
+			writeRepoFile(work, WORKFLOW, 'name: wrong-default\njobs: {}\n');
+			runGit(work, ['add', WORKFLOW]);
+			runGit(work, ['commit', '--quiet', '-m', 'change workflow']);
+			runGit(work, ['push', '--quiet', 'origin', 'wrong-default:main']);
+			runGit(work, ['fetch', '--quiet', 'origin']);
+			runGit(work, ['remote', 'set-head', 'origin', 'main']);
+			expect(runGitCapture(work, ['symbolic-ref', 'refs/remotes/origin/HEAD'])).toBe('refs/remotes/origin/main');
+			expect(runGitCapture(work, ['ls-remote', '--symref', 'origin', 'HEAD'])).toContain('ref: refs/heads/master\tHEAD');
+
+			runGit(work, ['checkout', '--quiet', 'feature']);
+			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+			runGit(work, ['add', 'lib/safe.js']);
+			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
+			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'wrong-default']);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
 	test('blocks a trusted merge-side exemption when the upstream is unreachable', () => {
 		const root = createTempDir();
 		try {

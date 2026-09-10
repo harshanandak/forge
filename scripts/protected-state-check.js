@@ -307,14 +307,14 @@ function canonicalUpstream() {
 }
 
 // A local remote-tracking ref is only cached evidence. Confirm that the remote
-// still advertises the frozen commit without mutating refs; unavailable or
-// malformed remote evidence fails closed.
+// still advertises both the selected default branch and its frozen commit
+// without mutating refs; unavailable or malformed remote evidence fails closed.
 function isCurrentCanonicalCommit(canonical, expectedCommit) {
 	if (!canonical || !expectedCommit) return false;
 	const expectedRef = `refs/heads/${canonical.branch}`;
 	let output;
 	try {
-		output = execFileSync('git', ['ls-remote', '--exit-code', '--refs', canonical.remote, expectedRef], {
+		output = execFileSync('git', ['ls-remote', '--symref', '--exit-code', canonical.remote, 'HEAD'], {
 			encoding: 'utf8',
 			stdio: ['ignore', 'pipe', 'pipe'],
 			env: { ...GIT_PROBE_ENV, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' },
@@ -324,9 +324,10 @@ function isCurrentCanonicalCommit(canonical, expectedCommit) {
 		return false;
 	}
 	const lines = output.split(LINE_SPLIT).filter(Boolean);
-	if (lines.length !== 1) return false;
-	const match = /^([0-9a-f]{40}|[0-9a-f]{64})\t([^\0\r\n]+)$/.exec(lines[0]);
-	return Boolean(match && match[1] === expectedCommit && match[2] === expectedRef);
+	if (lines.length !== 2) return false;
+	const symref = lines.map(line => /^ref: ([^\0\r\n\t]+)\tHEAD$/.exec(line)).find(Boolean);
+	const head = lines.map(line => /^([0-9a-f]{40}|[0-9a-f]{64})\tHEAD$/.exec(line)).find(Boolean);
+	return Boolean(symref && head && symref[1] === expectedRef && head[1] === expectedCommit);
 }
 
 // True when `commit` is contained in the canonical upstream line — not merely
