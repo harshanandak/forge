@@ -313,10 +313,10 @@ function canonicalUpstreamRef() {
 // accidental and agent-authored protected edits and against merges from
 // untrusted contributor remotes. It is NOT a security boundary against a local
 // adversary — do not treat it as one.
-function isCanonicalUpstreamAncestor(commit, canonicalRef) {
-	if (!canonicalRef) return false;
+function isCanonicalUpstreamAncestor(commit, canonicalCommit) {
+	if (!canonicalCommit) return false;
 	try {
-		execFileSync('git', ['merge-base', '--is-ancestor', commit, canonicalRef], {
+		execFileSync('git', ['merge-base', '--is-ancestor', commit, canonicalCommit], {
 			stdio: ['ignore', 'ignore', 'ignore'],
 		});
 		return true;
@@ -328,7 +328,7 @@ function isCanonicalUpstreamAncestor(commit, canonicalRef) {
 // A merge is in progress when the per-worktree MERGE_HEAD exists. `--git-path`
 // resolves the correct (possibly linked-worktree) git dir. Returns null unless a
 // merge is genuinely in progress and every recorded id resolves; `trustedSides`
-// holds only those MERGE_HEAD commits contained in the canonical upstream ref.
+// holds only those MERGE_HEAD commits contained in the canonical upstream commit.
 function readMergeProvenance() {
 	let mergeHeadPath;
 	try {
@@ -356,9 +356,11 @@ function readMergeProvenance() {
 	const head = resolveCommit('HEAD');
 	if (!head) return null;
 	const canonicalRef = canonicalUpstreamRef();
+	const canonicalCommit = canonicalRef ? resolveCommit(canonicalRef) : null;
 	return {
 		head,
-		trustedSides: resolved.filter(commit => isCanonicalUpstreamAncestor(commit, canonicalRef)),
+		canonicalCommit,
+		trustedSides: resolved.filter(commit => isCanonicalUpstreamAncestor(commit, canonicalCommit)),
 	};
 }
 
@@ -367,9 +369,9 @@ function readMergeProvenance() {
 // trusted provenance:
 //   - staged entry (mode + object) === the entry at HEAD: no net change versus the branch being
 //     committed onto, so there is no provenance question at all; or
-//   - staged entry === the entry on a MERGE_HEAD contained in the canonical
-//     upstream ref: the bytes are already published on the line this repo
-//     integrates into, where the same gate ran.
+//   - staged entry === both a MERGE_HEAD contained in the canonical upstream
+//     commit and that current canonical commit: the bytes are still published
+//     on the line this repo integrates into, where the same gate ran.
 // A purely local merge side earns no exemption — otherwise anyone could smuggle a
 // protected edit in on a local branch and merge it. The merge base is likewise not
 // a permitted side: matching only the base means both sides were reverted, an edit.
@@ -377,10 +379,11 @@ function readMergeProvenance() {
 function createMergeExemption() {
 	const merge = readMergeProvenance();
 	if (!merge) return () => false;
-	const trustedRevisions = [merge.head, ...merge.trustedSides];
 	return file => {
 		const staged = stagedEntry(file);
 		if (staged === null) return false;
+		if (staged !== ABSENT_ENTRY && staged === revisionEntry(merge.head, file)) return true;
+		if (!merge.canonicalCommit || staged !== revisionEntry(merge.canonicalCommit, file)) return false;
 		if (staged === ABSENT_ENTRY) {
 			// Git just reported this path as staged, so an absent index entry is only
 			// honest for a staged deletion; otherwise the probe contradicts git and
@@ -399,7 +402,7 @@ function createMergeExemption() {
 				return baseEntry !== null && baseEntry !== ABSENT_ENTRY;
 			});
 		}
-		return trustedRevisions.some(revision => {
+		return merge.trustedSides.some(revision => {
 			const entry = revisionEntry(revision, file);
 			return entry !== null && entry === staged;
 		});

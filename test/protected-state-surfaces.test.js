@@ -38,6 +38,12 @@ function runGit(root, args) {
 	if (result.status !== 0) throw new Error(result.stderr || result.stdout);
 }
 
+function runGitCapture(root, args) {
+	const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+	if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+	return result.stdout.trim();
+}
+
 function stageLocalLockFixture(root, tampered = false) {
 	root = fs.realpathSync.native(root);
 	runGit(root, ['init', '--quiet']);
@@ -620,6 +626,57 @@ describe('scripts/protected-state-check.js merge awareness', () => {
 			const result = runCheck(work);
 			expect(`${result.stdout}${result.stderr}`).not.toContain('Protected state edit detected');
 			expect(result.status).toBe(0);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('blocks protected content from an old upstream commit after the current upstream reverted it', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
+			runGit(work, ['checkout', '--quiet', '-B', 'upstream-work', 'master']);
+			writeRepoFile(work, WORKFLOW, 'name: stale-upstream\njobs: {}\n');
+			runGit(work, ['add', WORKFLOW]);
+			runGit(work, ['commit', '--quiet', '-m', 'change workflow']);
+			const staleUpstream = runGitCapture(work, ['rev-parse', 'HEAD']);
+			runGit(work, ['revert', '--quiet', '--no-edit', 'HEAD']);
+			runGit(work, ['push', '--quiet', 'origin', 'upstream-work:master']);
+			runGit(work, ['fetch', '--quiet', 'origin']);
+			runGit(work, ['checkout', '--quiet', 'feature']);
+			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+			runGit(work, ['add', 'lib/safe.js']);
+			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
+			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', staleUpstream]);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('blocks a deletion from an old upstream commit after the current upstream restored the path', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
+			runGit(work, ['checkout', '--quiet', '-B', 'upstream-work', 'master']);
+			runGit(work, ['rm', '--quiet', WORKFLOW]);
+			runGit(work, ['commit', '--quiet', '-m', 'delete workflow']);
+			const staleUpstream = runGitCapture(work, ['rev-parse', 'HEAD']);
+			runGit(work, ['revert', '--quiet', '--no-edit', 'HEAD']);
+			runGit(work, ['push', '--quiet', 'origin', 'upstream-work:master']);
+			runGit(work, ['fetch', '--quiet', 'origin']);
+			runGit(work, ['checkout', '--quiet', 'feature']);
+			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+			runGit(work, ['add', 'lib/safe.js']);
+			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
+			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', staleUpstream]);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
