@@ -8,6 +8,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const releaseCommand = require('../lib/commands/release');
+const { secureExecFileSync } = require('../lib/shell-utils');
 const protectedStateAuthority = require('../lib/protected-state-authority');
 const { hashProtectedContent } = require('../lib/protected-state-surfaces');
 const {
@@ -17,6 +18,7 @@ const {
 } = require('../lib/npm-publish-workflow');
 const {
 	BUN_WORKFLOW_SPECS,
+	readCompleteBunPinBatch,
 	readPinnedBunVersion,
 	renderBunWorkflowPin,
 	updateBunWorkflowPins,
@@ -75,6 +77,32 @@ describe('Forge-owned Bun workflow pins', () => {
 			.toThrow('allowlisted');
 		expect(() => renderBunWorkflowPin(BUN_WORKFLOW_SPECS[0].path, 'name: no pin\n', '1.4.2'))
 			.toThrow('exactly 1');
+	});
+
+	test('reads the complete source and index Bun pin snapshot in four Git calls', () => {
+		const root = createFixture();
+		const run = args => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+		try {
+			expect(run(['init']).status).toBe(0);
+			expect(run(['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+			expect(run(['config', 'user.name', 'Forge Test']).status).toBe(0);
+			expect(run(['add', '.']).status).toBe(0);
+			expect(run(['commit', '-m', 'base']).status).toBe(0);
+			const sourceHead = run(['rev-parse', 'HEAD']).stdout.trim();
+			const gitCalls = [];
+			const snapshot = readCompleteBunPinBatch(root, sourceHead, [NPM_PUBLISH_WORKFLOW_PATH],
+				(command, args, options) => {
+					gitCalls.push(args);
+					return secureExecFileSync(command, args, options);
+				});
+
+			expect(gitCalls).toHaveLength(4);
+			expect(snapshot.source.get('package.json')).toEqual(fs.readFileSync(path.join(root, 'package.json')));
+			expect(snapshot.source.size).toBe(1 + BUN_WORKFLOW_SPECS.length);
+			expect(snapshot.indexed.size).toBe(2 + BUN_WORKFLOW_SPECS.length);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	test('updates all owned workflow pins and delegates npm-publish to its existing generator', async () => {

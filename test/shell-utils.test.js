@@ -32,6 +32,26 @@ describe('secureExecFileSync', () => {
     expect(execCalls).toEqual([{ command: '/usr/bin/bd', args: ['version'] }]);
   });
 
+  test('reuses successful executable resolution until the command environment changes', () => {
+    const resolutionCache = new Map();
+    let lookups = 0;
+    const options = {
+      _platform: 'win32',
+      _resolutionCache: resolutionCache,
+      _spawnSync: () => {
+        lookups += 1;
+        return { status: 0, stdout: 'C:\\tools\\git.exe\r\n' };
+      },
+      _execFileSync: () => '',
+    };
+
+    secureExecFileSync('git', ['status'], options);
+    secureExecFileSync('git', ['rev-parse', 'HEAD'], options);
+    secureExecFileSync('git', ['status'], { ...options, env: { PATH: 'C:\\other' } });
+
+    expect(lookups).toBe(2);
+  });
+
   test('does not retry with the unresolved command when resolved execution throws', () => {
     const execCalls = [];
 
