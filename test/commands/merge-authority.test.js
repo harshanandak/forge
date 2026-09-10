@@ -79,6 +79,7 @@ describe('merge command — mandatory release authority', () => {
       'https://github.com/Acme/Forge.git',
       'git@github.com:Acme/Forge.git',
       'github-work:Acme/Forge.git',
+      'github_work:Acme/Forge.git',
       'ssh://git@github.com/Acme/Forge.git',
     ]) {
       const calls = [];

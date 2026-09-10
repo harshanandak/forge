@@ -127,12 +127,13 @@ describe('forge github lifecycle', () => {
   test.each([
     { host: 'github-work', remote: 'git@github-work:org/project.git' },
     { host: 'github-work', remote: 'github-work:org/project.git' },
+    { host: 'github_work', remote: 'git@github_work:org/project.git' },
     { host: 'github-personal', remote: 'git@github-personal:org/project.git' },
     { host: 'github-personal', remote: 'github-personal:org/project.git' },
   ])('use and bound status resolve SSH alias before querying an explicit GitHub repository: %j', async ({ host, remote }) => {
     const f = fixture({ account: 'work', remote });
     expect((await handler(['use', 'work'], {}, '/repo', f.options)).success).toBe(true);
-    expect((await handler(['status', '--json'], {}, '/repo', f.options)).status.state).toBe('ready');
+    expect((await handler(['status', '--json'], {}, '/repo', f.options)).status).toMatchObject({ state: 'ready', transport: 'ssh' });
     const ssh = f.calls.filter(c => c.command === 'ssh');
     expect(ssh).toHaveLength(2);
     expect(ssh.every(c => c.args.join(' ') === `-G ${host}`)).toBe(true);
