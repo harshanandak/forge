@@ -105,6 +105,23 @@ describe('Forge-owned Bun workflow pins', () => {
 		}
 	});
 
+	test('does not require the workflow snapshot when the staged Bun pin is unchanged', async () => {
+		const packageManifest = Buffer.from('{"name":"forge-workflow","packageManager":"bun@1.4.2"}');
+		let batchReads = 0;
+		const result = await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites('C:\\fixture', [], {
+			sourceHead: TEST_HEAD,
+			readSourcePackageManifest: () => packageManifest,
+			readIndexedPackageManifest: () => packageManifest,
+			readCompleteBunPinBatch: () => {
+				batchReads += 1;
+				throw new Error('workflow snapshot should not be read');
+			},
+		});
+
+		expect(result).toEqual({ success: true, decisions: [] });
+		expect(batchReads).toBe(0);
+	});
+
 	test('updates all owned workflow pins and delegates npm-publish to its existing generator', async () => {
 		const root = createFixture();
 		const issued = [];
