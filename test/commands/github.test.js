@@ -15,7 +15,7 @@ function fixture(overrides = {}) {
     calls.push({ command, args, options });
     if (command === 'git') {
       if (args.join(' ') === 'config --local --get github.account') return account;
-      if (args[2] === 'github.account') { account = args[3]; return ''; }
+      if (args[2] === '--replace-all' && args[3] === 'github.account') { account = args[4]; return ''; }
       if (args[2] === '--unset-all') {
         if (!account) throw Object.assign(new Error(CANARY), { status: 5 });
         account = ''; return '';
@@ -54,7 +54,7 @@ describe('forge github lifecycle', () => {
     expect(f.calls[0].options.env.GH_TOKEN).toBeUndefined();
     expect(f.calls[3].options.env.GH_TOKEN === CANARY).toBe(true);
     expect(f.calls[3].args).toEqual(['repo', 'view', 'github.com/org/project', '--json', 'nameWithOwner']);
-    expect(f.calls[4].args).toEqual(['config', '--local', 'github.account', 'work']);
+    expect(f.calls[4].args).toEqual(['config', '--local', '--replace-all', 'github.account', 'work']);
     expect(JSON.stringify(result).includes(CANARY)).toBe(false);
   });
 
