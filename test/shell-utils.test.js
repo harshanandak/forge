@@ -52,6 +52,25 @@ describe('secureExecFileSync', () => {
     expect(lookups).toBe(2);
   });
 
+  test('keys Windows executable resolution on environment names case-insensitively', () => {
+    const resolutionCache = new Map();
+    let lookups = 0;
+    const options = {
+      _platform: 'win32',
+      _resolutionCache: resolutionCache,
+      _spawnSync: () => {
+        lookups += 1;
+        return { status: 0, stdout: 'C:\\tools\\git.exe\r\n' };
+      },
+      _execFileSync: () => '',
+    };
+
+    secureExecFileSync('git', ['status'], { ...options, env: { path: 'C:\\one', pathext: '.EXE' } });
+    secureExecFileSync('git', ['status'], { ...options, env: { path: 'C:\\two', pathext: '.EXE' } });
+
+    expect(lookups).toBe(2);
+  });
+
   test('does not retry with the unresolved command when resolved execution throws', () => {
     const execCalls = [];
 
