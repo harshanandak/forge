@@ -158,6 +158,7 @@ function pathspecSafeEnv() {
 }
 
 const GIT_PROBE_ENV = pathspecSafeEnv();
+const REMOTE_PROBE_TIMEOUT_MS = 15_000;
 
 function gitCapture(args) {
 	return execFileSync('git', args, {
@@ -258,8 +259,9 @@ function baseRemoteProbe(_command, args) {
 // and both conventional defaults present, candidate order would trust main
 // even when master is the real integration branch, letting content published
 // only to the wrong branch pass as already published on the base.
-// Returns a fully-qualified ref name, or null when it cannot be established.
-function canonicalUpstreamRef() {
+// Returns the fully-qualified local ref plus its remote/branch identity, or null
+// when the canonical upstream cannot be established.
+function canonicalUpstream() {
 	const cwd = process.cwd();
 	const remote = resolveBaseRemote(baseRemoteProbe, cwd);
 	if (remote === 'origin') {
@@ -295,10 +297,36 @@ function canonicalUpstreamRef() {
 	candidates.push(`refs/remotes/${remote}/${resolveBaseBranch(baseRemoteProbe, process.cwd(), remote)}`);
 	candidates.push(`refs/remotes/${remote}/main`, `refs/remotes/${remote}/master`);
 
-	for (const candidate of candidates) {
-		if (resolveCommit(candidate)) return candidate;
+	const prefix = `refs/remotes/${remote}/`;
+	for (const ref of candidates) {
+		if (resolveCommit(ref) && ref.startsWith(prefix) && ref.length > prefix.length) {
+			return { ref, remote, branch: ref.slice(prefix.length) };
+		}
 	}
 	return null;
+}
+
+// A local remote-tracking ref is only cached evidence. Confirm that the remote
+// still advertises the frozen commit without mutating refs; unavailable or
+// malformed remote evidence fails closed.
+function isCurrentCanonicalCommit(canonical, expectedCommit) {
+	if (!canonical || !expectedCommit) return false;
+	const expectedRef = `refs/heads/${canonical.branch}`;
+	let output;
+	try {
+		output = execFileSync('git', ['ls-remote', '--exit-code', '--refs', canonical.remote, expectedRef], {
+			encoding: 'utf8',
+			stdio: ['ignore', 'pipe', 'pipe'],
+			env: { ...GIT_PROBE_ENV, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' },
+			timeout: REMOTE_PROBE_TIMEOUT_MS,
+		}).trim();
+	} catch {
+		return false;
+	}
+	const lines = output.split(LINE_SPLIT).filter(Boolean);
+	if (lines.length !== 1) return false;
+	const match = /^([0-9a-f]{40}|[0-9a-f]{64})\t([^\0\r\n]+)$/.exec(lines[0]);
+	return Boolean(match && match[1] === expectedCommit && match[2] === expectedRef);
 }
 
 // True when `commit` is contained in the canonical upstream line — not merely
@@ -355,10 +383,11 @@ function readMergeProvenance() {
 	// exemption context at all — fail closed rather than fall back to the sides.
 	const head = resolveCommit('HEAD');
 	if (!head) return null;
-	const canonicalRef = canonicalUpstreamRef();
-	const canonicalCommit = canonicalRef ? resolveCommit(canonicalRef) : null;
+	const canonical = canonicalUpstream();
+	const canonicalCommit = canonical ? resolveCommit(canonical.ref) : null;
 	return {
 		head,
+		canonical,
 		canonicalCommit,
 		trustedSides: resolved.filter(commit => isCanonicalUpstreamAncestor(commit, canonicalCommit)),
 	};
@@ -379,6 +408,13 @@ function readMergeProvenance() {
 function createMergeExemption() {
 	const merge = readMergeProvenance();
 	if (!merge) return () => false;
+	let canonicalIsCurrent;
+	const hasCurrentCanonicalCommit = () => {
+		if (canonicalIsCurrent === undefined) {
+			canonicalIsCurrent = isCurrentCanonicalCommit(merge.canonical, merge.canonicalCommit);
+		}
+		return canonicalIsCurrent;
+	};
 	return file => {
 		const staged = stagedEntry(file);
 		if (staged === null) return false;
@@ -394,18 +430,20 @@ function createMergeExemption() {
 			// `git rm` during a merge would otherwise exempt itself. Demand that the
 			// merge side actually removed it: present at the merge base, gone at the
 			// side. Fail closed when the base or either probe is unavailable.
-			return merge.trustedSides.some(side => {
+			const trustedDeletion = merge.trustedSides.some(side => {
 				if (revisionEntry(side, file) !== ABSENT_ENTRY) return false;
 				const base = resolveMergeBase(merge.head, side);
 				if (!base) return false;
 				const baseEntry = revisionEntry(base, file);
 				return baseEntry !== null && baseEntry !== ABSENT_ENTRY;
 			});
+			return trustedDeletion && hasCurrentCanonicalCommit();
 		}
-		return merge.trustedSides.some(revision => {
+		const trustedCarryOver = merge.trustedSides.some(revision => {
 			const entry = revisionEntry(revision, file);
 			return entry !== null && entry === staged;
 		});
+		return trustedCarryOver && hasCurrentCanonicalCommit();
 	};
 }
 

@@ -682,6 +682,55 @@ describe('scripts/protected-state-check.js merge awareness', () => {
 		}
 	}, 60_000);
 
+	test('blocks a merge when the local upstream ref is stale', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			const remote = runGitCapture(work, ['remote', 'get-url', 'origin']);
+			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
+			runGit(work, ['checkout', '--quiet', '-B', 'upstream-work', 'master']);
+			writeRepoFile(work, WORKFLOW, 'name: stale-upstream\njobs: {}\n');
+			runGit(work, ['add', WORKFLOW]);
+			runGit(work, ['commit', '--quiet', '-m', 'change workflow']);
+			const staleUpstream = runGitCapture(work, ['rev-parse', 'HEAD']);
+			runGit(work, ['push', '--quiet', 'origin', 'upstream-work:master']);
+			runGit(work, ['fetch', '--quiet', 'origin']);
+
+			const publisher = path.join(root, 'publisher');
+			runGit(root, ['clone', '--quiet', remote, publisher]);
+			runGit(publisher, ['config', 'user.email', 'publisher@example.com']);
+			runGit(publisher, ['config', 'user.name', 'Publisher']);
+			runGit(publisher, ['revert', '--quiet', '--no-edit', 'HEAD']);
+			runGit(publisher, ['push', '--quiet', 'origin', 'master']);
+			expect(runGitCapture(work, ['rev-parse', 'refs/remotes/origin/master'])).toBe(staleUpstream);
+
+			runGit(work, ['checkout', '--quiet', 'feature']);
+			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+			runGit(work, ['add', 'lib/safe.js']);
+			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
+			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', staleUpstream]);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('blocks a trusted merge-side exemption when the upstream is unreachable', () => {
+		const root = createTempDir();
+		try {
+			const work = initRepo(root);
+			startMerge(work, { branch: 'upstream-work', publish: true });
+			runGit(work, ['remote', 'set-url', 'origin', path.join(root, 'missing.git')]);
+			const result = runCheck(work);
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 60_000);
+
 	test('blocks a merge whose protected blob is only reachable from a hand-created remote-tracking ref', () => {
 		const root = createTempDir();
 		try {
