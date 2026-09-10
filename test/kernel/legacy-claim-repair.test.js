@@ -5,7 +5,7 @@ const { EventEmitter } = require('node:events');
 const os = require('node:os');
 const path = require('node:path');
 const { PassThrough } = require('node:stream');
-const { afterEach, describe, expect, test } = require('bun:test');
+const { afterEach, describe, expect, spyOn, test } = require('bun:test');
 
 const { createLocalBroker } = require('../../lib/kernel/broker');
 const { extractEmbeddedAssets } = require('../../lib/package-root');
@@ -1486,17 +1486,60 @@ describe('legacy claim repair backup and apply', () => {
 			backupPath,
 			actor: 'approved-operator',
 		}, fixture.config)).rejects.toThrow('simulated response loss');
-		const replay = await fixture.driver.applyLegacyClaimRepair({
-			observedAt: OBSERVED_AT,
-			approvedDigest: preflight.digest,
-			backupPath,
-			actor: 'approved-operator',
-		}, fixture.config);
-		expect(replay.replayed).toBe(true);
-		expect(replay.recovery_ref).toMatch(/^[0-9a-f-]{36}$/);
-		expect(typeof replay.recovery_path).toBe('string');
-		expect(fs.existsSync(replay.recovery_path)).toBe(true);
-		fixture.driver.close();
+		const originalStatSync = fs.statSync;
+		const originalFstatSync = fs.fstatSync;
+		const backupInode = 9_007_199_254_740_992n;
+		const recoveryInode = backupInode + 1n;
+		const sourceInode = backupInode + 4n;
+		expect(Number(backupInode)).toBe(Number(recoveryInode));
+		const withIdentity = (stat, inode) => ({
+			...stat,
+			dev: typeof stat.dev === 'bigint' ? 1n : 1,
+			ino: typeof stat.ino === 'bigint' ? inode : Number(inode),
+		});
+		const statSpy = spyOn(fs, 'statSync').mockImplementation((filePath, options) => {
+			const stat = originalStatSync.call(fs, filePath, options);
+			if (filePath === backupPath) return withIdentity(stat, backupInode);
+			if (String(filePath).includes('.forge-recovery-')) return withIdentity(stat, recoveryInode);
+			return withIdentity(stat, sourceInode);
+		});
+		const fstatSpy = spyOn(fs, 'fstatSync').mockImplementation((descriptor, options) => (
+			withIdentity(originalFstatSync.call(fs, descriptor, options), recoveryInode)
+		));
+		try {
+			const replay = await fixture.driver.applyLegacyClaimRepair({
+				observedAt: OBSERVED_AT,
+				approvedDigest: preflight.digest,
+				backupPath,
+				actor: 'approved-operator',
+			}, fixture.config);
+			expect(replay.replayed).toBe(true);
+			expect(replay.recovery_ref).toMatch(/^[0-9a-f-]{36}$/);
+			expect(typeof replay.recovery_path).toBe('string');
+			expect(fs.existsSync(replay.recovery_path)).toBe(true);
+		} finally {
+			fstatSpy.mockRestore();
+			statSpy.mockRestore();
+		}
+
+		let fstatCall = 0n;
+		const mtimeSpy = spyOn(fs, 'fstatSync').mockImplementation((descriptor, options) => {
+			const stat = originalFstatSync.call(fs, descriptor, options);
+			if (typeof stat.mtimeNs !== 'bigint') return stat;
+			fstatCall += 1n;
+			return { ...stat, mtimeNs: stat.mtimeNs + fstatCall };
+		});
+		try {
+			await expect(fixture.driver.applyLegacyClaimRepair({
+				observedAt: OBSERVED_AT,
+				approvedDigest: preflight.digest,
+				backupPath,
+				actor: 'approved-operator',
+			}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_RECOVERY_INVALID' });
+		} finally {
+			mtimeSpy.mockRestore();
+			fixture.driver.close();
+		}
 	});
 
 	test('rejects replay when the retained recovery copy is missing or corrupted', async () => {
