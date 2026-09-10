@@ -11,16 +11,16 @@ const { spawnSync } = require("node:child_process");
 const ROOT = path.resolve(__dirname, "../..");
 const created = [];
 
-function npm(args, cwd) {
-  return spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", args, {
+function npm(args, cwd, invocation) {
+  return spawnSync(invocation.command, [...invocation.prefix, ...args], {
     cwd,
     encoding: "utf8",
     env: { ...process.env, npm_config_audit: "false", npm_config_fund: "false" },
   });
 }
 
-function pack(packageDirectory, destination) {
-  const result = npm(["pack", "--json", "--pack-destination", destination], packageDirectory);
+function pack(packageDirectory, destination, invocation) {
+  const result = npm(["pack", "--json", "--pack-destination", destination], packageDirectory, invocation);
   expect(result.status, result.stderr).toBe(0);
   return path.join(destination, JSON.parse(result.stdout)[0].filename);
 }
@@ -42,23 +42,34 @@ function resolvePlatformNode() {
   throw new Error("Node.js >=22.16.0 is required for the standalone package smoke test");
 }
 
+function resolveNpmInvocation(platformNode) {
+  if (process.platform !== "win32") return { command: "npm", prefix: [] };
+  const located = spawnSync("where.exe", ["npm.cmd"], { encoding: "utf8" });
+  for (const shim of located.status === 0 ? located.stdout.trim().split(/\r?\n/) : []) {
+    const cli = path.join(path.dirname(shim), "node_modules", "npm", "bin", "npm-cli.js");
+    if (fs.existsSync(cli)) return { command: platformNode.executable, prefix: [cli] };
+  }
+  throw new Error("Could not resolve npm-cli.js beside the platform Node.js installation");
+}
+
 afterEach(() => {
   for (const directory of created.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
 describe("standalone product packages", () => {
   test("packs and installs Flow with public Memory contracts in a fresh package", () => {
-    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "forge-products-"));
+    const platformNode = resolvePlatformNode();
+    const npmInvocation = resolveNpmInvocation(platformNode);
+    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge products-"));
     created.push(temporary);
     fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ private: true }));
-    const contractsTarball = pack(path.join(ROOT, "packages", "memory-contracts"), temporary);
-    const memoryTarball = pack(path.join(ROOT, "packages", "memory"), temporary);
-    const flowTarball = pack(path.join(ROOT, "packages", "flow"), temporary);
+    const contractsTarball = pack(path.join(ROOT, "packages", "memory-contracts"), temporary, npmInvocation);
+    const memoryTarball = pack(path.join(ROOT, "packages", "memory"), temporary, npmInvocation);
+    const flowTarball = pack(path.join(ROOT, "packages", "flow"), temporary, npmInvocation);
 
-    const install = npm(["install", "--ignore-scripts", contractsTarball, memoryTarball, flowTarball], temporary);
+    const install = npm(["install", "--ignore-scripts", contractsTarball, memoryTarball, flowTarball], temporary, npmInvocation);
     expect(install.status, install.stderr).toBe(0);
 
-    const platformNode = resolvePlatformNode();
     expect(platformNode.version.major).toBeGreaterThanOrEqual(22);
     expect(platformNode.version.major > 22 || platformNode.version.minor >= 16).toBe(true);
     expect(path.basename(platformNode.executable).toLowerCase()).not.toContain("bun");

@@ -18,6 +18,16 @@ async function seed(projectRoot, note) {
   await remember.handler([note], {}, projectRoot);
 }
 
+async function seedNotes(projectRoot, notes) {
+  await seedRecallMemories(projectRoot, notes.map((note, index) => ({
+    key: `recall-note-${index}`,
+    value: note,
+    sourceAgent: 'forge remember',
+    tags: [],
+    timestamp: `2026-08-${String(index + 1).padStart(2, '0')}T00:00:00.000Z`,
+  })));
+}
+
 afterEach(() => {
   projectMemory.closeAll();
   cleanup();
@@ -136,8 +146,7 @@ describe('forge recall command', () => {
 
   test('lists all stored notes when no query is given', async () => {
     const projectRoot = makeProjectRoot();
-    await seed(projectRoot, 'first note');
-    await seed(projectRoot, 'second note');
+    await seedNotes(projectRoot, ['first note', 'second note']);
 
     const result = await recall.handler([], {}, projectRoot);
     expect(result.success).toBe(true);
@@ -147,8 +156,7 @@ describe('forge recall command', () => {
 
   test('filters notes by query (FTS token-AND)', async () => {
     const projectRoot = makeProjectRoot();
-    await seed(projectRoot, 'Use Bun for tests');
-    await seed(projectRoot, 'Lint with eslint');
+    await seedNotes(projectRoot, ['Use Bun for tests', 'Lint with eslint']);
 
     const result = await recall.handler(['bun'], {}, projectRoot);
     expect(result.success).toBe(true);

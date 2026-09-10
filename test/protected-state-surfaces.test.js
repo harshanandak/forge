@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { getCurrentHead } = require('../scripts/protected-state-check');
 
 const {
 	PROTECTED_SURFACES,
@@ -35,6 +36,35 @@ function createTempDir() {
 function runGit(root, args) {
 	const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
 	if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+}
+
+function stageLocalLockFixture(root, tampered = false) {
+	root = fs.realpathSync.native(root);
+	runGit(root, ['init', '--quiet']);
+	runGit(root, ['config', 'user.email', 'proof@example.invalid']);
+	runGit(root, ['config', 'user.name', 'Lock Proof']);
+	const manifest = {
+		name: 'fixture',
+		private: true,
+		packageManager: require('../package.json').packageManager,
+		workspaces: ['packages/*'],
+		dependencies: { 'fixture-child': 'workspace:*' },
+	};
+	fs.mkdirSync(path.join(root, 'packages', 'child'), { recursive: true });
+	fs.writeFileSync(path.join(root, 'packages', 'child', 'package.json'), JSON.stringify({ name: 'fixture-child', version: '1.0.0' }));
+	const generate = () => {
+		fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify(manifest));
+		const result = spawnSync('bun', ['install', `--cwd=${root}`, '--lockfile-only', '--ignore-scripts'], { cwd: root, encoding: 'utf8', timeout: 15_000 });
+		if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+	};
+	generate();
+	runGit(root, ['add', 'package.json', 'packages/child/package.json', 'bun.lock']);
+	runGit(root, ['commit', '--quiet', '-m', 'base lock']);
+	manifest.name = 'refreshed-fixture';
+	fs.rmSync(path.join(root, 'bun.lock'));
+	generate();
+	if (tampered) fs.writeFileSync(path.join(root, 'bun.lock'), 'attacker-controlled\n');
+	runGit(root, ['add', 'package.json', 'bun.lock']);
 }
 
 describe('protected state surfaces', () => {
@@ -363,6 +393,24 @@ describe('protected state surfaces', () => {
 describe('scripts/protected-state-check.js', () => {
 	const scriptPath = path.join(__dirname, '..', 'scripts', 'protected-state-check.js');
 
+	test('distinguishes a verified unborn branch from HEAD lookup failures', () => {
+		const headError = Object.assign(new Error('injected HEAD lookup failure'), { status: 128 });
+		const unbornGit = (_command, args) => {
+			if (args[0] === 'rev-parse') throw headError;
+			if (args[0] === 'symbolic-ref') return 'refs/heads/main\n';
+			throw Object.assign(new Error('missing branch ref'), { status: 1 });
+		};
+		expect(getCurrentHead(unbornGit)).toBe(null);
+
+		const existingRefGit = (_command, args) => {
+			if (args[0] === 'rev-parse') throw headError;
+			if (args[0] === 'symbolic-ref') return 'refs/heads/main\n';
+			return '';
+		};
+		expect(() => getCurrentHead(existingRefGit)).toThrow('injected HEAD lookup failure');
+		expect(() => getCurrentHead(() => 'not-a-full-object-id\n')).toThrow('full Git object id');
+	});
+
 	test('fails staged direct edits to protected state with repair hints', () => {
 		const result = spawnSync('node', [scriptPath], {
 			cwd: path.join(__dirname, '..'),
@@ -384,6 +432,10 @@ describe('scripts/protected-state-check.js', () => {
 	test('writes the blocked decision to the audit log without warning about a missing CLI', () => {
 		const root = createTempDir();
 		try {
+			runGit(root, ['init', '--quiet']);
+			runGit(root, ['config', 'user.email', 'forge-test@example.invalid']);
+			runGit(root, ['config', 'user.name', 'Forge Test']);
+			runGit(root, ['commit', '--allow-empty', '-m', 'base']);
 			const result = spawnSync('node', [scriptPath], {
 				cwd: root,
 				stdio: 'pipe',
@@ -414,33 +466,45 @@ describe('scripts/protected-state-check.js', () => {
 		}
 	});
 
-	test('passes when staged edits do not touch protected state', () => {
-		const result = spawnSync('node', [scriptPath], {
-			cwd: path.join(__dirname, '..'),
-			stdio: 'pipe',
-			env: {
-				...process.env,
-				FORGE_PROTECTED_STATE_STAGED_FILES: 'lib/safe.js\ntest/safe.test.js',
-			},
-		});
-
-		expect(result.status).toBe(0);
-		expect(result.stdout.toString()).toContain('No protected state edits detected');
-	});
+	test('passes safe staged edits alongside an independently reproducible lock', () => {
+		const root = createTempDir();
+		try {
+			stageLocalLockFixture(root);
+			const result = spawnSync('node', [scriptPath], {
+				cwd: root,
+				stdio: 'pipe',
+				env: {
+					...process.env,
+					FORGE_PROTECTED_STATE_STAGED_FILES: 'lib/safe.js\ntest/safe.test.js',
+				},
+			});
+			expect(result.stderr.toString()).toBe('');
+			expect(result.status).toBe(0);
+			expect(result.stdout.toString()).toContain('No protected state edits detected');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 15_000);
 
 	test('does not allow a surface-only environment declaration without content-bound evidence', () => {
-		const result = spawnSync('node', [scriptPath], {
-			cwd: path.join(__dirname, '..'),
-			stdio: 'pipe',
-			env: {
-				...process.env,
-				FORGE_PROTECTED_STATE_STAGED_FILES: 'bun.lock',
-				FORGE_PROTECTED_STATE_ALLOWED_SURFACES: 'lockfiles',
-			},
-		});
-
-		expect(result.status).toBe(1);
-		expect(`${result.stdout}${result.stderr}`).toContain('bun.lock');
+		const root = createTempDir();
+		try {
+			stageLocalLockFixture(root, true);
+			const result = spawnSync('node', [scriptPath], {
+				cwd: root,
+				stdio: 'pipe',
+				env: {
+					...process.env,
+					FORGE_PROTECTED_STATE_STAGED_FILES: 'bun.lock',
+					FORGE_PROTECTED_STATE_ALLOWED_SURFACES: 'lockfiles',
+				},
+			});
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain('bun.lock');
+			expect(result.stderr.toString()).toContain('Regenerated bun.lock does not match the staged content');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	}, 15_000);
 
 	test('cannot hide an actually staged protected path behind environment file seams', () => {

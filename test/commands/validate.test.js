@@ -88,17 +88,110 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
-		test('uses a long enough subprocess timeout for the full local suite', () => {
+		test('keeps ordinary validation commands bounded and preserves the external Bun fallback', () => {
 			const source = fs.readFileSync(path.join(__dirname, '..', '..', 'lib', 'commands', 'validate.js'), 'utf8');
 			expect(source).toMatch(/VALIDATION_COMMAND_TIMEOUT_MS\s*=\s*600000/);
-			expect(source).toMatch(/timeout:\s*VALIDATION_COMMAND_TIMEOUT_MS/);
+			expect(source).toMatch(/timeout:\s*fullSuite\s*\?\s*FULL_SUITE_TIMEOUT_MS\s*:\s*VALIDATION_COMMAND_TIMEOUT_MS/);
 			// External repositories retain the raw Bun fallback and its per-test timeout.
 			expect(source).toMatch(/\[\s*'test'\s*,\s*'--timeout'\s*,\s*'30000'\s*\]/);
 			expect(source).not.toContain('timed out after 2 minutes');
 		});
+
+		test('reserves measured full-suite headroom and bounded output capacity only for the Forge runner', async () => {
+			const rootDir = path.resolve(__dirname, '..', '..');
+			let options;
+			const result = await runAllTests((_command, _args, opts) => {
+				options = opts;
+				return 'Full suite aggregate: status=PASS tests=1 assertions=1 passed=1 failed=0 errors=0 skipped=0';
+			}, rootDir);
+			expect(result.success).toBe(true);
+			expect(options).toEqual({
+				encoding: 'utf8', cwd: rootDir, timeout: 25 * 60 * 1000, maxBuffer: 16 * 1024 * 1024,
+			});
+		});
+
+		test('does not expand the lint execution limits', async () => {
+			let options;
+			await runLint((_command, _args, opts) => { options = opts; return ''; });
+			expect(options).toEqual({ encoding: 'utf8', cwd: process.cwd(), timeout: 600000 });
+		});
+
+		test.each([0, 1])('captures verbose full-suite output and its final verdict without truncation (exit %s)', async (exitCode) => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-verbose-'));
+			const aggregate = exitCode === 0
+				? 'Full suite aggregate: status=PASS tests=5 assertions=8 passed=5 failed=0 errors=0 skipped=0'
+				: 'Full suite aggregate: status=FAIL tests=5 assertions=8 passed=3 failed=2 errors=0 skipped=0';
+			const paddingBytes = 2 * 1024 * 1024;
+			let captured = '';
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'forge-workflow', bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), [
+					"const fs = require('node:fs');",
+					`fs.writeSync(1, 'x'.repeat(${paddingBytes}) + '\\n');`,
+					`fs.writeSync(2, 'y'.repeat(${paddingBytes}) + '\\n');`,
+					`fs.writeSync(1, ${JSON.stringify(aggregate + '\n')});`,
+					`process.exitCode = ${exitCode};`,
+				].join('\n'));
+				const result = await runAllTests((command, args, options) => {
+					try {
+						captured = execFileSync(command, args, { ...options, stdio: 'pipe' });
+						return captured;
+					} catch (error) {
+						captured = error.stdout || '';
+						throw error;
+					}
+				}, rootDir);
+				expect(result.success).toBe(exitCode === 0);
+				expect(result.failed).toBe(exitCode === 0 ? 0 : 2);
+				expect(result.total).toBe(5);
+				expect(Buffer.byteLength(captured)).toBe(paddingBytes + 1 + Buffer.byteLength(aggregate) + 1);
+				expect(captured.endsWith(aggregate + '\n')).toBe(true);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('reports the full-suite timeout using its selected limit without waiting', async () => {
+			const result = await runAllTests(() => {
+				throw Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGTERM' });
+			}, path.resolve(__dirname, '..', '..'));
+			expect(result.success).toBe(false);
+			expect(result.message).toBe('Test execution timed out after 25 minutes');
+		});
 	});
 
 	describe('Full validate orchestration', () => {
+		test.each([
+			['PASS', 2, 1, 0, 1, true, 'Tests: PASS'],
+			['FAIL', 3, 1, 1, 1, false, 'Checks failed: tests'],
+			['INCOMPLETE', 2, 1, 0, 1, false, 'Checks failed: tests'],
+			['PASS', 0, 0, 0, 0, true, 'Tests: SKIPPED'],
+		])('distinguishes skipped-test counts from a skipped check (%s, %s tests)', async (status, total, passed, failed, skipped, success, summary) => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-skip-summary-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'forge-workflow', bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
+				const aggregate = `Full suite aggregate: status=${status} tests=${total} assertions=1 passed=${passed} failed=${failed} errors=0 skipped=${skipped}`;
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), `console.log(${JSON.stringify(aggregate)});`);
+				const result = await executeValidate({
+					rootDir, skip: ['conflictMarkers', 'typeCheck', 'lint', 'security'],
+				});
+				expect(result.success).toBe(success);
+				expect(result.checks.tests.skipped).toBe(total === 0 ? true : skipped);
+				expect(result.summary).toContain(summary);
+				if (!success) expect(result.failedChecks).toEqual(['tests']);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
 		test('should fail fast when conflict markers are present', async () => {
 			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-conflicts-'));
 			try {
@@ -588,7 +681,7 @@ describe('Validate Command - Validation Orchestration', () => {
 
 				expect(calls[0][0]).toBe('bun');
 				expect(calls[0][1]).toEqual(['test', '--timeout', '30000']);
-				expect(calls[0][2].cwd).toBe(rootDir);
+				expect(calls[0][2]).toEqual({ encoding: 'utf8', cwd: rootDir, timeout: 600000 });
 			} finally {
 				fs.rmSync(rootDir, { recursive: true, force: true });
 			}
@@ -681,9 +774,9 @@ describe('Validate Command - Validation Orchestration', () => {
 });
 
 // getCheckStatus is internal; re-derive the same rule the summary uses for the
-// assertions above (skipped => SKIPPED, else PASS/FAIL).
+// assertions above (boolean skipped => SKIPPED, else PASS/FAIL).
 function getCheckStatus(check) {
 	if (!check) return null;
-	if (check.skipped) return 'SKIPPED';
+	if (check.skipped === true) return 'SKIPPED';
 	return check.success ? 'PASS' : 'FAIL';
 }

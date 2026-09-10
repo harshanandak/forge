@@ -58,6 +58,9 @@ function eventRow(eventType, capabilityId, overrides = {}) {
 			path: filePath,
 			surface,
 			contentHash: hashProtectedContent(content),
+			targetBunVersion: Object.prototype.hasOwnProperty.call(overrides, 'targetBunVersion')
+				? overrides.targetBunVersion
+				: '1.4.2',
 			worktreeScope: overrides.worktreeScope || target.worktreeScope,
 			writeIntent: overrides.writeIntent || 'update',
 			operation: eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
