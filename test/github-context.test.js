@@ -46,7 +46,7 @@ describe('github context', () => {
     unsetGithubAccount('/repo', { runner });
 
     expect(calls[0]).toMatchObject({ command: 'git', args: ['config', '--local', '--get', 'github.account'], options: { cwd: '/repo' } });
-    expect(calls[1]).toMatchObject({ command: 'git', args: ['config', '--local', 'github.account', 'Work-Login'], options: { cwd: '/repo' } });
+    expect(calls[1]).toMatchObject({ command: 'git', args: ['config', '--local', '--replace-all', 'github.account', 'Work-Login'], options: { cwd: '/repo' } });
     expect(calls[2]).toMatchObject({ command: 'git', args: ['config', '--local', '--unset-all', 'github.account'], options: { cwd: '/repo' } });
   });
 
