@@ -176,6 +176,18 @@ describe('github context', () => {
     expect(JSON.stringify(context)).not.toContain('ambient-token');
   });
 
+  test('unbound gh execution redacts credentials that remain in its native environment', () => {
+    const baseEnv = { GH_TOKEN: 'ambient-token', GITHUB_TOKEN: 'ambient-token-2', GH_HOST: 'github.com' };
+    const runner = (command, args, options = {}) => {
+      if (command === 'git') return '';
+      expect(options.env).toEqual(baseEnv);
+      return 'ambient-token ambient-token-2 public-output\n';
+    };
+    const context = createGithubContext('/repo', { runner, baseEnv });
+
+    expect(context.runGh(['api', 'user'])).toBe('[REDACTED] [REDACTED] public-output\n');
+  });
+
   test('redacts selected credentials from gh output and leaves process.env unchanged', () => {
     const before = { ...process.env };
     const calls = [];
@@ -184,11 +196,11 @@ describe('github context', () => {
       if (command === 'git') return 'octo\n';
       if (args[0] === 'auth') return 'token-canary\n';
       if (args[0] === 'api' && args[1] === '--hostname') return 'octo\n';
-      return 'https://github.com/octo/project token-canary ambient\n';
+      return '{"nameWithOwner":"org/project","token":"token-canary"}\n';
     };
-    const context = createGithubContext('/repo', { runner, baseEnv: { GH_TOKEN: 'ambient', GH_HOST: 'github.com' } });
+    const context = createGithubContext('/repo', { runner, baseEnv: { GH_TOKEN: 'org', GH_HOST: 'github.com' } });
 
-    expect(context.runGh(['api', 'user'])).toBe('https://github.com/octo/project [REDACTED] [REDACTED]\n');
+    expect(context.runGh(['api', 'user'])).toBe('{"nameWithOwner":"org/project","token":"[REDACTED]"}\n');
     expect(JSON.stringify(context.runGh(['api', 'user']))).not.toContain('token-canary');
     expect({ ...process.env }).toEqual(before);
     expect(calls.at(-1).options.env).toMatchObject({ GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com' });
