@@ -166,6 +166,7 @@ describe('scripts/test-full-suite.js', () => {
 
   test('serializes process-heavy reliability suites', () => {
     expect(classifyTestResource('test/bun-workflow-pins.test.js')).toBe('exclusive');
+    expect(classifyTestResource('test/e2e/memory-recall-holdout.test.js')).toBe('exclusive');
     expect(classifyTestResource('test/scripts/commitlint.test.js')).toBe('exclusive');
     expect(classifyTestResource('test/sync-agent-skills-authority.test.js')).toBe('exclusive');
   });
@@ -529,6 +530,7 @@ describe('scripts/test-full-suite.js', () => {
       'test-env/edge-cases/file-limits.test.js',
       'test/bun-workflow-pins.test.js',
       'test/cli-lifecycle.test.js',
+      'test/e2e/memory-recall-holdout.test.js',
       'test/forge-cli-registry.test.js',
       'test/helpers/cli-subprocess.test.js',
       'test/hooks-session-start.test.js',
