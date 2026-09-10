@@ -99,7 +99,7 @@ describe('forge github lifecycle', () => {
   });
 
   test('unbound status makes no gh calls and explains independent SSH selection', async () => {
-    const f = fixture({ account: '', remote: `git@github-work:org/${CANARY}.git` });
+    const f = fixture({ account: '', remote: `github-work:org/${CANARY}.git` });
     const result = await handler(['status'], {}, '/repo', f.options);
     expect(result.status).toMatchObject({ state: 'unbound', account: null, source: null, login: null, transport: 'ssh', repositoryAccess: null });
     expect(f.calls.some(c => c.command === 'gh')).toBe(false);
@@ -124,8 +124,13 @@ describe('forge github lifecycle', () => {
     expect(f.calls).toHaveLength(0);
   });
 
-  test.each(['github-work', 'github-personal'])('use and bound status resolve SSH alias %s before querying an explicit GitHub repository', async host => {
-    const f = fixture({ account: 'work', remote: `git@${host}:org/project.git` });
+  test.each([
+    { host: 'github-work', remote: 'git@github-work:org/project.git' },
+    { host: 'github-work', remote: 'github-work:org/project.git' },
+    { host: 'github-personal', remote: 'git@github-personal:org/project.git' },
+    { host: 'github-personal', remote: 'github-personal:org/project.git' },
+  ])('use and bound status resolve SSH alias before querying an explicit GitHub repository: %j', async ({ host, remote }) => {
+    const f = fixture({ account: 'work', remote });
     expect((await handler(['use', 'work'], {}, '/repo', f.options)).success).toBe(true);
     expect((await handler(['status', '--json'], {}, '/repo', f.options)).status.state).toBe('ready');
     const ssh = f.calls.filter(c => c.command === 'ssh');
@@ -143,6 +148,7 @@ describe('forge github lifecycle', () => {
     { remote: `https://user:${CANARY}@github.com/org/project.git` },
     { remote: 'git@github-work:org/project.git', sshHostname: 'gitlab.com' },
     { remote: 'git@github-work:org/project.git', sshHostname: CANARY },
+    { remote: 'C:org/project.git', sshHostname: 'github.com' },
   ])('invalid or non-GitHub origins fail safely without querying or changing the binding: %j', async remote => {
     const f = fixture(remote);
     const result = await handler(['use', 'work'], {}, '/repo', f.options);
