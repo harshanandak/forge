@@ -1,4 +1,3 @@
-// forge-test-resource: exclusive
 const { describe, expect, spyOn, test } = require('bun:test');
 const crypto = require('node:crypto');
 const fs = require('node:fs');

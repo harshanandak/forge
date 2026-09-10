@@ -492,6 +492,7 @@ function computeLaneGrants(lanes, options = {}) {
     : null;
   const sharedLanes = lanes.filter((lane) => lane.name !== 'exclusive');
   const overlapsSubprocess = sharedLanes.some((lane) => lane.name === 'subprocess');
+  const deferWindowsUnitLane = platform === 'win32' && overlapsSubprocess;
   const grants = new Map();
   for (const lane of lanes) {
     grants.set(lane, {
@@ -503,8 +504,14 @@ function computeLaneGrants(lanes, options = {}) {
   }
   if (workerBudget === null) {
     for (const lane of sharedLanes) {
-      // One unit worker fills otherwise-idle CPU without recreating broad process pressure.
-      grants.get(lane).granted = overlapsSubprocess && lane.name === 'unit' ? 1 : lane.concurrency;
+      const entry = grants.get(lane);
+      if (deferWindowsUnitLane && lane.name === 'unit') {
+        entry.granted = 0;
+        entry.deferred = true;
+        entry.deferredConcurrency = lane.concurrency;
+      } else {
+        entry.granted = overlapsSubprocess && lane.name === 'unit' ? 1 : lane.concurrency;
+      }
     }
     return grants;
   }
@@ -517,7 +524,9 @@ function computeLaneGrants(lanes, options = {}) {
   let reservedCost = 0;
   for (const [position, lane] of ordered.entries()) {
     const entry = grants.get(lane);
-    const want = overlapsSubprocess && lane.name === 'unit' ? 1 : lane.concurrency;
+    const want = overlapsSubprocess && lane.name === 'unit'
+      ? (deferWindowsUnitLane ? 0 : 1)
+      : lane.concurrency;
     const affordable = Math.floor(Math.max(0, workerBudget - reservedCost) / entry.cost);
     // The strongest lane always keeps one worker so the suite can never stall at zero.
     const granted = position === 0

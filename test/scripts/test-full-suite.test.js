@@ -165,9 +165,7 @@ describe('scripts/test-full-suite.js', () => {
   });
 
   test('serializes process-heavy reliability suites', () => {
-    expect(classifyTestResource('test/beta5-compatibility-evidence.test.js')).toBe('exclusive');
     expect(classifyTestResource('test/bun-workflow-pins.test.js')).toBe('exclusive');
-    expect(classifyTestResource('test/commands/plan.test.js')).toBe('exclusive');
     expect(classifyTestResource('test/e2e/memory-recall-holdout.test.js')).toBe('exclusive');
     expect(classifyTestResource('test/scripts/commitlint.test.js')).toBe('exclusive');
     expect(classifyTestResource('test/scripts/dep-guard.apply-decision.test.js')).toBe('exclusive');
@@ -361,7 +359,7 @@ describe('scripts/test-full-suite.js', () => {
       { name: 'subprocess', concurrency: 3, shards: ['s0', 's1', 's2', 's3', 's4', 's5'].map((id) => ({ id })) },
       { name: 'exclusive', concurrency: 1, shards: ['e0', 'e1'].map((id) => ({ id })) },
     ];
-    const scheduled = runLaneSchedule(lanes, probe.execute);
+    const scheduled = runLaneSchedule(lanes, probe.execute, () => {}, { platform: 'linux' });
 
     await probe.waitForStarted(4);
     expect(probe.started).toEqual(['u0', 's0', 's1', 's2']);
@@ -412,7 +410,7 @@ describe('scripts/test-full-suite.js', () => {
       { name: 'unit', concurrency: 4, shards: ['u0', 'u1'].map((id) => ({ id })) },
       { name: 'subprocess', concurrency: 2, shards: ['s0', 's1', 's2'].map((id) => ({ id })) },
       { name: 'exclusive', concurrency: 1, shards: [{ id: 'e0' }] },
-    ], probe.execute);
+    ], probe.execute, () => {}, { platform: 'linux' });
 
     await probe.waitForStarted(3);
     expect(probe.started).toEqual(['u0', 's0', 's1']);
@@ -531,10 +529,8 @@ describe('scripts/test-full-suite.js', () => {
     expect(assigned.slice().sort()).toEqual(files);
     const exclusiveFiles = [
       'test-env/edge-cases/file-limits.test.js',
-      'test/beta5-compatibility-evidence.test.js',
       'test/bun-workflow-pins.test.js',
       'test/cli-lifecycle.test.js',
-      'test/commands/plan.test.js',
       'test/e2e/memory-recall-holdout.test.js',
       'test/forge-cli-registry.test.js',
       'test/github-launcher.test.js',
@@ -710,15 +706,17 @@ describe('scripts/test-full-suite.js', () => {
     expect(maxActive).toBe(3);
   });
 
-  test('windows subprocess workers are weighted at two budget units each', async () => {
+  test('windows defers unit work until subprocess workers release the machine', async () => {
     let unitActive = 0;
     let subprocessActive = 0;
     let maxSubprocessActive = 0;
     let maxWeightedCost = 0;
+    let lanesOverlapped = false;
     const spawn = (_command, args) => {
       const isSubprocessShard = args.some((arg) => String(arg).indexOf('spawn') !== -1);
       if (isSubprocessShard) subprocessActive += 1;
       else unitActive += 1;
+      lanesOverlapped ||= unitActive > 0 && subprocessActive > 0;
       maxSubprocessActive = Math.max(maxSubprocessActive, subprocessActive);
       maxWeightedCost = Math.max(maxWeightedCost, (subprocessActive * 2) + unitActive);
       const child = new EventEmitter();
@@ -755,6 +753,7 @@ describe('scripts/test-full-suite.js', () => {
 
     expect(status).toBe(0);
     expect(maxSubprocessActive).toBe(1);
+    expect(lanesOverlapped).toBe(false);
     expect(maxWeightedCost).toBeLessThanOrEqual(3);
   });
 
@@ -1261,6 +1260,7 @@ describe('scripts/test-full-suite.js', () => {
         allTests: [...resourceByFile.keys()],
         classify: (file) => resourceByFile.get(file),
         durationMap: new Map(),
+        platform: 'linux',
         processTree,
         spawn,
       });
