@@ -1,3 +1,4 @@
+// forge-test-resource: exclusive
 const { describe, test, expect } = require('bun:test');
 const {
 	readResearchDoc,

@@ -165,7 +165,9 @@ describe('scripts/test-full-suite.js', () => {
   });
 
   test('serializes process-heavy reliability suites', () => {
+    expect(classifyTestResource('test/beta5-compatibility-evidence.test.js')).toBe('exclusive');
     expect(classifyTestResource('test/bun-workflow-pins.test.js')).toBe('exclusive');
+    expect(classifyTestResource('test/commands/plan.test.js')).toBe('exclusive');
     expect(classifyTestResource('test/e2e/memory-recall-holdout.test.js')).toBe('exclusive');
     expect(classifyTestResource('test/scripts/commitlint.test.js')).toBe('exclusive');
     expect(classifyTestResource('test/scripts/dep-guard.apply-decision.test.js')).toBe('exclusive');
@@ -529,8 +531,10 @@ describe('scripts/test-full-suite.js', () => {
     expect(assigned.slice().sort()).toEqual(files);
     const exclusiveFiles = [
       'test-env/edge-cases/file-limits.test.js',
+      'test/beta5-compatibility-evidence.test.js',
       'test/bun-workflow-pins.test.js',
       'test/cli-lifecycle.test.js',
+      'test/commands/plan.test.js',
       'test/e2e/memory-recall-holdout.test.js',
       'test/forge-cli-registry.test.js',
       'test/github-launcher.test.js',
