@@ -168,6 +168,7 @@ describe('scripts/test-full-suite.js', () => {
     expect(classifyTestResource('test/bun-workflow-pins.test.js')).toBe('exclusive');
     expect(classifyTestResource('test/e2e/memory-recall-holdout.test.js')).toBe('exclusive');
     expect(classifyTestResource('test/scripts/commitlint.test.js')).toBe('exclusive');
+    expect(classifyTestResource('test/scripts/dep-guard.apply-decision.test.js')).toBe('exclusive');
     expect(classifyTestResource('test/sync-agent-skills-authority.test.js')).toBe('exclusive');
   });
 
@@ -541,6 +542,7 @@ describe('scripts/test-full-suite.js', () => {
       'test/pr-monitor/flow-monitor.test.js',
       'test/release-readiness.test.js',
       'test/scripts/commitlint.test.js',
+      'test/scripts/dep-guard.apply-decision.test.js',
       'test/scripts/process-tree.test.js',
       'test/sync-agent-skills-authority.test.js',
       'test/test-dashboard.test.js',
