@@ -14,4 +14,3 @@ Cache only successful executable resolutions for the current process. Key the ca
 - A changed executable environment triggers a fresh resolution.
 - Failed resolutions are retried rather than cached.
 - The original focused 30-second test passes on Bun 1.4.2.
-
