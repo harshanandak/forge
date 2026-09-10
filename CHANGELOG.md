@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Legacy claim repair now compares exact Windows file identities and timestamps.** BigInt filesystem metadata prevents rounded device/inode collisions from treating distinct files as aliases, while nanosecond timestamps keep recovery-state drift checks fail closed. (issue `7e164066-4d41-4d14-90ef-1b7ee14e2b73`)
 - **Dep-guard apply-decision tests no longer contend with shared Windows subprocess shards.** The process-heavy suite now uses the existing exclusive resource lane, with exact scheduler coverage and no timeout increase or exemption. (issue `762ae565-0059-4827-9c3d-b4249f2b3364`)
 - **Bun workflow proof tests no longer contend with shared full-suite shards.** The process-heavy commit-boundary proof now uses the existing exclusive resource lane, with exact scheduler coverage and no timeout increase or exemption. (#552, issue `2daab8c0-34d6-4378-8cf4-dce6fdbfb86b`)
 
