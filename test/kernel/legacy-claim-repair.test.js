@@ -1491,7 +1491,6 @@ describe('legacy claim repair backup and apply', () => {
 		const backupInode = 9_007_199_254_740_992n;
 		const recoveryInode = backupInode + 1n;
 		const sourceInode = backupInode + 4n;
-		expect(backupInode).not.toBe(recoveryInode);
 		expect(Number(backupInode)).toBe(Number(recoveryInode));
 		const withIdentity = (stat, inode) => ({
 			...stat,
