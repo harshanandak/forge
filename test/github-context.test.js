@@ -11,6 +11,7 @@ const {
   validateGithubLogin,
   writeGithubAccount,
 } = require('../lib/github-context');
+const { classifyAuthError } = require('../lib/adapters/pr-state-adapter');
 
 function fakeRunner(calls, { account = null, liveLogin = account, token = 'token-canary' } = {}) {
   return (command, args, options = {}) => {
@@ -183,11 +184,11 @@ describe('github context', () => {
       if (command === 'git') return 'octo\n';
       if (args[0] === 'auth') return 'token-canary\n';
       if (args[0] === 'api' && args[1] === '--hostname') return 'octo\n';
-      return 'token-canary\n';
+      return 'https://github.com/octo/project token-canary ambient\n';
     };
-    const context = createGithubContext('/repo', { runner, baseEnv: { GH_TOKEN: 'ambient' } });
+    const context = createGithubContext('/repo', { runner, baseEnv: { GH_TOKEN: 'ambient', GH_HOST: 'github.com' } });
 
-    expect(context.runGh(['api', 'user'])).toBe('[REDACTED]\n');
+    expect(context.runGh(['api', 'user'])).toBe('https://github.com/octo/project [REDACTED] [REDACTED]\n');
     expect(JSON.stringify(context.runGh(['api', 'user']))).not.toContain('token-canary');
     expect({ ...process.env }).toEqual(before);
     expect(calls.at(-1).options.env).toMatchObject({ GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com' });
@@ -256,7 +257,9 @@ describe('github context', () => {
       if (command === 'git') return 'octo\n';
       if (args[0] === 'auth') return 'token-canary\n';
       if (args[0] === 'api' && args[1] === '--hostname') return 'octo\n';
-      const error = new Error('token-canary in message');
+      const error = new Error('HTTP 403 rate limit token-canary in message');
+      error.httpStatus = 403;
+      error.retryAfter = 60;
       error.stdout = Buffer.from('token-canary');
       error.stderr = Buffer.from('token-canary');
       throw error;
@@ -270,6 +273,7 @@ describe('github context', () => {
     }
     expect(childError).toMatchObject({ code: 'GITHUB_COMMAND_FAILED' });
     expect(childError.message).not.toContain('token-canary');
+    expect(classifyAuthError(childError)).toEqual({ class: 'rate-limit', retryAfter: 60 });
     expect({ ...process.env }).toEqual(before);
   });
 
