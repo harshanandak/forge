@@ -27,7 +27,7 @@ function environment(root) {
     GH_TOKEN: canaries[2], GITHUB_TOKEN: canaries[2], GH_HOST: 'wrong.example' };
 }
 function repository(login) {
-  const root = sandboxes.makeSandbox();
+  const root = fs.realpathSync(sandboxes.makeSandbox());
   if (login) execFileSync('git', ['config', '--local', 'github.account', login], {
     cwd: root, env: environment(root), stdio: 'pipe', windowsHide: true, timeout: 10000,
   });

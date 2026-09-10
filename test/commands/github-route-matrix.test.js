@@ -405,7 +405,10 @@ describe('foreground GitHub account route matrix', () => {
     fs.chmodSync(runtime, 0o700);
     const entry = compiled ? '' : path.join(temp, 'installed space', 'bin', 'forge.js').replace(/\\/g, '/');
     const args = ['api', 'value with spaces', '$(literal);&', '--help', ''];
-    const bash = process.platform === 'win32' ? 'C:\\Program Files\\Git\\bin\\bash.exe' : '/usr/bin/bash';
+    const candidates = process.platform === 'win32'
+      ? ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files (x86)\\Git\\bin\\bash.exe', 'bash.exe']
+      : ['/bin/bash', '/usr/bin/bash', '/opt/homebrew/bin/bash', 'bash'];
+    const bash = candidates.find(candidate => !path.isAbsolute(candidate) || fs.existsSync(candidate));
     const result = spawnSync(bash, ['-c', 'exec "$GH_CMD" "$@"', 'bridge', ...args], {
       encoding: 'utf8', input: 'bridge stdin\n',
       env: {
@@ -414,6 +417,7 @@ describe('foreground GitHub account route matrix', () => {
         FORGE_GITHUB_RUNTIME: runtime.replace(/\\/g, '/'), FORGE_GITHUB_ENTRY: entry,
       },
     });
+    expect(result.error).toBeUndefined();
     expect(result.status).toBe(23);
     expect(result.stdout.replace(/\r/g, '')).toBe([...(compiled ? [] : [entry]), 'github', 'run', '--', 'gh', ...args, 'bridge stdin', ''].join('\n'));
     expect(result.stderr.replace(/\r/g, '')).toBe('bridge stderr\n');

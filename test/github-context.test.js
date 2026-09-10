@@ -46,7 +46,7 @@ describe('github context', () => {
 
     expect(calls[0]).toMatchObject({ command: 'git', args: ['config', '--local', '--get', 'github.account'], options: { cwd: '/repo' } });
     expect(calls[1]).toMatchObject({ command: 'git', args: ['config', '--local', 'github.account', 'Work-Login'], options: { cwd: '/repo' } });
-    expect(calls[2]).toMatchObject({ command: 'git', args: ['config', '--local', '--unset', 'github.account'], options: { cwd: '/repo' } });
+    expect(calls[2]).toMatchObject({ command: 'git', args: ['config', '--local', '--unset-all', 'github.account'], options: { cwd: '/repo' } });
   });
 
   test('unbound preparation performs one local lookup and no gh or environment work', () => {

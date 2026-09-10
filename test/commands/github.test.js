@@ -16,7 +16,7 @@ function fixture(overrides = {}) {
     if (command === 'git') {
       if (args.join(' ') === 'config --local --get github.account') return account;
       if (args[2] === 'github.account') { account = args[3]; return ''; }
-      if (args[2] === '--unset') {
+      if (args[2] === '--unset-all') {
         if (!account) throw Object.assign(new Error(CANARY), { status: 5 });
         account = ''; return '';
       }
@@ -107,12 +107,12 @@ describe('forge github lifecycle', () => {
     expect(result.output.includes(CANARY)).toBe(false);
   });
 
-  test('unset is idempotent and touches only the local key', async () => {
-    const f = fixture();
+  test('unset is idempotent and removes every local value', async () => {
+    const f = fixture({ account: ['personal', 'work'] });
     expect((await handler(['unset'], {}, '/repo', f.options)).success).toBe(true);
     expect((await handler(['unset'], {}, '/repo', f.options)).success).toBe(true);
     expect(f.account()).toBe('');
-    expect(f.calls.every(c => c.command === 'git' && c.args.join(' ') === 'config --local --unset github.account')).toBe(true);
+    expect(f.calls.every(c => c.command === 'git' && c.args.join(' ') === 'config --local --unset-all github.account')).toBe(true);
   });
 
   test('help, malformed commands, and missing launcher delimiter perform no context work', async () => {
