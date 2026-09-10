@@ -69,7 +69,7 @@ describe('github context', () => {
     const calls = [];
     const context = createGithubContext('/repo', {
       runner: fakeRunner(calls, { account: 'Work-Login', liveLogin: 'work-login', token: 'token-canary' }),
-      baseEnv: { Path: 'kept', GH_TOKEN: 'wrong-token', GITHUB_TOKEN: 'wrong-token', GH_HOST: 'evil.example', gh_token: 'also-wrong' },
+      baseEnv: { Path: 'kept', GH_TOKEN: 'wrong-token', GITHUB_TOKEN: 'wrong-token', GH_HOST: 'evil.example', GH_REPO: 'wrong/repository', gh_token: 'also-wrong' },
     });
 
     expect(context.status).toEqual({ state: 'ready', account: 'Work-Login', login: 'work-login' });
@@ -81,6 +81,7 @@ describe('github context', () => {
     expect(calls[1].options.env).not.toHaveProperty('GH_TOKEN');
     expect(calls[1].options.env).not.toHaveProperty('GITHUB_TOKEN');
     expect(calls[1].options.env).not.toHaveProperty('GH_HOST');
+    expect(calls[1].options.env).not.toHaveProperty('GH_REPO');
     expect(calls[1].options.env).not.toHaveProperty('gh_token');
     expect(calls[2]).toMatchObject({
       args: ['api', '--hostname', 'github.com', 'user', '--jq', '.login'],
@@ -130,11 +131,13 @@ describe('github context', () => {
     const calls = [];
     const context = prepareGithubContext('/repo', {
       runner: fakeRunner(calls, { account: 'octo', liveLogin: 'octo', token: 'token-canary' }),
-      baseEnv: { PATH: 'kept', GH_TOKEN: 'ambient' },
+      baseEnv: { PATH: 'kept', GH_TOKEN: 'ambient', GH_REPO: 'wrong/repository' },
     });
-    context.runChild('trusted-agent', ['--flag'], { env: { CUSTOM: 'value' } });
+    context.runChild('trusted-agent', ['--flag'], { env: { CUSTOM: 'value', gh_repo: 'other/repository' } });
 
     expect(calls.at(-1).options.env).toMatchObject({ PATH: 'kept', CUSTOM: 'value', GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com' });
+    expect(calls.at(-1).options.env).not.toHaveProperty('GH_REPO');
+    expect(calls.at(-1).options.env).not.toHaveProperty('gh_repo');
     expect(context).not.toHaveProperty('buildChildEnv');
     expect(context).not.toHaveProperty('token');
     expect(JSON.stringify(context)).not.toContain('token-canary');
