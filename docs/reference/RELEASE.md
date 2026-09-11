@@ -2,9 +2,9 @@
 
 This page documents release readiness. Package publishing still requires the explicit publish step after merge.
 
-## v0.1.0-beta.5 Boundary
+## v0.1.0-beta.6 Boundary
 
-v0.1.0-beta.5 is the current prerelease boundary. The release branch declares `0.1.0-beta.5`; publish only after the release PR is merged, tagged, and validated on that exact SHA.
+v0.1.0-beta.6 is the current prerelease boundary. The release branch declares `0.1.0-beta.6`; publish only after the release PR is merged, tagged, and validated on that exact SHA.
 
 Keep these release steps explicit:
 
@@ -43,7 +43,7 @@ Release notes should include:
 - adapter compatibility
 - DeepWiki refresh checklist
 
-The v0.1.0-beta.5 release notes live in [CHANGELOG.md](../../CHANGELOG.md).
+The v0.1.0-beta.6 release notes live in [CHANGELOG.md](../../CHANGELOG.md).
 
 ## Rollback
 

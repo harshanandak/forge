@@ -22,7 +22,7 @@ function workspaceBlock(lock, workspacePath) {
 
 describe('PR2 root package integration', () => {
   test('resolves all three prerelease packages through the existing workspace contract', () => {
-    expect(rootPackage.version).toBe('0.1.0-beta.5');
+    expect(rootPackage.version).toBe('0.1.0-beta.6');
     expect(rootPackage.workspaces).toContain('packages/*');
 
     const lock = fs.readFileSync(LOCK_PATH, 'utf8');
