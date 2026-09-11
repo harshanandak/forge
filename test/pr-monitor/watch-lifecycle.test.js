@@ -3,7 +3,8 @@
 const { describe, test, expect } = require('bun:test');
 const { EventEmitter } = require('node:events');
 
-const { startPrWatcherDetached, defaultResolveSlug } = require('../../lib/pr-monitor/watch-lifecycle');
+const { startPrWatcherDetached: launchWatcher, defaultResolveSlug } = require('../../lib/pr-monitor/watch-lifecycle');
+const startPrWatcherDetached = opts => launchWatcher({ readGithubAccount: () => null, ...opts });
 const { maybeTriggerShepherdAfterShip } = require('../../lib/commands/ship');
 
 /** A fake detached child: records unref() and reports a pid. */
@@ -119,7 +120,7 @@ describe('startPrWatcherDetached', () => {
       spawn: () => { throw new Error('spawn EACCES'); },
     });
     expect(res.started).toBe(false);
-    expect(res.reason).toMatch(/spawn EACCES/);
+    expect(res.reason).toBe('watcher-launch-failed');
   });
 
   test('returns not-started (no spawn) when no PR number is given', async () => {

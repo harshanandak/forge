@@ -78,6 +78,8 @@ describe('merge command — mandatory release authority', () => {
     for (const remote of [
       'https://github.com/Acme/Forge.git',
       'git@github.com:Acme/Forge.git',
+      'github-work:Acme/Forge.git',
+      'github_work:Acme/Forge.git',
       'ssh://git@github.com/Acme/Forge.git',
     ]) {
       const calls = [];
@@ -89,6 +91,7 @@ describe('merge command — mandatory release authority', () => {
     }
     for (const remote of [
       'C:/repo/Acme/Forge.git',
+      'C:Acme/Forge.git',
       '/repo/Acme/Forge.git',
       'file:///repo/Acme/Forge.git',
       'ssh:/Acme/Forge.git',

@@ -259,6 +259,7 @@ describe('forge skill eval', () => {
         {},
         root,
         {
+          prepareGithubContext: () => ({ bound: false }),
           resolveBehavioralEvaluation: async () => ({
             ok: true,
             options: {
@@ -321,6 +322,7 @@ describe('forge skill eval', () => {
         {},
         repoRoot,
         {
+          prepareGithubContext: () => ({ bound: false }),
           resolveBehavioralEvaluation: async () => ({ ok: true, options: {} }),
           runBehavioralEvaluation: async () => ({
             status: 'PASS', tier, expectedRuns: tier * 12, completedRuns: tier * 12,

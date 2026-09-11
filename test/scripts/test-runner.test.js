@@ -3,6 +3,7 @@
 const { describe, expect, test } = require('bun:test');
 const { EventEmitter } = require('node:events');
 const path = require('node:path');
+const { getTestCandidatesForChangedFile } = require('../../lib/commands/test');
 
 const {
   ALWAYS_RUN_RISK_TEST_TARGETS,
@@ -69,6 +70,40 @@ function makeSpawnSync(exitCode = 0) {
 }
 
 describe('scripts/test pre-push runner', () => {
+  test.each(['pr', 'ship', 'merge', 'team', 'clean'])('foreground %s changes select exact native and account-route suites', name => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({ changedFiles: `lib/commands/${name}.js\n` }));
+    expect(plan.mode).toBe('targeted');
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual([
+      ...[`test/commands/${name}.test.js`, 'test/commands/github-route-matrix.test.js'].sort((a, b) => a.localeCompare(b)),
+      ...riskTargets,
+    ]);
+  });
+
+  test('the GitHub bridge selects the account-route suite', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({ changedFiles: 'scripts/github-context-bridge.sh\n' }));
+    expect(plan.mode).toBe('targeted');
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual(['test/commands/github-route-matrix.test.js', ...riskTargets]);
+  });
+
+  test('registry changes directly select both core and GitHub-context regression suites', () => {
+    expect(getTestCandidatesForChangedFile('lib/commands/_registry.js')).toEqual([
+      'test/commands/_registry.test.js',
+      'test/commands/_registry-github-context.test.js',
+    ]);
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: 'lib/commands/_registry.js\n',
+    }));
+    expect(plan.mode).toBe('targeted');
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual([
+      'test/commands/_registry-github-context.test.js',
+      'test/commands/_registry.test.js',
+      ...riskTargets,
+    ]);
+  });
+
   test('stripGitHookEnv removes git hook environment variables', () => {
     const env = stripGitHookEnv({
       GIT_DIR: '.git',
@@ -223,7 +258,10 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.testTargets).toEqual([
       'test/cli-flags.test.js',
       'test/forge-cli-registry.test.js',
+      'test/github-launcher.test.js',
+      'test/integration/github-account-context.test.js',
       'test/setup-runtime-flags.test.js',
+      'test/structural/github-account-public-surface.test.js',
       ...riskTargets,
     ]);
   });
@@ -260,6 +298,7 @@ describe('scripts/test pre-push runner', () => {
 
   test.each([
     ['lib/commands/shepherd.js', [
+      'test/commands/github-route-matrix.test.js',
       'test/commands/shepherd.test.js',
       'test/pr-monitor/arm-on-push.test.js',
       'test/pr-monitor/shepherd-watch.test.js',
@@ -281,6 +320,7 @@ describe('scripts/test pre-push runner', () => {
       'test/pr-monitor/reconcile.test.js',
     ]],
     ['lib/pr-monitor/reconcile-executor.js', [
+      'test/commands/github-indirect-routes.test.js',
       'test/pr-monitor/auto-trigger-containment.test.js',
       'test/pr-monitor/reconcile-daemon-owner-authority.test.js',
       'test/pr-monitor/reconcile-executor-owner-authority.test.js',
@@ -294,6 +334,7 @@ describe('scripts/test pre-push runner', () => {
       'test/pr-monitor/watch.test.js',
     ]],
     ['lib/pr-monitor/watch-lifecycle.js', [
+      'test/commands/github-indirect-routes.test.js',
       'test/pr-monitor/watch-lifecycle.test.js',
       'test/pr-monitor/watch-owner-launch-contention.test.js',
       'test/pr-monitor/watch-owner-launch-gate.test.js',
@@ -575,6 +616,7 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[0].args).toEqual([
       'run',
       'test',
+      'test/commands/github-route-matrix.test.js',
       'test/commands/ship.test.js',
       ...riskTargets,
     ]);

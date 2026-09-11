@@ -360,8 +360,12 @@ describe('(g) output contract: --pull --json serializes the verdict to result.ou
     const adapter = makeAdapter({ mergeStateStatus: 'BLOCKED', required: ['ci'], checks: greenCi, threads: coderabbitThreads(2) });
     const result = await executeCommand(
       commands, 'shepherd', ['123', '--pull', '--json'], {}, '/wt',
-      { commandOpts: { adapter, buildContext, gh: () => '', self: 'shepherd-bot' } },
+      {
+        prepareGithubContext: () => ({ bound: false }),
+        commandOpts: { adapter, buildContext, gh: () => '', self: 'shepherd-bot' },
+      },
     );
+    expect(result.success).not.toBe(false);
     expect(typeof result.output).toBe('string');
     const parsed = JSON.parse(result.output);
     expect(parsed).toHaveProperty('state');

@@ -30,6 +30,24 @@ forge setup --path <dir> --dry-run                   # preview against another d
 
 `forge setup` is **interactive by default**. In any automated/agent context pass `--yes` (or `--non-interactive`) so it never blocks on a prompt.
 
+# Optional GitHub accounts per clone
+
+Only when the user opts into multiple accounts: sign in once per account with
+native `gh auth login`, then select inside each intended clone:
+
+```bash
+forge github use <login>       # verify stored account/access before binding this clone
+forge github status           # safe identity and transport diagnostics; --json supported
+forge github run -- <harness>  # explicitly give a trusted child the selected GitHub identity
+forge github unset            # remove this binding, not stored logins
+```
+
+Ordinary setup stays unbound. Never paste or persist tokens, automatically log in
+or switch accounts, or change Git author/remotes/SSH/helper configuration.
+Git transport is separate; HTTPS using `gh auth git-credential` can inherit the
+explicit child session's account. See the repository reference guide
+`docs/reference/github-accounts.md` for concurrent sessions and recovery.
+
 # Initialize a fresh repo
 
 ```bash
