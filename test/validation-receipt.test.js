@@ -31,7 +31,7 @@ function fullPass() {
 		success: true,
 		checks: {
 			conflictMarkers: { success: true },
-			typeCheck: { success: true, skipped: true },
+			typeCheck: { success: true, skipped: true, notConfigured: true },
 			lint: { success: true },
 			security: { success: true },
 			tests: { success: true, fullSuite: true, testsFound: true, total: 12, failed: 0 },
@@ -40,6 +40,30 @@ function fullPass() {
 }
 
 describe('validation receipt', () => {
+	test('binds receipts to both Bun and Node test runtimes', () => {
+		const repo = createRepo();
+		const located = command => process.platform === 'win32' ? `C:\\tools\\${command}.exe` : `/tools/${command}`;
+		const runtimeExecFileSync = (command, args) => {
+			if (args[0] === '--version') return command === 'node' ? '22.1.0\n' : '1.4.2\n';
+			return `${located(args[0])}\n`;
+		};
+		try {
+			const first = beginValidation(repo.root, { homeDir: repo.homeDir, runtimeIdentity: 'forge-runtime', runtimeExecFileSync, env: {} });
+			const changedNode = beginValidation(repo.root, {
+				homeDir: repo.homeDir,
+				runtimeIdentity: 'forge-runtime',
+				env: {},
+				runtimeExecFileSync(command, args) {
+					if (args[0] === '--version') return command === 'node' ? '24.0.0\n' : '1.4.2\n';
+					return `${located(args[0])}\n`;
+				},
+			});
+			expect(first.testRuntime).not.toBe(changedNode.testRuntime);
+		} finally {
+			fs.rmSync(repo.root, { recursive: true, force: true });
+		}
+	});
+
 	test('accepts an immediate complete validation for the unchanged exact head', () => {
 		const { root, homeDir } = createRepo();
 		const deps = { homeDir, runtimeIdentity: 'forge-runtime', testRuntimeIdentity: 'bun-a' };
@@ -92,6 +116,10 @@ describe('validation receipt', () => {
 			incomplete.checks.tests.testsFound = false;
 			expect(completeValidation(repo.root, snapshot, incomplete, deps)).toBe(false);
 			expect(verifyValidationReceipt(repo.root, deps).valid).toBe(false);
+
+			const missingTypeScript = fullPass();
+			missingTypeScript.checks.typeCheck = { success: true, skipped: true };
+			expect(completeValidation(repo.root, beginValidation(repo.root, deps), missingTypeScript, deps)).toBe(false);
 		} finally {
 			fs.rmSync(repo.root, { recursive: true, force: true });
 		}
