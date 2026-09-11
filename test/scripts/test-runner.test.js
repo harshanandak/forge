@@ -660,7 +660,7 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
   });
 
-  test('runPrePushTests runs e2e lane after full suite for mixed zero-target e2e changes', async () => {
+  test('runPrePushTests does not repeat e2e already covered by the full suite', async () => {
     const spawnSync = makeSpawnSync(0);
     const status = await runPrePushTests(repoRoot, {
       env: { PATH: process.env.PATH || '' },
@@ -672,11 +672,9 @@ describe('scripts/test pre-push runner', () => {
     });
 
     expect(status).toBe(0);
-    expect(spawnSync.calls).toHaveLength(2);
+    expect(spawnSync.calls).toHaveLength(1);
     expect(spawnSync.calls[0].command).toBe('node');
     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
-    expect(spawnSync.calls[1].command).toBe('bun');
-    expect(spawnSync.calls[1].args).toEqual(['test', '--timeout', '15000', 'test/e2e/']);
   });
 
   test('runLocalValidationTests reuses the same targeted runner path', async () => {

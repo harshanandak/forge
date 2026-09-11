@@ -19,10 +19,16 @@ function npm(args, cwd, invocation) {
   });
 }
 
+function parsePackOutput(output) {
+  const jsonStart = String(output).search(/^\[/m);
+  if (jsonStart === -1) throw new SyntaxError("npm pack did not return a JSON payload");
+  return JSON.parse(output.slice(jsonStart));
+}
+
 function pack(packageDirectory, destination, invocation) {
-  const result = npm(["pack", "--json", "--pack-destination", destination], packageDirectory, invocation);
+  const result = npm(["pack", "--json", "--ignore-scripts", "--pack-destination", destination], packageDirectory, invocation);
   expect(result.status, result.stderr).toBe(0);
-  return path.join(destination, JSON.parse(result.stdout)[0].filename);
+  return path.join(destination, parsePackOutput(result.stdout)[0].filename);
 }
 
 function resolvePlatformNode() {
@@ -36,7 +42,11 @@ function resolvePlatformNode() {
     if (!match) continue;
     const version = { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
     if (version.major > 22 || (version.major === 22 && version.minor >= 16)) {
-      return { executable, version };
+      const locator = process.platform === "win32" ? "where.exe" : "which";
+      const located = path.isAbsolute(executable)
+        ? executable
+        : spawnSync(locator, [executable], { encoding: "utf8" }).stdout.trim().split(/\r?\n/)[0];
+      return { executable: fs.realpathSync.native(located), version };
     }
   }
   throw new Error("Node.js >=22.16.0 is required for the standalone package smoke test");
@@ -52,11 +62,69 @@ function resolveNpmInvocation(platformNode) {
   throw new Error("Could not resolve npm-cli.js beside the platform Node.js installation");
 }
 
+function isolatedEnvironment(root, platformNode) {
+  const env = {
+    ...process.env,
+    HOME: root,
+    USERPROFILE: root,
+    CODEX_HOME: path.join(root, ".codex"),
+    XDG_CONFIG_HOME: path.join(root, ".config"),
+    APPDATA: path.join(root, "AppData", "Roaming"),
+    LOCALAPPDATA: path.join(root, "AppData", "Local"),
+  };
+  for (const directory of [env.HOME, env.CODEX_HOME, env.XDG_CONFIG_HOME, env.APPDATA, env.LOCALAPPDATA]) {
+    fs.mkdirSync(directory, { recursive: true });
+  }
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
+  env[pathKey] = [path.dirname(platformNode.executable), env[pathKey]].filter(Boolean).join(path.delimiter);
+  return env;
+}
+
+function runInstalledForge(packageRoot, args, cwd, platformNode, env) {
+  const shim = path.join(packageRoot, "node_modules", ".bin", process.platform === "win32" ? "forge.cmd" : "forge");
+  if (process.platform !== "win32") return spawnSync(shim, args, { cwd, encoding: "utf8", env });
+  const command = `""${shim}" ${args.join(" ")}"`;
+  return spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], {
+    cwd,
+    encoding: "utf8",
+    env,
+    windowsVerbatimArguments: true,
+  });
+}
+
 afterEach(() => {
   for (const directory of created.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
 describe("standalone product packages", () => {
+  test("parses npm 10 JSON after package lifecycle output", () => {
+    expect(parsePackOutput('sync hooks: ok\n[{"filename":"forge.tgz"}]\n')[0].filename).toBe("forge.tgz");
+  });
+
+  test("packs and installs the root CLI with its runtime workspaces", () => {
+    const platformNode = resolvePlatformNode();
+    const npmInvocation = resolveNpmInvocation(platformNode);
+    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge root-"));
+    created.push(temporary);
+    fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ private: true }));
+    const env = isolatedEnvironment(path.join(temporary, "home"), platformNode);
+    const rootTarball = pack(ROOT, temporary, npmInvocation);
+
+    const install = npm(["install", "--ignore-scripts", rootTarball], temporary, npmInvocation);
+    expect(install.status, install.stderr).toBe(0);
+
+    const version = runInstalledForge(temporary, ["--version"], temporary, platformNode, env);
+    expect(version.status, version.stderr).toBe(0);
+    expect(version.stdout).toContain("Forge v");
+
+    const project = path.join(temporary, "project");
+    fs.mkdirSync(project);
+    const init = spawnSync("git", ["init", "-q"], { cwd: project, encoding: "utf8" });
+    expect(init.status, init.stderr).toBe(0);
+    const setup = runInstalledForge(temporary, ["setup", "--quick", "--yes"], project, platformNode, env);
+    expect(setup.status, `${setup.stdout}\n${setup.stderr}`).toBe(0);
+  }, 60000);
+
   test("packs and installs Flow with public Memory contracts in a fresh package", () => {
     const platformNode = resolvePlatformNode();
     const npmInvocation = resolveNpmInvocation(platformNode);

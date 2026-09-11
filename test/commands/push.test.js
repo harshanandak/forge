@@ -165,6 +165,47 @@ describe('Forge Push Command', () => {
 	});
 
 	describe('Full mode (no --quick)', () => {
+		test('reuses exact-head validation only for tests while keeping branch protection and lint', async () => {
+			const spawnCalls = [];
+			const execCalls = [];
+			const deps = makeDeps({
+				verifyValidationReceipt: () => ({ valid: true }),
+				spawnSync: (cmd, args) => {
+					spawnCalls.push({ cmd, args: [...args] });
+					return { status: 0 };
+				},
+				execFileSync: (cmd, args) => {
+					execCalls.push({ cmd, args: [...args] });
+					if (cmd === 'git' && args.includes('--show-toplevel')) return 'C:/worktree path with spaces\n';
+					return '';
+				},
+			});
+
+			const result = await pushModule.handler([], {}, 'C:/wrong/init-cwd', deps);
+
+			expect(spawnCalls.some(call => call.args.includes('lint'))).toBe(true);
+			expect(spawnCalls.some(call => call.args.includes('test'))).toBe(false);
+			expect(execCalls.some(call => call.args.some(arg => arg.includes('branch-protection.js')))).toBe(true);
+			expect(execCalls.some(call => call.args[0] === 'push')).toBe(true);
+			expect(result).toMatchObject({ success: true, testsPassed: true, validationReused: true });
+		});
+
+		test('falls back to the full suite when validation evidence is invalid', async () => {
+			const spawnCalls = [];
+			const deps = makeDeps({
+				verifyValidationReceipt: () => ({ valid: false, reason: 'head-changed' }),
+				spawnSync: (cmd, args) => {
+					spawnCalls.push({ cmd, args: [...args] });
+					return { status: 0 };
+				},
+			});
+
+			const result = await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(spawnCalls.some(call => call.args.includes('test'))).toBe(true);
+			expect(result.validationReused).toBe(false);
+		});
+
 		test('should run lint and tests in full mode', async () => {
 			const spawnCalls = [];
 			const deps = makeDeps({
@@ -695,6 +736,7 @@ function makeDeps(overrides = {}) {
 		existsSync: overrides.existsSync || (() => true), // bun.lock exists by default
 		log: overrides.log || (() => {}),
 		writeForgeToken: overrides.writeForgeToken || (() => {}),
+		verifyValidationReceipt: overrides.verifyValidationReceipt || (() => ({ valid: false, reason: 'missing' })),
 		fireAndForget: () => {},
 		_ensureBackingIssue: async () => null,
 		_kernelDriver: {},
