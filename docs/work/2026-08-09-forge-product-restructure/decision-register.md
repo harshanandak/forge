@@ -11,7 +11,7 @@
 | R4 | Each supervised run consumes strictly less than 40% of declared parent budget, leaving more than 60% unused | Locked | User correction |
 | R5 | Mandatory deterministic replans at 20% and 30%; completion/handoff decision at 35%; hard stop at 39% | Locked | User correction |
 | R6 | Forge Memory owns Kernel, durable authority, memory, contracts, packets, leases, receipts, and history; Flow is optional executor | Approved and locked | Matches user's refined Memory-foundation architecture and current D44/D45 Kernel authority |
-| R7 | No neutral protocol product; `@forge/memory-contracts` is owned by Memory | Approved and locked | Avoids a third governance/release dependency |
+| R7 | No neutral protocol product; `@forge/contracts` is owned by Memory | Approved and locked | Avoids a third governance/release dependency |
 | R8 | Ship 0.1.0 as an extraction-ready modular monolith with independently releasable Memory/Flow packages; postpone physical repository separation until post-stable measured triggers pass | Approved and locked | External research red-team: an early split risks a distributed monolith and coordinated-release burden |
 | R9 | Preserve `forge-workflow` and current binaries through 0.1.x as compatibility facade | Approved and locked | Minimizes beta.5 migration breakage |
 | R10 | Kernel/Memory remains sole authority writer; migration allows shadow/dual-read but never authority dual-write | Approved and locked | D44/D45 and split-brain prevention |

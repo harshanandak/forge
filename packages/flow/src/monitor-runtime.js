@@ -5,7 +5,7 @@ const {
   computeContentHash,
   validateContract,
   validateContractStructure,
-} = require("@forge/memory-contracts");
+} = require("@forge/contracts");
 
 const LIFETIMES = new Set(["session", "run", "subject"]);
 const TERMINAL_STATES = new Set(["PASS", "FAIL", "INCOMPLETE", "CANCELLED"]);

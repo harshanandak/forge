@@ -5,8 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const contracts = require('../../packages/memory-contracts');
-mock.module('@forge/memory-contracts', () => contracts);
+const contracts = require('../../packages/contracts');
+mock.module('@forge/contracts', () => contracts);
 const { computeContentHash } = contracts;
 const { createLocalBroker } = require('../../lib/kernel/broker');
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');

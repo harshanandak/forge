@@ -6,7 +6,7 @@ const path = require('node:path');
 const {
   computeContentHash,
   validateContractStructure,
-} = require('@forge/memory-contracts');
+} = require('@forge/contracts');
 const {
   PR_LIFECYCLE_PROVIDER_METHODS,
   PrLifecycleAuthorityError,

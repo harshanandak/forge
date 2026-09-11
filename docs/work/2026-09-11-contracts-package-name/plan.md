@@ -7,8 +7,8 @@ Issue: `4d41ffb7-8793-4a17-a30b-92130db69672`
 ## Purpose
 
 Use the product-neutral name `@forge/contracts` and workspace path
-`packages/contracts` before the package is first published. The current
-`memory-contracts` name incorrectly presents shared Flow, Memory, monitoring,
+`packages/contracts` before the package is first published. The former
+Memory-qualified name incorrectly presented shared Flow, Memory, monitoring,
 claim, and receipt contracts as a Memory-only surface.
 
 ## Success criteria
@@ -17,12 +17,13 @@ claim, and receipt contracts as a Memory-only surface.
 - Every runtime consumer, workspace dependency, bundled dependency, test,
   validation selector, generated manifest, lock entry, and current design or
   release reference uses the new name and path.
-- A repository-wide tracked search finds no `memory-contracts` or
-  `@forge/memory-contracts` reference.
+- A repository-wide tracked search finds no former Memory-qualified package
+  name or workspace path.
 - Fresh root packing and installation loads `@forge/contracts`, `@forge/memory`,
   and `@forge/flow` through the installed package.
 - All three workspace manifests identify the public Forge repository and MIT
-  license, and packed manifests preserve that metadata.
+  license, explicitly publish with public access, and packed manifests preserve
+  that metadata.
 - Focused boundary tests, full validation, and exact-head CI pass before beta.7.
 
 ## Approach selected
@@ -70,8 +71,8 @@ path is introduced.
 
 ## TDD scenarios
 
-1. Structural package-boundary tests fail while they still expect
-   `packages/memory-contracts` and `@forge/memory-contracts`, then pass after the
+1. Structural package-boundary tests are updated first and fail because the new
+   `packages/contracts` workspace does not yet exist, then pass after the
    complete rename.
 2. The installed-package smoke fails to load `@forge/contracts` until root
    bundling and workspace manifests are updated.

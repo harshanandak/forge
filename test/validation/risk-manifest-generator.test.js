@@ -23,9 +23,9 @@ describe('risk manifest generator', () => {
     expect(first).not.toContain(process.cwd());
     const generated = JSON.parse(first);
     expect(generated.owners.map((owner) => owner.id)).toEqual([
+      'contracts',
       'facade-cli',
       'kernel-authority',
-      'memory-contracts',
       'memory-foundation',
       'validation-control',
       'workflow-runtime',

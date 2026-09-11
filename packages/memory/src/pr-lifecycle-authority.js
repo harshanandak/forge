@@ -8,7 +8,7 @@ const {
   computeContentHash,
   validateContract,
   validateContractStructure,
-} = require('@forge/memory-contracts');
+} = require('@forge/contracts');
 
 const WORK_PACKET_SCHEMA = 'forge.memory.work-packet.v1';
 const RUN_RECEIPT_SCHEMA = 'forge.memory.run-receipt.v1';

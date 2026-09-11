@@ -1,6 +1,6 @@
 "use strict";
 
-const { computeContentHash, validateContractStructure } = require("@forge/memory-contracts");
+const { computeContentHash, validateContractStructure } = require("@forge/contracts");
 const { FlowExecutionError, createWorkPacketExecutor } = require("./src/executor");
 const {
   MonitorRuntimeError,

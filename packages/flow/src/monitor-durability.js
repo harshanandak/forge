@@ -5,7 +5,7 @@ const {
   canonicalize,
   computeContentHash,
   validateContractStructure,
-} = require("@forge/memory-contracts");
+} = require("@forge/contracts");
 
 const MAX_EVIDENCE_HISTORY = 128;
 const MAX_INPUT_BYTES = 1_048_576;

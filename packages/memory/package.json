@@ -13,10 +13,22 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@forge/memory-contracts": "0.1.0-beta.6"
+    "@forge/contracts": "0.1.0-beta.6"
   },
   "engines": {
     "node": ">=22.16.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/harshanandak/forge.git",
+    "directory": "packages/memory"
+  },
+  "homepage": "https://github.com/harshanandak/forge#readme",
+  "bugs": {
+    "url": "https://github.com/harshanandak/forge/issues"
+  }
 }

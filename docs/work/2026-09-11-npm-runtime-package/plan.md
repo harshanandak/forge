@@ -9,7 +9,7 @@ repository-relative paths and the root tarball omits those workspaces.
 ## Decision
 
 Use npm's existing bundled-dependency mechanism. Root runtime code imports
-`@forge/memory`, `@forge/memory-contracts`, and `@forge/flow` by package name;
+`@forge/memory`, `@forge/contracts`, and `@forge/flow` by package name;
 the root manifest declares and bundles those workspaces. This preserves their
 package boundaries without publishing separate scoped packages.
 

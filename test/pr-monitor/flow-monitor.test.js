@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 
 const { _internals, runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
-const { computeContentHash } = require('../../packages/memory-contracts');
+const { computeContentHash } = require('../../packages/contracts');
 
 function snapshot(overrides = {}) {
   return {

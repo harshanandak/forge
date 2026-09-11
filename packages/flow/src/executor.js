@@ -6,7 +6,7 @@ const {
   semanticIdentity,
   validateContract,
   validateContractStructure,
-} = require("@forge/memory-contracts");
+} = require("@forge/contracts");
 
 const TERMINAL_STATUSES = new Set(["PASS", "FAIL", "INCOMPLETE"]);
 const MAX_ACCEPTED_PACKETS = 128;

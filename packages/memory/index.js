@@ -1,7 +1,7 @@
 'use strict';
 
 const { types } = require('node:util');
-const { ContractValidationError, validateContractStructure } = require('@forge/memory-contracts');
+const { ContractValidationError, validateContractStructure } = require('@forge/contracts');
 
 const TARGET_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 const SECRET_PATTERNS = [

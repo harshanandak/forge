@@ -39,7 +39,7 @@
 
 **Outcome:** public contracts and package boundaries exist without behavior change.
 
-- Add `@forge/memory-contracts`, `@forge/memory`, and `@forge/flow` package boundaries.
+- Add `@forge/contracts`, `@forge/memory`, and `@forge/flow` package boundaries.
 - Define canonical envelopes, WorkPacket, ContextPacket, RunReceipt, MonitorEvent, DeliveryReceipt, and MonitorReceipt schemas, validators, semantic identities, fixtures, and compatibility snapshots.
 - Add forbidden-private-import checks and preserve the legacy facade's command, JSON, and exit behavior.
 - Freeze the exact API commit consumed by PR 3 and PR 4A.
