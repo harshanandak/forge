@@ -1,6 +1,6 @@
 {
   "name": "forge-workflow",
-  "version": "0.1.0-beta.6",
+  "version": "0.1.0-beta.7",
   "packageManager": "bun@1.4.2",
   "description": "Local runtime control plane for AI-assisted engineering workflows, gates, evidence, and all AI agents",
   "bin": {
@@ -116,11 +116,19 @@
     ".mcp.json.example"
   ],
   "dependencies": {
+    "@forge/flow": "0.1.0-beta.6",
+    "@forge/memory": "0.1.0-beta.6",
+    "@forge/memory-contracts": "0.1.0-beta.6",
     "@babel/parser": "^8.0.0",
     "cross-spawn": "^7.0.6",
     "fastest-levenshtein": "^1.0.16",
     "yaml": "^2.8.3"
   },
+  "bundledDependencies": [
+    "@forge/flow",
+    "@forge/memory",
+    "@forge/memory-contracts"
+  ],
   "overrides": {
     "eslint": "^10.0.2",
     "fast-uri": "^3.1.4",

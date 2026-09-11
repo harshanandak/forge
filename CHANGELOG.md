@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Note**: `/check` was renamed to `/validate` and `/merge` was renamed to `/premerge` in v0.0.3. Historical entries below may use the old names.
 
+## [0.1.0-beta.7] - 2026-09-11
+
+### Fixed
+
+- **The npm package now includes every internal runtime workspace.** Root runtime imports use the `@forge/memory`, `@forge/memory-contracts`, and `@forge/flow` package boundaries, and npm bundles those unpublished workspaces into `forge-workflow`. A fresh packed install now runs `forge --version` and `forge setup --quick --yes`, preventing the `MODULE_NOT_FOUND` failure in v0.1.0-beta.6. (issue `95372af8-da00-42e0-af64-0111ddab3405`)
+
 ## [0.1.0-beta.6] - 2026-09-11
 
 ### Added

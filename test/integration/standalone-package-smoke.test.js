@@ -20,7 +20,7 @@ function npm(args, cwd, invocation) {
 }
 
 function pack(packageDirectory, destination, invocation) {
-  const result = npm(["pack", "--json", "--pack-destination", destination], packageDirectory, invocation);
+  const result = npm(["pack", "--json", "--ignore-scripts", "--pack-destination", destination], packageDirectory, invocation);
   expect(result.status, result.stderr).toBe(0);
   return path.join(destination, JSON.parse(result.stdout)[0].filename);
 }
@@ -52,11 +52,45 @@ function resolveNpmInvocation(platformNode) {
   throw new Error("Could not resolve npm-cli.js beside the platform Node.js installation");
 }
 
+function runInstalledForge(packageRoot, args, cwd) {
+  const shim = path.join(packageRoot, "node_modules", ".bin", process.platform === "win32" ? "forge.cmd" : "forge");
+  if (process.platform !== "win32") return spawnSync(shim, args, { cwd, encoding: "utf8" });
+  const command = `""${shim}" ${args.join(" ")}"`;
+  return spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], {
+    cwd,
+    encoding: "utf8",
+    windowsVerbatimArguments: true,
+  });
+}
+
 afterEach(() => {
   for (const directory of created.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
 describe("standalone product packages", () => {
+  test("packs and installs the root CLI with its runtime workspaces", () => {
+    const platformNode = resolvePlatformNode();
+    const npmInvocation = resolveNpmInvocation(platformNode);
+    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge root-"));
+    created.push(temporary);
+    fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ private: true }));
+    const rootTarball = pack(ROOT, temporary, npmInvocation);
+
+    const install = npm(["install", "--ignore-scripts", rootTarball], temporary, npmInvocation);
+    expect(install.status, install.stderr).toBe(0);
+
+    const version = runInstalledForge(temporary, ["--version"], temporary);
+    expect(version.status, version.stderr).toBe(0);
+    expect(version.stdout).toContain("Forge v");
+
+    const project = path.join(temporary, "project");
+    fs.mkdirSync(project);
+    const init = spawnSync("git", ["init", "-q"], { cwd: project, encoding: "utf8" });
+    expect(init.status, init.stderr).toBe(0);
+    const setup = runInstalledForge(temporary, ["setup", "--quick", "--yes"], project);
+    expect(setup.status, setup.stderr).toBe(0);
+  }, 60000);
+
   test("packs and installs Flow with public Memory contracts in a fresh package", () => {
     const platformNode = resolvePlatformNode();
     const npmInvocation = resolveNpmInvocation(platformNode);
