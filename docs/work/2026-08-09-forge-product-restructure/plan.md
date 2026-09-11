@@ -338,7 +338,7 @@ forge-workflow           # compatibility/integration facade
 
 All new packages begin at `0.1.0` prerelease versions. `@forge/skills@1.0.0` remains independently versioned and is not silently reset or synchronized.
 
-`@forge/contracts` also defines the transport-neutral `MemoryProvider` and `CoordinationProvider` interfaces. Flow may depend on this package only. The facade or operator injects a local, server, or explicitly ephemeral provider; Flow does not construct a Memory database or network client implicitly.
+`@forge/contracts` exposes the transport-neutral schemas, validation, identity, and hashing primitives shared by Memory and Flow. Flow may depend on this package, but not on the Memory implementation. The facade or operator injects local, server, or explicitly ephemeral coordination; Flow does not construct a Memory database or network client implicitly.
 
 ### 6.2 Extraction-ready modular monolith
 
