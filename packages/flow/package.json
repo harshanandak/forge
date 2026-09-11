@@ -13,9 +13,21 @@
     "lint": "eslint . --max-warnings 0"
   },
   "dependencies": {
-    "@forge/memory-contracts": "0.1.0-beta.6"
+    "@forge/contracts": "0.1.0-beta.6"
   },
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/harshanandak/forge.git",
+    "directory": "packages/flow"
+  },
+  "homepage": "https://github.com/harshanandak/forge#readme",
+  "bugs": {
+    "url": "https://github.com/harshanandak/forge/issues"
+  },
   "engines": {
     "node": ">=22.16.0"
   }

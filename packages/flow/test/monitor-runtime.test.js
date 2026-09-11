@@ -1,9 +1,9 @@
 "use strict";
 
 const { beforeAll, describe, expect, mock, test } = require("bun:test");
-const contracts = require("../../memory-contracts");
+const contracts = require("../../contracts");
 
-mock.module("@forge/memory-contracts", () => contracts);
+mock.module("@forge/contracts", () => contracts);
 
 const { computeContentHash, validateContractStructure } = contracts;
 let MonitorRuntimeError;

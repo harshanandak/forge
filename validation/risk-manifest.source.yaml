@@ -7,7 +7,7 @@ commands:
     argv: [test, --timeout, "15000", test/integration]
   - id: validation.command.contract-baseline
     executable: bun
-    argv: [test, --timeout, "15000", test/integration, packages/memory-contracts]
+    argv: [test, --timeout, "15000", test/integration, packages/contracts]
   - id: validation.command.facade-package
     executable: bun
     argv: [test, --timeout, "15000", test/commands]
@@ -135,14 +135,14 @@ owners:
     dependent_routes: [memory-contract]
     platform_runtime_additions: [windows-sqlite, linux-sqlite]
     lanes: [memory-package]
-  - id: memory-contracts
+  - id: contracts
     product: memory
-    package: "@forge/memory-contracts"
-    package_roots: [packages/memory-contracts]
+    package: "@forge/contracts"
+    package_roots: [packages/contracts]
     selectors:
-      - { kind: path, prefix: "packages/memory-contracts/" }
+      - { kind: path, prefix: "packages/contracts/" }
     risk_ids: [contract-compatibility]
-    canonical_test_ids: ["packages/memory-contracts/**/*.test.js"]
+    canonical_test_ids: ["packages/contracts/**/*.test.js"]
     dependent_routes: [flow-memory-contract]
     platform_runtime_additions: []
     lanes: [contract-baseline]

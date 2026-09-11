@@ -6,11 +6,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const ROOT = path.resolve(__dirname, "../..");
-const PACKAGES = ["memory-contracts", "memory", "flow"];
+const PACKAGES = ["contracts", "memory", "flow"];
 const ALLOWED_FORGE_IMPORTS = {
-  "memory-contracts": new Set(),
-  memory: new Set(["@forge/memory-contracts"]),
-  flow: new Set(["@forge/memory-contracts"]),
+  contracts: new Set(),
+  memory: new Set(["@forge/contracts"]),
+  flow: new Set(["@forge/contracts"]),
 };
 
 function javascriptFiles(directory) {
@@ -89,7 +89,7 @@ function dynamicImportsIn(source) {
 describe("product package boundaries", () => {
   test.each([
     ["require variable", "require(privateModule)"],
-    ["concatenated require", "require('@forge/memory-contracts/' + privatePath)"],
+    ["concatenated require", "require('@forge/contracts/' + privatePath)"],
     ["template dynamic import", "import(`@forge/${product}/private`)"],
     ["multiline require variable", "require(\n  privateModule\n)"],
     ["multiline template import", "import(\n  `@forge/${product}/private`\n)"],

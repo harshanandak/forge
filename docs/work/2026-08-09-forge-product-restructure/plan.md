@@ -160,7 +160,7 @@ Memory remains fully usable without Flow. Humans, agents, or other runtimes may 
 
 Flow executes only an invocation already authorized by Memory/Kernel. Its GitHub adapter is run-scoped: it gathers PR/check/review evidence and performs an explicitly authorized external action. It never writes the issue graph, projection state, workflow transition, gate result, or merge authorization. Models and Flow may report evidence; Memory policy owns the decision.
 
-Flow never imports Memory database, broker, schema, migration, or storage modules. It communicates through `@forge/memory-contracts`, an injected `MemoryProvider`, or portable files.
+Flow never imports Memory database, broker, schema, migration, or storage modules. It communicates through `@forge/contracts`, an injected `MemoryProvider`, or portable files.
 
 ### 4.3 Forge facade owns
 
@@ -283,7 +283,7 @@ Unknown advisory extensions are preserved byte-for-byte through read/write cycle
 | Feedback report | `forge.memory.feedback-report.v1` | report id + product version + content fingerprint | explicit consent event, redaction-policy revision, intake provenance |
 | Structured error | `forge.memory.structured-error.v1` | parent object hash + error occurrence id | stable code, terminal classification, safe details |
 
-PR 2 materializes these contracts at `packages/memory-contracts/schemas/v1/<schema-id>.schema.json`, with deterministic generated validators and fixtures under `packages/memory-contracts/fixtures/v1/`. Required fixture ids are `valid-minimal`, `valid-full`, `canonical-hash`, `retry-identical`, `identity-conflict`, `unknown-advisory-roundtrip`, `unknown-consequential-reject`, `stale-authority-reject`, `wrong-capability-digest`, `privacy-redaction`, and one malformed/missing-required fixture per field. `packages/memory-contracts/contract-baseline.v1.json` records every schema/fixture digest and generator version. G3 cannot pass from prose or unit tests alone; it verifies this baseline and a forward/backward reader matrix.
+PR 2 materializes these contracts at `packages/contracts/schemas/v1/<schema-id>.schema.json`, with deterministic generated validators and fixtures under `packages/contracts/fixtures/v1/`. Required fixture ids are `valid-minimal`, `valid-full`, `canonical-hash`, `retry-identical`, `identity-conflict`, `unknown-advisory-roundtrip`, `unknown-consequential-reject`, `stale-authority-reject`, `wrong-capability-digest`, `privacy-redaction`, and one malformed/missing-required fixture per field. `packages/contracts/contract-baseline.v1.json` records every schema/fixture digest and generator version. G3 cannot pass from prose or unit tests alone; it verifies this baseline and a forward/backward reader matrix.
 
 Exact retries with the same semantic identity and content hash return the prior result. Reuse of a semantic identity with different content is a conflict and is never overwritten.
 
@@ -329,7 +329,7 @@ Report construction, redaction, hashing, deduplication, and upload use determini
 The current monorepo first creates enforceable package boundaries:
 
 ```text
-@forge/memory-contracts  # owned and released by Memory
+@forge/contracts  # owned and released by Memory
 @forge/memory            # Kernel + durable memory product
 @forge/flow              # optional executor product
 @forge/skills            # existing independent provider package
@@ -338,7 +338,7 @@ forge-workflow           # compatibility/integration facade
 
 All new packages begin at `0.1.0` prerelease versions. `@forge/skills@1.0.0` remains independently versioned and is not silently reset or synchronized.
 
-`@forge/memory-contracts` also defines the transport-neutral `MemoryProvider` and `CoordinationProvider` interfaces. Flow may depend on this package only. The facade or operator injects a local, server, or explicitly ephemeral provider; Flow does not construct a Memory database or network client implicitly.
+`@forge/contracts` exposes the transport-neutral schemas, validation, identity, and hashing primitives shared by Memory and Flow. Flow may depend on this package, but not on the Memory implementation. The facade or operator injects local, server, or explicitly ephemeral coordination; Flow does not construct a Memory database or network client implicitly.
 
 ### 6.2 Extraction-ready modular monolith
 
@@ -630,7 +630,7 @@ The proposal itself is a documentation PR. Implementation begins only after it i
 
 **Outcome:** versioned packet/receipt contracts and enforceable import boundaries exist without behavior change.
 
-- create `@forge/memory-contracts`;
+- create `@forge/contracts`;
 - define schemas, validators, semantic identity, and compatibility fixtures;
 - create `@forge/memory` and `@forge/flow` package skeletons;
 - add forbidden-private-import checks;

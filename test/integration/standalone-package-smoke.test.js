@@ -125,24 +125,35 @@ describe("standalone product packages", () => {
     expect(setup.status, `${setup.stdout}\n${setup.stderr}`).toBe(0);
   }, 60000);
 
-  test("packs and installs Flow with public Memory contracts in a fresh package", () => {
+  test("packs and installs Flow with public Forge contracts in a fresh package", () => {
     const platformNode = resolvePlatformNode();
     const npmInvocation = resolveNpmInvocation(platformNode);
     const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge products-"));
     created.push(temporary);
     fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ private: true }));
-    const contractsTarball = pack(path.join(ROOT, "packages", "memory-contracts"), temporary, npmInvocation);
+    const contractsTarball = pack(path.join(ROOT, "packages", "contracts"), temporary, npmInvocation);
     const memoryTarball = pack(path.join(ROOT, "packages", "memory"), temporary, npmInvocation);
     const flowTarball = pack(path.join(ROOT, "packages", "flow"), temporary, npmInvocation);
 
     const install = npm(["install", "--ignore-scripts", contractsTarball, memoryTarball, flowTarball], temporary, npmInvocation);
     expect(install.status, install.stderr).toBe(0);
 
+    for (const [packageName, directory] of [["contracts", "packages/contracts"], ["memory", "packages/memory"], ["flow", "packages/flow"]]) {
+      const manifest = JSON.parse(fs.readFileSync(path.join(temporary, "node_modules", "@forge", packageName, "package.json"), "utf8"));
+      expect(manifest.license).toBe("MIT");
+      expect(manifest.repository).toEqual({
+        type: "git",
+        url: "git+https://github.com/harshanandak/forge.git",
+        directory,
+      });
+      expect(manifest.publishConfig).toEqual({ access: "public" });
+    }
+
     expect(platformNode.version.major).toBeGreaterThanOrEqual(22);
     expect(platformNode.version.major > 22 || platformNode.version.minor >= 16).toBe(true);
     expect(path.basename(platformNode.executable).toLowerCase()).not.toContain("bun");
 
-    const probe = spawnSync(platformNode.executable, ["-e", "require('@forge/memory-contracts'); require('@forge/memory'); require('@forge/flow')"], {
+    const probe = spawnSync(platformNode.executable, ["-e", "require('@forge/contracts'); require('@forge/memory'); require('@forge/flow')"], {
       cwd: temporary,
       encoding: "utf8",
     });

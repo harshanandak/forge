@@ -27,7 +27,7 @@ describe('PR2 root package integration', () => {
 
     const lock = fs.readFileSync(LOCK_PATH, 'utf8');
     const expected = [
-      ['packages/memory-contracts', '@forge/memory-contracts'],
+      ['packages/contracts', '@forge/contracts'],
       ['packages/memory', '@forge/memory'],
       ['packages/flow', '@forge/flow'],
     ];
@@ -35,19 +35,30 @@ describe('PR2 root package integration', () => {
       const block = workspaceBlock(lock, workspacePath);
       expect(block).toContain(`"name": "${packageName}"`);
       expect(block).toContain('"version": "0.1.0-beta.6"');
+
+      const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, workspacePath, 'package.json'), 'utf8'));
+      expect(manifest.license).toBe('MIT');
+      expect(manifest.repository).toEqual({
+        type: 'git',
+        url: 'git+https://github.com/harshanandak/forge.git',
+        directory: workspacePath,
+      });
+      expect(manifest.homepage).toBe('https://github.com/harshanandak/forge#readme');
+      expect(manifest.bugs).toEqual({ url: 'https://github.com/harshanandak/forge/issues' });
+      expect(manifest.publishConfig).toEqual({ access: 'public' });
     }
 
     expect(workspaceBlock(lock, 'packages/flow')).toContain(
-      '"@forge/memory-contracts": "0.1.0-beta.6"',
+      '"@forge/contracts": "0.1.0-beta.6"',
     );
-    expect(lock).toContain('"@forge/memory-contracts@workspace:packages/memory-contracts"');
+    expect(lock).toContain('"@forge/contracts@workspace:packages/contracts"');
   });
 
   test.each([
     {
-      path: 'packages/memory-contracts/src/validate.js', owner: 'memory-contracts',
+      path: 'packages/contracts/src/validate.js', owner: 'contracts',
       product: 'memory', lane: 'contract-baseline', route: 'flow-memory-contract',
-      command: 'validation.command.contract-baseline', testPath: 'packages/memory-contracts',
+      command: 'validation.command.contract-baseline', testPath: 'packages/contracts',
     },
     {
       path: 'packages/memory/src/backend-registry.js', owner: 'memory-foundation',

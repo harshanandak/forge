@@ -1,9 +1,9 @@
 'use strict';
 
 const { expect, mock, test } = require('bun:test');
-const contracts = require('../memory-contracts');
+const contracts = require('../contracts');
 const manifest = require('./package.json');
-mock.module('@forge/memory-contracts', () => contracts);
+mock.module('@forge/contracts', () => contracts);
 const memory = require('./index');
 
 test('@forge/memory exposes the stable backend registry entrypoint', () => {
@@ -15,7 +15,7 @@ test('@forge/memory exposes the stable backend registry entrypoint', () => {
   expect(typeof memory.normalizeUsageEvidence).toBe('function');
 });
 
-test('@forge/memory supports at least the runtime floor required by memory-contracts', () => {
+test('@forge/memory supports at least the runtime floor required by contracts', () => {
   expect(manifest.engines.node).toBe('>=22.16.0');
 });
 

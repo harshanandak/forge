@@ -103,8 +103,8 @@ describe('fresh clone, no Beads — full Forge issue lifecycle on the builtin ke
         // their consumers. Reproduce that local link without mutating the
         // shared node_modules tree used by the parent checkout.
         const memoryWorkspaceModules = path.join(freshCloneDir, 'packages', 'memory', 'node_modules', '@forge');
-        const contractsWorkspace = path.join(freshCloneDir, 'packages', 'memory-contracts');
-        const contractsLink = path.join(memoryWorkspaceModules, 'memory-contracts');
+        const contractsWorkspace = path.join(freshCloneDir, 'packages', 'contracts');
+        const contractsLink = path.join(memoryWorkspaceModules, 'contracts');
         fs.mkdirSync(memoryWorkspaceModules, { recursive: true });
         try {
           fs.symlinkSync(contractsWorkspace, contractsLink, 'junction');

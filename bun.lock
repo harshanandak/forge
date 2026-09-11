@@ -6,9 +6,9 @@
       "name": "forge-workflow",
       "dependencies": {
         "@babel/parser": "^8.0.0",
+        "@forge/contracts": "0.1.0-beta.6",
         "@forge/flow": "0.1.0-beta.6",
         "@forge/memory": "0.1.0-beta.6",
-        "@forge/memory-contracts": "0.1.0-beta.6",
         "cross-spawn": "^7.0.6",
         "fastest-levenshtein": "^1.0.16",
         "yaml": "^2.8.3",
@@ -34,23 +34,23 @@
         "lefthook",
       ],
     },
+    "packages/contracts": {
+      "name": "@forge/contracts",
+      "version": "0.1.0-beta.6",
+    },
     "packages/flow": {
       "name": "@forge/flow",
       "version": "0.1.0-beta.6",
       "dependencies": {
-        "@forge/memory-contracts": "0.1.0-beta.6",
+        "@forge/contracts": "0.1.0-beta.6",
       },
     },
     "packages/memory": {
       "name": "@forge/memory",
       "version": "0.1.0-beta.6",
       "dependencies": {
-        "@forge/memory-contracts": "0.1.0-beta.6",
+        "@forge/contracts": "0.1.0-beta.6",
       },
-    },
-    "packages/memory-contracts": {
-      "name": "@forge/memory-contracts",
-      "version": "0.1.0-beta.6",
     },
     "packages/skills": {
       "name": "@forge/skills",
@@ -202,11 +202,11 @@
 
     "@eslint/plugin-kit": ["@eslint/plugin-kit@0.7.3", "", { "dependencies": { "@eslint/core": "^1.2.1", "levn": "^0.4.1" } }, "sha512-IkO+/KEUvwbVpiURZg+P7zF74z5Jxe0UgJxVni+RtoHQ6IZieXaO02kmadomap/q+l6bc/jdPGGqTjhuZnuz1Q=="],
 
+    "@forge/contracts": ["@forge/contracts@workspace:packages/contracts"],
+
     "@forge/flow": ["@forge/flow@workspace:packages/flow"],
 
     "@forge/memory": ["@forge/memory@workspace:packages/memory"],
-
-    "@forge/memory-contracts": ["@forge/memory-contracts@workspace:packages/memory-contracts"],
 
     "@forge/skills": ["@forge/skills@workspace:packages/skills"],
 

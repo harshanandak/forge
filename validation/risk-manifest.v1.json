@@ -16,7 +16,7 @@
         "--timeout",
         "15000",
         "test/integration",
-        "packages/memory-contracts"
+        "packages/contracts"
       ],
       "executable": "bun",
       "id": "validation.command.contract-baseline"
@@ -259,8 +259,35 @@
       "id": "validation-selector"
     }
   ],
-  "manifest_hash": "sha256:afc0f7b27d8bb39a465fba8f5c492085464e9b1a611a717bb90840f9fbafb52c",
+  "manifest_hash": "sha256:6cb5158a6104084ebe871e40c018339d974094ed4003a4e20ceac639c8d0ab6c",
   "owners": [
+    {
+      "canonical_test_ids": [
+        "packages/contracts/**/*.test.js"
+      ],
+      "dependent_routes": [
+        "flow-memory-contract"
+      ],
+      "id": "contracts",
+      "lanes": [
+        "contract-baseline"
+      ],
+      "package": "@forge/contracts",
+      "package_roots": [
+        "packages/contracts"
+      ],
+      "platform_runtime_additions": [],
+      "product": "memory",
+      "risk_ids": [
+        "contract-compatibility"
+      ],
+      "selectors": [
+        {
+          "kind": "path",
+          "prefix": "packages/contracts/"
+        }
+      ]
+    },
     {
       "canonical_test_ids": [
         "test/commands/**/*.test.js"
@@ -330,33 +357,6 @@
         {
           "kind": "schema",
           "prefix": "forge.kernel."
-        }
-      ]
-    },
-    {
-      "canonical_test_ids": [
-        "packages/memory-contracts/**/*.test.js"
-      ],
-      "dependent_routes": [
-        "flow-memory-contract"
-      ],
-      "id": "memory-contracts",
-      "lanes": [
-        "contract-baseline"
-      ],
-      "package": "@forge/memory-contracts",
-      "package_roots": [
-        "packages/memory-contracts"
-      ],
-      "platform_runtime_additions": [],
-      "product": "memory",
-      "risk_ids": [
-        "contract-compatibility"
-      ],
-      "selectors": [
-        {
-          "kind": "path",
-          "prefix": "packages/memory-contracts/"
         }
       ]
     },
@@ -551,7 +551,7 @@
     }
   ],
   "schema_id": "forge.validation.risk-manifest.v1",
-  "source_hash": "sha256:4e86a985bdbc51cf7101fc1a0a9a90d03112a08b44440530f2bb7a56f17d9deb",
+  "source_hash": "sha256:11d54c75a1fd86733542c1999b2c28dd2c80d21a2ebacf5dc3ccaaf8885a8ac3",
   "unknown_owner_fallback": {
     "lane": "repository-baseline",
     "required_gates": [

@@ -1,8 +1,8 @@
 'use strict';
 
 const { describe, expect, mock, test } = require('bun:test');
-const contracts = require('../../memory-contracts');
-mock.module('@forge/memory-contracts', () => contracts);
+const contracts = require('../../contracts');
+mock.module('@forge/contracts', () => contracts);
 const {
   FeedbackIntakeError,
   createFeedbackIntake,

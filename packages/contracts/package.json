@@ -1,5 +1,5 @@
 {
-  "name": "@forge/memory-contracts",
+  "name": "@forge/contracts",
   "version": "0.1.0-beta.6",
   "description": "Behavior-neutral packet and receipt contracts for Forge products",
   "main": "index.js",
@@ -17,6 +17,18 @@
     "lint": "eslint . --max-warnings 0"
   },
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/harshanandak/forge.git",
+    "directory": "packages/contracts"
+  },
+  "homepage": "https://github.com/harshanandak/forge#readme",
+  "bugs": {
+    "url": "https://github.com/harshanandak/forge/issues"
+  },
   "engines": {
     "node": ">=22.16.0"
   }

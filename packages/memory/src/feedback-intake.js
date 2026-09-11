@@ -6,7 +6,7 @@ const {
   computeContentHash,
   semanticIdentity,
   validateContractStructure,
-} = require('@forge/memory-contracts');
+} = require('@forge/contracts');
 
 const FEEDBACK_SCHEMA_ID = 'forge.memory.feedback-report.v1';
 const ASSIGNED_SECRET = /((?:api[_-]?key|token|secret|password)\s*[:=]\s*)\S{8,}/gi;
