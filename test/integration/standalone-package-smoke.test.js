@@ -19,10 +19,16 @@ function npm(args, cwd, invocation) {
   });
 }
 
+function parsePackOutput(output) {
+  const jsonStart = String(output).search(/^\[/m);
+  if (jsonStart === -1) throw new SyntaxError("npm pack did not return a JSON payload");
+  return JSON.parse(output.slice(jsonStart));
+}
+
 function pack(packageDirectory, destination, invocation) {
   const result = npm(["pack", "--json", "--ignore-scripts", "--pack-destination", destination], packageDirectory, invocation);
   expect(result.status, result.stderr).toBe(0);
-  return path.join(destination, JSON.parse(result.stdout)[0].filename);
+  return path.join(destination, parsePackOutput(result.stdout)[0].filename);
 }
 
 function resolvePlatformNode() {
@@ -68,6 +74,10 @@ afterEach(() => {
 });
 
 describe("standalone product packages", () => {
+  test("parses npm 10 JSON after package lifecycle output", () => {
+    expect(parsePackOutput('sync hooks: ok\n[{"filename":"forge.tgz"}]\n')[0].filename).toBe("forge.tgz");
+  });
+
   test("packs and installs the root CLI with its runtime workspaces", () => {
     const platformNode = resolvePlatformNode();
     const npmInvocation = resolveNpmInvocation(platformNode);

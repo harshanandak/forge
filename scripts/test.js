@@ -569,7 +569,7 @@ async function runTestExecutionPlan(plan, deps = {}) {
       if (status !== 0) return status;
     }
 
-    if (plan.runE2E) {
+    if (!plan.runFullSuite && plan.runE2E) {
       console.log('  Extra: running affected e2e tests');
        const status = await runCommand(bunCommand, ['test', '--timeout', '15000', 'test/e2e/'], laneOptions, spawn);
       if (signal) return signalExitCode(signal);

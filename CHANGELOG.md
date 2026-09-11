@@ -9,9 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0-beta.7] - 2026-09-11
 
+### Changed
+
+- **A clean full validation is reused by the next unchanged `forge push`.** Forge stores a one-hour, signed local receipt bound to the canonical worktree, exact HEAD, clean state, Forge and Bun runtimes, and complete nonzero gate results. Branch protection and lint still run; invalid or stale evidence falls back to the full suite, while raw Git pushes and CI remain independent.
+- **A local full suite no longer reruns its already-included E2E directory.** Targeted E2E execution is unchanged, while full validation avoids an exact duplicate. (issue `4aed2cc8-57eb-451b-bb3a-02bbdd93af49`)
+
 ### Fixed
 
-- **The npm package now includes every internal runtime workspace.** Root runtime imports use the `@forge/memory`, `@forge/memory-contracts`, and `@forge/flow` package boundaries, and npm bundles those unpublished workspaces into `forge-workflow`. A fresh packed install now runs `forge --version` and `forge setup --quick --yes`, preventing the `MODULE_NOT_FOUND` failure in v0.1.0-beta.6. (issue `95372af8-da00-42e0-af64-0111ddab3405`)
+- **The npm package now includes every internal runtime workspace.** Root runtime imports use the `@forge/memory`, `@forge/memory-contracts`, and `@forge/flow` package boundaries, and npm bundles those unpublished workspaces into `forge-workflow`. The installed-package smoke accepts npm 10 lifecycle output before its JSON payload, so Node 22 verifies the same package correctly. A fresh packed install now runs `forge --version` and `forge setup --quick --yes`, preventing the `MODULE_NOT_FOUND` failure in v0.1.0-beta.6. (issue `95372af8-da00-42e0-af64-0111ddab3405`)
 
 ## [0.1.0-beta.6] - 2026-09-11
 
