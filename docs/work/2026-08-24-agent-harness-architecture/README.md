@@ -22,7 +22,7 @@ At capture time, the next integration task was **Facade, harness, and capability
 | Record | Purpose | Status |
 |---|---|---|
 | [Original multi-harness architecture audit](research.md) | 570-line source-ledger, failure taxonomy, contract proposals, issue map, and 2026-08-30 decisions | Historical research; exact copy from commit `bc13377c53130908ce7008b992119e84bc1dad5f` |
-| [Public portable-harness research](sources/2026-08-30-parallel-public-agent-harness-research.md) | Primary-source external comparison of DeepSeek Harness, Cordis, skills, pstack, MCP, A2A, and lifecycle/security mechanisms | Historical public research input; exact copy |
+| [Public portable-harness research](sources/2026-08-30-parallel-public-agent-harness-research.txt) | Primary-source external comparison of DeepSeek Harness, Cordis, skills, pstack, MCP, A2A, and lifecycle/security mechanisms | Historical public research input; exact byte copy stored as text because its bracketed citations are not Markdown reference definitions |
 | [User-supplied architecture audit](2026-09-12-user-supplied-architecture-audit.md) | Control-plane, receipt, skill, adapter, Companion/Config, plugin, and delivery-wave analysis | Historical supplied analysis; proposals and stale-sensitive findings labeled |
 | [User-supplied memory-provider audit](2026-09-12-user-supplied-memory-provider-audit.md) | FTS5 baseline, lifecycle, benchmark gates, and Graphify/Graphiti/OpenViking/Mem0/GraphRAG dispositions | Historical supplied analysis; no provider benchmark or selection |
 | [Independent agent findings](2026-09-12-independent-agent-findings.md) | Standalone-product inspection, adapter-boundary inspection, and sequencing challenge | Rung 2 source findings plus conceptual challenge; no product acceptance run |
@@ -34,7 +34,7 @@ Source-copy provenance:
 | File | Original location or ref | SHA-256 |
 |---|---|---|
 | `research.md` | `origin/feat/agent-harness-architecture` at `bc13377c53130908ce7008b992119e84bc1dad5f` | `15381FDDDE1C5B7E09F8262FF09716C0FBFB5C3B361B7569726FAC41E0BB0DED` |
-| `sources/2026-08-30-parallel-public-agent-harness-research.md` | Completed Parallel public report; [run](https://platform.parallel.ai/play/deep-research/trun_7e2acc90d798403e93b23a28b59c2c71) | `EDDFB02A95364A3599EDF0B2E1BB55A33DB3ACEED1B808346DFAA980FE51BEE6` |
+| `sources/2026-08-30-parallel-public-agent-harness-research.txt` | Completed Parallel public report, originally captured as `parallel-public-agent-harness-research.md`; [run](https://platform.parallel.ai/play/deep-research/trun_7e2acc90d798403e93b23a28b59c2c71) | `EDDFB02A95364A3599EDF0B2E1BB55A33DB3ACEED1B808346DFAA980FE51BEE6` |
 | `2026-09-12-forge-future-synthesis.md` | `C:/tmp/forge-future-2026-09-12.md` | `B1E3D383496C5B6C0DB54DA019195D5C6DA9737A571BEF2E59BC57ED0EE77AB4` |
 
 The local paths identify capture provenance only. The repository copies above are the durable records. Raw private sessions, customer data, credentials, and untracked source-worktree state were not copied.

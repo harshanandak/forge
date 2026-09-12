@@ -184,7 +184,7 @@ The audit explicitly deferred a marketplace. Its proposed minimum used four reco
 - Exact-digest rollback and bounded draining.
 - No sandboxing claim where the platform cannot enforce it.
 
-The supplied audit referenced a completed public Parallel report, now preserved once as [the public source report](sources/2026-08-30-parallel-public-agent-harness-research.md). It stated that no private repository or session content was sent to that run.
+The supplied audit referenced a completed public Parallel report, now preserved once as [the public source report](sources/2026-08-30-parallel-public-agent-harness-research.txt). It stated that no private repository or session content was sent to that run.
 
 Deferred items were marketplace, cloud skill sync, a generic event bus, vector-memory default, cross-harness phase hopping, and Cordis as a required dependency. The proposed admission condition was at least two materially different adapters passing the same conformance suite.
 
