@@ -13,6 +13,7 @@ const {
 	executeValidate,
 	executeDebugMode,
 } = require('../../lib/commands/validate.js');
+const { resolveReceiptPath } = require('../../lib/validation-receipt.js');
 
 setDefaultTimeout(30000);
 
@@ -73,6 +74,20 @@ describe('Validate Command - Validation Orchestration', () => {
 	});
 
 	describe('Test execution', () => {
+		test('fails closed when the validation root directory is missing', async () => {
+			const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-missing-root-'));
+			const rootDir = path.join(parentDir, 'missing');
+			try {
+				const result = await runAllTests(undefined, rootDir);
+
+				expect(result.success).toBe(false);
+				expect(result.skipped).not.toBe(true);
+				expect(result.message).toMatch(/root directory/i);
+			} finally {
+				fs.rmSync(parentDir, { recursive: true, force: true });
+			}
+		});
+
 		test.skip('should run all tests successfully', async () => {
 			const result = await runAllTests();
 			expect(result.success !== undefined).toBeTruthy();
@@ -165,6 +180,24 @@ describe('Validate Command - Validation Orchestration', () => {
 	});
 
 	describe('Full validate orchestration', () => {
+		test('fails validation when rootDir is missing even if the other checks are skipped', async () => {
+			const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-missing-root-'));
+			const rootDir = path.join(parentDir, 'missing');
+			try {
+				const result = await executeValidate({
+					rootDir,
+					skip: ['conflictMarkers', 'typeCheck', 'lint', 'security'],
+				});
+
+				expect(result.success).toBe(false);
+				expect(result.checks.tests.skipped).not.toBe(true);
+				expect(result.failedChecks).toEqual(['tests']);
+				expect(result.validationReceipt).toBe(false);
+			} finally {
+				fs.rmSync(parentDir, { recursive: true, force: true });
+			}
+		});
+
 		test.each([
 			['PASS', 2, 1, 0, 1, true, 'Tests: PASS'],
 			['FAIL', 3, 1, 1, 1, false, 'Checks failed: tests'],
@@ -205,20 +238,23 @@ describe('Validate Command - Validation Orchestration', () => {
 					"console.log('Full suite aggregate: status=FAIL tests=1 assertions=1 passed=0 failed=1 errors=0 skipped=0');",
 					'process.exitCode = 1;',
 				].join('\n'));
-				const result = await executeValidate({
-					rootDir,
-					skip: ['conflictMarkers', 'typeCheck', 'lint', 'security'],
-					validationReceipt: {
-						beginValidation: () => ({}),
-						completeValidation: (_projectRoot, _snapshot, validationResult) => validationResult.success,
-					},
-				});
+				execFileSync('git', ['init', '--quiet'], { cwd: rootDir });
+				execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: rootDir });
+				execFileSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: rootDir });
+				execFileSync('git', ['add', '.'], { cwd: rootDir });
+				execFileSync('git', ['commit', '--quiet', '-m', 'test fixture'], { cwd: rootDir });
+				const receiptPath = resolveReceiptPath(rootDir);
+				fs.mkdirSync(path.dirname(receiptPath), { recursive: true });
+				fs.writeFileSync(receiptPath, 'stale receipt');
+
+				const result = await executeValidate({ rootDir });
 
 				expect(result.success).toBe(false);
 				expect(result.checks.tests.skipped).not.toBe(true);
 				expect(result.summary).not.toContain('All checks passed');
 				expect(result.failedChecks).toEqual(['tests']);
 				expect(result.validationReceipt).toBe(false);
+				expect(fs.existsSync(receiptPath)).toBe(false);
 			} finally {
 				fs.rmSync(rootDir, { recursive: true, force: true });
 			}
