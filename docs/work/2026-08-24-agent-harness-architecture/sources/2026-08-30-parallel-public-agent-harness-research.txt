@@ -205,28 +205,28 @@ Research status: The report answers the requested architectural questions from p
 
 ## References
 
-1. *cordis/packages/core/README.md at main · cordiverse/cordis · GitHub*. https://github.com/cordiverse/cordis/blob/main/packages/core/README.md
+1. *cordis/packages/core/README.md at main Â· cordiverse/cordis Â· GitHub*. https://github.com/cordiverse/cordis/blob/main/packages/core/README.md
 2. *Specification*. https://modelcontextprotocol.io/specification/2025-06-18
-3. *skills/skills at main · mattpocock/skills · GitHub*. https://github.com/mattpocock/skills/tree/main/skills
-4. *A2A/docs/specification.md at main · a2aproject/A2A*. https://github.com/a2aproject/A2A/blob/main/docs/specification.md
+3. *skills/skills at main Â· mattpocock/skills Â· GitHub*. https://github.com/mattpocock/skills/tree/main/skills
+4. *A2A/docs/specification.md at main Â· a2aproject/A2A*. https://github.com/a2aproject/A2A/blob/main/docs/specification.md
 5. *Specification*. https://modelcontextprotocol.io/specification
 6. *Specification*. https://agentskills.io/specification
 7. *Agent Skills Overview*. https://agentskills.io/home
-8. *skills/README.md at main · mattpocock/skills · GitHub*. https://github.com/mattpocock/skills/blob/main/README.md
+8. *skills/README.md at main Â· mattpocock/skills Â· GitHub*. https://github.com/mattpocock/skills/blob/main/README.md
 9. *Agent Skills*. https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview
 10. [Extension Anatomy | Visual Studio Code Extension
 API](https://code.visualstudio.com/api/get-started/extension-anatomy)
 11. [Extension Host | Visual Studio Code Extension
 API](https://code.visualstudio.com/api/advanced-topics/extension-host)
 12. *A Programming Paradigm for Spatiotemporal Composability*. https://arxiv.org/pdf/2608.25512
-13. *plugins/pstack at main · cursor/plugins · GitHub*. https://github.com/cursor/plugins/tree/main/pstack
-14. *deepseek-harness/docs/architecture.md at master · deepseek-ai/deepseek-harness · GitHub*. https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/architecture.md
-15. *plugins/pstack/README.md at main · cursor/plugins · GitHub*. https://github.com/cursor/plugins/blob/main/pstack/README.md
-16. *cordis/packages/core/src/context.ts at main · cordiverse/cordis · GitHub*. https://github.com/cordiverse/cordis/blob/main/packages/core/src/context.ts
+13. *plugins/pstack at main Â· cursor/plugins Â· GitHub*. https://github.com/cursor/plugins/tree/main/pstack
+14. *deepseek-harness/docs/architecture.md at master Â· deepseek-ai/deepseek-harness Â· GitHub*. https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/architecture.md
+15. *plugins/pstack/README.md at main Â· cursor/plugins Â· GitHub*. https://github.com/cursor/plugins/blob/main/pstack/README.md
+16. *cordis/packages/core/src/context.ts at main Â· cordiverse/cordis Â· GitHub*. https://github.com/cordiverse/cordis/blob/main/packages/core/src/context.ts
 17. *DeepSeek Harness Architecture | DeepSeek Harness*. https://deepseek-harness.github.io/deepseek-harness/en/reference
-18. *plugins/pstack/.cursor-plugin/plugin.json at main · cursor/plugins · GitHub*. https://github.com/cursor/plugins/blob/main/pstack/.cursor-plugin/plugin.json
-19. *deepseek-harness/packages/core/README.md at master · deepseek-ai/deepseek-harness · GitHub*. https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/README.md
-20. *semantic-conventions-genai/README.md at main · open-telemetry/semantic-conventions-genai · GitHub*. http://github.com/open-telemetry/semantic-conventions-genai/blob/main/README.md
+18. *plugins/pstack/.cursor-plugin/plugin.json at main Â· cursor/plugins Â· GitHub*. https://github.com/cursor/plugins/blob/main/pstack/.cursor-plugin/plugin.json
+19. *deepseek-harness/packages/core/README.md at master Â· deepseek-ai/deepseek-harness Â· GitHub*. https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/README.md
+20. *semantic-conventions-genai/README.md at main Â· open-telemetry/semantic-conventions-genai Â· GitHub*. http://github.com/open-telemetry/semantic-conventions-genai/blob/main/README.md
 21. *Trust and safety*. https://code.visualstudio.com/docs/agents/concepts/trust-and-safety
 22. *Authorization*. https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization
 23. *Plugins Reference | Cursor Docs*. http://cursor.com/docs/reference/plugins

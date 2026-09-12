@@ -4,7 +4,7 @@
 
 **Evidence:** Rung 4 — package packing, isolated installation, probe execution, and focused tests were run.
 
-**Baseline:** `7393dd9d82ae43cb128dc64d7ae7b4cab48c21f9`. The shared execution worktree later advanced, while the inspected Contracts, Memory, and Flow tree IDs remained byte-identical to baseline: `3ebf8846`, `accbe377`, and `d3b2bf96`.
+**Baseline:** `7393dd9d82ae43cb128dc64d7ae7b4cab48c21f9`. The shared execution worktree later advanced, while the inspected package trees remained byte-identical to baseline: Contracts `d3b2bf96`, Memory `3ebf8846`, and Flow `accbe377`.
 **Verdict:** Memory journey `INCOMPLETE`; Flow journey `INCOMPLETE`; connected authorize-to-execute-to-receipt journey `NOT RUN`. The first two results identify missing supported product assembly at the package entry point. They do not demonstrate a regression in the injected dependency contracts, a connected-product failure, or a completed product acceptance journey.
 
 ## Receipt
