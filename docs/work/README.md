@@ -17,3 +17,7 @@ For current public guidance, start with:
 Historical files may mention old internal labels, earlier path conventions, or
 draft commands. Treat those as implementation history unless a current guide or
 reference page confirms the behavior.
+
+Maintainer research entry points:
+
+- [Multi-harness and post-beta.7 research archive](2026-08-24-agent-harness-architecture/README.md) - source-linked authority, standalone-product, adapter, skill, plugin, and memory-provider analysis; accepted product records remain authoritative.
