@@ -687,7 +687,7 @@ describe('Validate Command - Validation Orchestration', () => {
 		});
 
 		test('real passing run => success and testsFound true', async () => {
-			const result = await runAllTests(fakeExec('5 pass\n0 fail\nRan 5 tests across 2 files. [1.00s]'));
+			const result = await runAllTests(fakeExec('5 pass\n0 fail\nRan 5 tests across 2 files. [1.00s]'), os.tmpdir());
 			expect(result.success).toBe(true);
 			expect(result.testsFound).toBe(true);
 			expect(result.total).toBe(5);
@@ -777,6 +777,29 @@ describe('Validate Command - Validation Orchestration', () => {
 				expect(calls[0][0]).toBe('node');
 				expect(calls[0][1]).toEqual(['scripts/test-full-suite.js']);
 				expect(calls[0][2].cwd).toBe(rootDir);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('fails a successful full-suite process without a terminal aggregate', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-missing-aggregate-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'forge-workflow',
+					bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
+
+				const result = await runAllTests(
+					() => '5 pass\n0 fail\nRan 5 tests across 1 file.',
+					rootDir,
+				);
+
+				expect(result).toMatchObject({ success: false, fullSuite: true, testsFound: true });
+				expect(result.message).toMatch(/terminal aggregate/i);
 			} finally {
 				fs.rmSync(rootDir, { recursive: true, force: true });
 			}
