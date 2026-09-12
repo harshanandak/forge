@@ -88,6 +88,22 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
+		test('fails closed when the validation root disappears before an ENOENT result', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-removed-root-'));
+			try {
+				const result = await runAllTests(() => {
+					fs.rmSync(rootDir, { recursive: true, force: true });
+					throw Object.assign(new Error('spawnSync bun ENOENT'), { code: 'ENOENT' });
+				}, rootDir);
+
+				expect(result.success).toBe(false);
+				expect(result.skipped).not.toBe(true);
+				expect(result.message).toMatch(/root directory/i);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
 		test.skip('should run all tests successfully', async () => {
 			const result = await runAllTests();
 			expect(result.success !== undefined).toBeTruthy();
@@ -677,7 +693,7 @@ describe('Validate Command - Validation Orchestration', () => {
 		const fakeExec = (out) => () => out;
 
 		test('bun ran but executed 0 tests => explicit SKIP, never PASS', async () => {
-			const result = await runAllTests(fakeExec('0 pass\n0 fail\nRan 0 tests across 0 files. [1.00ms]'));
+			const result = await runAllTests(fakeExec('0 pass\n0 fail\nRan 0 tests across 0 files. [1.00ms]'), os.tmpdir());
 			expect(result.skipped).toBe(true);
 			expect(result.testsFound).toBe(false);
 			expect(result.total).toBe(0);
@@ -799,6 +815,27 @@ describe('Validate Command - Validation Orchestration', () => {
 				);
 
 				expect(result).toMatchObject({ success: false, fullSuite: true, testsFound: true });
+				expect(result.message).toMatch(/terminal aggregate/i);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('fails empty full-suite output before the no-tests skip', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-empty-full-suite-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'forge-workflow',
+					bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
+
+				const result = await runAllTests(() => '', rootDir);
+
+				expect(result).toMatchObject({ success: false, fullSuite: true, testsFound: false });
+				expect(result.skipped).not.toBe(true);
 				expect(result.message).toMatch(/terminal aggregate/i);
 			} finally {
 				fs.rmSync(rootDir, { recursive: true, force: true });
