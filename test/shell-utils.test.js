@@ -1,4 +1,5 @@
 const { describe, test, expect } = require('bun:test');
+const path = require('node:path');
 
 const { secureExecFileSync } = require('../lib/shell-utils');
 
@@ -30,6 +31,89 @@ describe('secureExecFileSync', () => {
     });
 
     expect(execCalls).toEqual([{ command: '/usr/bin/bd', args: ['version'] }]);
+  });
+
+  test('reuses successful executable resolution until the command environment changes', () => {
+    const resolutionCache = new Map();
+    let lookups = 0;
+    const options = {
+      _platform: 'win32',
+      _resolutionCache: resolutionCache,
+      _spawnSync: () => {
+        lookups += 1;
+        return { status: 0, stdout: 'C:\\tools\\git.exe\r\n' };
+      },
+      _execFileSync: () => '',
+    };
+
+    secureExecFileSync('git', ['status'], options);
+    secureExecFileSync('git', ['rev-parse', 'HEAD'], options);
+    secureExecFileSync('git', ['status'], { ...options, env: { PATH: 'C:\\other' } });
+
+    expect(lookups).toBe(2);
+  });
+
+  test('keys Windows executable resolution on environment names case-insensitively', () => {
+    const resolutionCache = new Map();
+    let lookups = 0;
+    const options = {
+      _platform: 'win32',
+      _resolutionCache: resolutionCache,
+      _spawnSync: () => {
+        lookups += 1;
+        return { status: 0, stdout: 'C:\\tools\\git.exe\r\n' };
+      },
+      _execFileSync: () => '',
+    };
+
+    secureExecFileSync('git', ['status'], { ...options, env: { path: 'C:\\one', pathext: '.EXE' } });
+    secureExecFileSync('git', ['status'], { ...options, env: { path: 'C:\\two', pathext: '.EXE' } });
+
+    expect(lookups).toBe(2);
+  });
+
+  test('matches Node when duplicate Windows environment keys differ only by case', () => {
+    const resolutionCache = new Map();
+    let lookups = 0;
+    const options = {
+      _platform: 'win32',
+      _resolutionCache: resolutionCache,
+      _spawnSync: () => {
+        lookups += 1;
+        return { status: 0, stdout: 'C:\\tools\\git.exe\r\n' };
+      },
+      _execFileSync: () => '',
+    };
+
+    secureExecFileSync('git', ['status'], {
+      ...options,
+      env: { Path: 'C:\\stable', PATH: 'C:\\one', PATHEXT: '.EXE' },
+    });
+    secureExecFileSync('git', ['status'], {
+      ...options,
+      env: { Path: 'C:\\stable', PATH: 'C:\\two', PATHEXT: '.EXE' },
+    });
+
+    expect(lookups).toBe(2);
+  });
+
+  test('keys Windows executable resolution on the lookup directory', () => {
+    const resolutionCache = new Map();
+    const lookupDirectories = [];
+    const options = {
+      _platform: 'win32',
+      _resolutionCache: resolutionCache,
+      _spawnSync: (_command, _args, spawnOptions) => {
+        lookupDirectories.push(spawnOptions.cwd);
+        return { status: 0, stdout: 'C:\\tools\\git.exe\r\n' };
+      },
+      _execFileSync: () => '',
+    };
+
+    secureExecFileSync('git', ['status'], { ...options, cwd: 'one' });
+    secureExecFileSync('git', ['status'], { ...options, cwd: 'two' });
+
+    expect(lookupDirectories).toEqual([path.resolve('one'), path.resolve('two')]);
   });
 
   test('does not retry with the unresolved command when resolved execution throws', () => {

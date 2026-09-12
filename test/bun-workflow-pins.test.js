@@ -8,6 +8,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const releaseCommand = require('../lib/commands/release');
+const { secureExecFileSync } = require('../lib/shell-utils');
 const protectedStateAuthority = require('../lib/protected-state-authority');
 const { hashProtectedContent } = require('../lib/protected-state-surfaces');
 const {
@@ -17,6 +18,7 @@ const {
 } = require('../lib/npm-publish-workflow');
 const {
 	BUN_WORKFLOW_SPECS,
+	readCompleteBunPinBatch,
 	readPinnedBunVersion,
 	renderBunWorkflowPin,
 	updateBunWorkflowPins,
@@ -75,6 +77,104 @@ describe('Forge-owned Bun workflow pins', () => {
 			.toThrow('allowlisted');
 		expect(() => renderBunWorkflowPin(BUN_WORKFLOW_SPECS[0].path, 'name: no pin\n', '1.4.2'))
 			.toThrow('exactly 1');
+	});
+
+	test('reads the complete source and index Bun pin snapshot in four Git calls', () => {
+		const root = createFixture();
+		const run = args => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+		try {
+			expect(run(['init']).status).toBe(0);
+			expect(run(['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+			expect(run(['config', 'user.name', 'Forge Test']).status).toBe(0);
+			expect(run(['add', '.']).status).toBe(0);
+			expect(run(['commit', '-m', 'base']).status).toBe(0);
+			const sourceHead = run(['rev-parse', 'HEAD']).stdout.trim();
+			const gitCalls = [];
+			const snapshot = readCompleteBunPinBatch(root, sourceHead, [NPM_PUBLISH_WORKFLOW_PATH],
+				(command, args, options) => {
+					gitCalls.push(args);
+					return secureExecFileSync(command, args, options);
+				});
+
+			expect(gitCalls).toHaveLength(4);
+			expect(snapshot.source.get('package.json')).toEqual(fs.readFileSync(path.join(root, 'package.json')));
+			expect(snapshot.source.size).toBe(1 + BUN_WORKFLOW_SPECS.length);
+			expect(snapshot.indexed.size).toBe(2 + BUN_WORKFLOW_SPECS.length);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('does not require the workflow snapshot when the staged Bun pin is unchanged', async () => {
+		const packageManifest = Buffer.from('{"name":"forge-workflow","packageManager":"bun@1.4.2"}');
+		let batchReads = 0;
+		const result = await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites('C:\\fixture', [], {
+			sourceHead: TEST_HEAD,
+			readSourcePackageManifest: () => packageManifest,
+			readIndexedPackageManifest: () => packageManifest,
+			readCompleteBunPinBatch: () => {
+				batchReads += 1;
+				throw new Error('workflow snapshot should not be read');
+			},
+		});
+
+		expect(result).toEqual({ success: true, decisions: [] });
+		expect(batchReads).toBe(0);
+	});
+
+	test('does not load the npm workflow before detecting an unchanged staged Bun pin', () => {
+		const authorityPath = path.join(repoRoot, 'lib', 'protected-state-authority.js');
+		const npmWorkflowPath = path.join(repoRoot, 'lib', 'npm-publish-workflow.js');
+		const script = `
+			const Module = require('node:module');
+			const authorityPath = process.argv[1];
+			const npmWorkflowPath = process.argv[2];
+			const originalLoad = Module._load;
+			let invalidManifestReads = 0;
+			Module._load = function(request, parent, isMain) {
+				if (request === '../package.json' && parent?.filename === npmWorkflowPath) {
+					invalidManifestReads += 1;
+					return { packageManager: 'bun@latest' };
+				}
+				return originalLoad.call(this, request, parent, isMain);
+			};
+			(async () => {
+				const authority = require(authorityPath);
+				const manifest = version => Buffer.from(JSON.stringify({
+					name: 'forge-workflow',
+					packageManager: 'bun@' + version,
+				}));
+				const unchanged = await authority.authorizeAndConsumeProtectedStateWrites('C:\\\\fixture', [], {
+					sourceHead: '${TEST_HEAD}',
+					readSourcePackageManifest: () => manifest('1.4.2'),
+					readIndexedPackageManifest: () => manifest('1.4.2'),
+				});
+				const readsAfterUnchanged = invalidManifestReads;
+				const changed = await authority.authorizeAndConsumeProtectedStateWrites('C:\\\\fixture', [], {
+					sourceHead: '${TEST_HEAD}',
+					readSourcePackageManifest: () => manifest('1.3.12'),
+					readIndexedPackageManifest: () => manifest('1.4.2'),
+				});
+				process.stdout.write(JSON.stringify({ unchanged, readsAfterUnchanged, changed, invalidManifestReads }));
+			})().catch(error => {
+				process.stderr.write(error.stack || error.message);
+				process.exitCode = 1;
+			});
+		`;
+		const isolated = spawnSync('node', ['-e', script, authorityPath, npmWorkflowPath], {
+			cwd: repoRoot,
+			encoding: 'utf8',
+		});
+
+		expect(isolated.status, isolated.stderr).toBe(0);
+		const result = JSON.parse(isolated.stdout);
+		expect(result.unchanged).toEqual({ success: true, decisions: [] });
+		expect(result.readsAfterUnchanged).toBe(0);
+		expect(result.changed).toMatchObject({
+			success: false,
+			batchDecision: { reason: expect.stringContaining('package.json must pin an exact stable Bun version') },
+		});
+		expect(result.invalidManifestReads).toBe(1);
 	});
 
 	test('updates all owned workflow pins and delegates npm-publish to its existing generator', async () => {
