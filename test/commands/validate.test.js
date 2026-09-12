@@ -13,6 +13,7 @@ const {
 	executeValidate,
 	executeDebugMode,
 } = require('../../lib/commands/validate.js');
+const { resolveReceiptPath } = require('../../lib/validation-receipt.js');
 
 setDefaultTimeout(30000);
 
@@ -73,6 +74,36 @@ describe('Validate Command - Validation Orchestration', () => {
 	});
 
 	describe('Test execution', () => {
+		test('fails closed when the validation root directory is missing', async () => {
+			const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-missing-root-'));
+			const rootDir = path.join(parentDir, 'missing');
+			try {
+				const result = await runAllTests(undefined, rootDir);
+
+				expect(result.success).toBe(false);
+				expect(result.skipped).not.toBe(true);
+				expect(result.message).toMatch(/root directory/i);
+			} finally {
+				fs.rmSync(parentDir, { recursive: true, force: true });
+			}
+		});
+
+		test('fails closed when the validation root disappears before an ENOENT result', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-removed-root-'));
+			try {
+				const result = await runAllTests(() => {
+					fs.rmSync(rootDir, { recursive: true, force: true });
+					throw Object.assign(new Error('spawnSync bun ENOENT'), { code: 'ENOENT' });
+				}, rootDir);
+
+				expect(result.success).toBe(false);
+				expect(result.skipped).not.toBe(true);
+				expect(result.message).toMatch(/root directory/i);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
 		test.skip('should run all tests successfully', async () => {
 			const result = await runAllTests();
 			expect(result.success !== undefined).toBeTruthy();
@@ -165,6 +196,24 @@ describe('Validate Command - Validation Orchestration', () => {
 	});
 
 	describe('Full validate orchestration', () => {
+		test('fails validation when rootDir is missing even if the other checks are skipped', async () => {
+			const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-missing-root-'));
+			const rootDir = path.join(parentDir, 'missing');
+			try {
+				const result = await executeValidate({
+					rootDir,
+					skip: ['conflictMarkers', 'typeCheck', 'lint', 'security'],
+				});
+
+				expect(result.success).toBe(false);
+				expect(result.checks.tests.skipped).not.toBe(true);
+				expect(result.failedChecks).toEqual(['tests']);
+				expect(result.validationReceipt).toBe(false);
+			} finally {
+				fs.rmSync(parentDir, { recursive: true, force: true });
+			}
+		});
+
 		test.each([
 			['PASS', 2, 1, 0, 1, true, 'Tests: PASS'],
 			['FAIL', 3, 1, 1, 1, false, 'Checks failed: tests'],
@@ -187,6 +236,41 @@ describe('Validate Command - Validation Orchestration', () => {
 				expect(result.checks.tests.skipped).toBe(total === 0 ? true : skipped);
 				expect(result.summary).toContain(summary);
 				if (!success) expect(result.failedChecks).toEqual(['tests']);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('does not skip a failed full-suite child whose diagnostics contain "not found"', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-failed-child-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'forge-workflow', bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), [
+					"console.error('fixture module not found');",
+					"console.log('Full suite aggregate: status=FAIL tests=1 assertions=1 passed=0 failed=1 errors=0 skipped=0');",
+					'process.exitCode = 1;',
+				].join('\n'));
+				execFileSync('git', ['init', '--quiet'], { cwd: rootDir });
+				execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: rootDir });
+				execFileSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: rootDir });
+				execFileSync('git', ['add', '.'], { cwd: rootDir });
+				execFileSync('git', ['commit', '--quiet', '-m', 'test fixture'], { cwd: rootDir });
+				const receiptPath = resolveReceiptPath(rootDir);
+				fs.mkdirSync(path.dirname(receiptPath), { recursive: true });
+				fs.writeFileSync(receiptPath, 'stale receipt');
+
+				const result = await executeValidate({ rootDir });
+
+				expect(result.success).toBe(false);
+				expect(result.checks.tests.skipped).not.toBe(true);
+				expect(result.summary).not.toContain('All checks passed');
+				expect(result.failedChecks).toEqual(['tests']);
+				expect(result.validationReceipt).toBe(false);
+				expect(fs.existsSync(receiptPath)).toBe(false);
 			} finally {
 				fs.rmSync(rootDir, { recursive: true, force: true });
 			}
@@ -609,7 +693,7 @@ describe('Validate Command - Validation Orchestration', () => {
 		const fakeExec = (out) => () => out;
 
 		test('bun ran but executed 0 tests => explicit SKIP, never PASS', async () => {
-			const result = await runAllTests(fakeExec('0 pass\n0 fail\nRan 0 tests across 0 files. [1.00ms]'));
+			const result = await runAllTests(fakeExec('0 pass\n0 fail\nRan 0 tests across 0 files. [1.00ms]'), os.tmpdir());
 			expect(result.skipped).toBe(true);
 			expect(result.testsFound).toBe(false);
 			expect(result.total).toBe(0);
@@ -619,7 +703,7 @@ describe('Validate Command - Validation Orchestration', () => {
 		});
 
 		test('real passing run => success and testsFound true', async () => {
-			const result = await runAllTests(fakeExec('5 pass\n0 fail\nRan 5 tests across 2 files. [1.00s]'));
+			const result = await runAllTests(fakeExec('5 pass\n0 fail\nRan 5 tests across 2 files. [1.00s]'), os.tmpdir());
 			expect(result.success).toBe(true);
 			expect(result.testsFound).toBe(true);
 			expect(result.total).toBe(5);
@@ -637,8 +721,11 @@ describe('Validate Command - Validation Orchestration', () => {
 			expect(result.failed).toBe(2);
 		});
 
-		test('bun not found => explicit SKIP, not silent PASS', async () => {
-			const exec = () => { const e = new Error('spawn bun ENOENT'); e.code = 'ENOENT'; throw e; };
+		test.each([
+			['POSIX', 'spawn bun ENOENT'],
+			['Windows', 'spawnSync bun ENOENT'],
+		])('%s missing Bun executable => explicit SKIP, not silent PASS', async (_platform, message) => {
+			const exec = () => { const e = new Error(message); e.code = 'ENOENT'; throw e; };
 			const result = await runAllTests(exec);
 			expect(result.skipped).toBe(true);
 			expect(getCheckStatus(result)).toBe('SKIPPED');
@@ -706,6 +793,50 @@ describe('Validate Command - Validation Orchestration', () => {
 				expect(calls[0][0]).toBe('node');
 				expect(calls[0][1]).toEqual(['scripts/test-full-suite.js']);
 				expect(calls[0][2].cwd).toBe(rootDir);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('fails a successful full-suite process without a terminal aggregate', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-missing-aggregate-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'forge-workflow',
+					bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
+
+				const result = await runAllTests(
+					() => '5 pass\n0 fail\nRan 5 tests across 1 file.',
+					rootDir,
+				);
+
+				expect(result).toMatchObject({ success: false, fullSuite: true, testsFound: true });
+				expect(result.message).toMatch(/terminal aggregate/i);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('fails empty full-suite output before the no-tests skip', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-empty-full-suite-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'forge-workflow',
+					bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
+
+				const result = await runAllTests(() => '', rootDir);
+
+				expect(result).toMatchObject({ success: false, fullSuite: true, testsFound: false });
+				expect(result.skipped).not.toBe(true);
+				expect(result.message).toMatch(/terminal aggregate/i);
 			} finally {
 				fs.rmSync(rootDir, { recursive: true, force: true });
 			}
