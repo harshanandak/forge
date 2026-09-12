@@ -192,6 +192,38 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
+		test('does not skip a failed full-suite child whose diagnostics contain "not found"', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-failed-child-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'forge-workflow', bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), [
+					"console.error('fixture module not found');",
+					"console.log('Full suite aggregate: status=FAIL tests=1 assertions=1 passed=0 failed=1 errors=0 skipped=0');",
+					'process.exitCode = 1;',
+				].join('\n'));
+				const result = await executeValidate({
+					rootDir,
+					skip: ['conflictMarkers', 'typeCheck', 'lint', 'security'],
+					validationReceipt: {
+						beginValidation: () => ({}),
+						completeValidation: (_projectRoot, _snapshot, validationResult) => validationResult.success,
+					},
+				});
+
+				expect(result.success).toBe(false);
+				expect(result.checks.tests.skipped).not.toBe(true);
+				expect(result.summary).not.toContain('All checks passed');
+				expect(result.failedChecks).toEqual(['tests']);
+				expect(result.validationReceipt).toBe(false);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
 		test('should fail fast when conflict markers are present', async () => {
 			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-conflicts-'));
 			try {
@@ -637,8 +669,11 @@ describe('Validate Command - Validation Orchestration', () => {
 			expect(result.failed).toBe(2);
 		});
 
-		test('bun not found => explicit SKIP, not silent PASS', async () => {
-			const exec = () => { const e = new Error('spawn bun ENOENT'); e.code = 'ENOENT'; throw e; };
+		test.each([
+			['POSIX', 'spawn bun ENOENT'],
+			['Windows', 'spawnSync bun ENOENT'],
+		])('%s missing Bun executable => explicit SKIP, not silent PASS', async (_platform, message) => {
+			const exec = () => { const e = new Error(message); e.code = 'ENOENT'; throw e; };
 			const result = await runAllTests(exec);
 			expect(result.skipped).toBe(true);
 			expect(getCheckStatus(result)).toBe('SKIPPED');
