@@ -15,6 +15,10 @@ function fixture(overrides = {}) {
     calls.push({ command, args, options });
     if (command === 'git') {
       if (args.join(' ') === 'config --local --get github.account') return account;
+      if (args.join(' ') === 'config --local --get-all github.auto') return overrides.automatic ? 'true' : '';
+      if (args.join(' ') === 'config --local --get-all credential.https://github.com.helper') {
+        return overrides.automatic ? '\n!forge-git-credential' : '';
+      }
       if (args[2] === '--replace-all' && args[3] === 'github.account') { account = args[4]; return ''; }
       if (args[2] === '--unset-all') {
         if (!account) throw Object.assign(new Error(CANARY), { status: 5 });
@@ -39,7 +43,8 @@ function fixture(overrides = {}) {
     }
     throw new Error(`Unexpected fixture call: ${command}`);
   };
-  return { calls, options: { runner, baseEnv: { GH_TOKEN: 'ambient-canary', GH_HOST: 'other.example' } }, account: () => account };
+  return { calls, options: { runner, routerStatus: () => overrides.routerState || 'ready',
+    baseEnv: { GH_TOKEN: 'ambient-canary', GH_HOST: 'other.example' } }, account: () => account };
 }
 
 describe('forge github lifecycle', () => {
@@ -56,6 +61,75 @@ describe('forge github lifecycle', () => {
     expect(f.calls[3].args).toEqual(['repo', 'view', 'github.com/org/project', '--json', 'nameWithOwner']);
     expect(f.calls[4].args).toEqual(['config', '--local', '--replace-all', 'github.account', 'work']);
     expect(JSON.stringify(result).includes(CANARY)).toBe(false);
+  });
+
+  test('use --auto explicitly enables clone-local gh and HTTPS Git routing', async () => {
+    const config = new Map([['github.account', ['personal']]]);
+    const calls = [];
+    let liveLogin = 'work';
+    let failAutoWrite = false;
+    let routerRollbacks = 0;
+    const runner = (command, args, options) => {
+      calls.push({ command, args, options });
+      if (command === 'gh' && args[0] === 'auth') return CANARY;
+      if (command === 'gh' && args[0] === 'api') return liveLogin;
+      if (command === 'gh' && args[0] === 'repo') return '{"nameWithOwner":"org/project"}';
+      if (command === 'git' && args[0] === 'remote') return 'https://github.com/org/project.git';
+      if (command !== 'git' || args[0] !== 'config') throw new Error(`Unexpected call: ${command}`);
+      const verb = args[2];
+      const key = args[3];
+      if (verb === '--get' || verb === '--get-all') {
+        const values = config.get(key);
+        if (!values?.length) throw Object.assign(new Error('missing'), { status: 1 });
+        return verb === '--get' ? values.at(-1) : values.join('\n');
+      }
+      if (verb === '--replace-all') {
+        if (key === 'github.auto' && failAutoWrite) { failAutoWrite = false; throw new Error('write failure'); }
+        config.set(key, [args[4]]); return '';
+      }
+      if (verb === '--add') { config.set(key, [...(config.get(key) || []), args[4]]); return '';
+      }
+      throw new Error(`Unexpected git config call: ${args.join(' ')}`);
+    };
+
+    const helper = "!'C:/Users/example/forge-github-credential-v1'";
+    const result = await handler(['use', 'work', '--auto'], {}, '/repo', {
+      runner, baseEnv: {}, installRouter: () => ({ credentialHelperValue: helper }),
+      isOwnedCredentialHelper: () => true,
+    });
+
+    expect(result).toMatchObject({ success: true, account: 'work', automatic: true });
+    expect(config.get('github.account')).toEqual(['work']);
+    expect(config.get('github.auto')).toEqual(['true']);
+    expect(config.get('credential.https://github.com.helper')).toEqual(['', helper]);
+    expect(JSON.stringify(result)).not.toContain(CANARY);
+
+    liveLogin = 'personal';
+    failAutoWrite = true;
+    const failed = await handler(['use', 'personal', '--auto'], {}, '/repo', {
+      runner, baseEnv: {},
+      installRouter: () => ({ credentialHelperValue: helper, rollback: () => { routerRollbacks += 1; } }),
+      isOwnedCredentialHelper: () => true,
+    });
+    expect(failed.success).toBe(false);
+    expect(config.get('github.account')).toEqual(['work']);
+    expect(routerRollbacks).toBe(1);
+  });
+
+  test('use --auto refuses to replace a pre-existing clone helper before account work', async () => {
+    const calls = [];
+    const runner = (command, args) => {
+      calls.push({ command, args });
+      if (command === 'git' && args.join(' ') === 'config --local --get-all credential.https://github.com.helper') {
+        return 'manager-core';
+      }
+      throw new Error('should stop after helper preflight');
+    };
+
+    const result = await handler(['use', 'work', '--auto'], {}, '/repo', { runner });
+
+    expect(result).toMatchObject({ success: false, code: 'GIT_CREDENTIAL_HELPER_CONFLICT' });
+    expect(calls).toHaveLength(1);
   });
 
   test.each([{ authError: true }, { login: 'wrong' }, { noAccess: true }])('failed use preserves previous binding and never logs in or switches: %j', async failure => {
@@ -86,6 +160,20 @@ describe('forge github lifecycle', () => {
     expect(f.calls.every(c => c.command !== 'git' || c.args[0] === 'remote' || c.args.includes('--get') || c.args.includes('--get-all'))).toBe(true);
   });
 
+  test('human status shows whether automatic routing is active', async () => {
+    const f = fixture({ account: 'Work', login: 'work', automatic: true });
+    const result = await handler(['status'], {}, '/repo', f.options);
+    expect(result.output).toContain('Automatic routing: on');
+    expect(result.output).toContain('Router: ready');
+  });
+
+  test('router uninstall delegates only to the Forge-owned router cleanup', async () => {
+    const result = await handler(['router', '--uninstall'], {}, '/repo', {
+      uninstallRouter: () => ({ removed: ['gh', 'gh.cmd'] }),
+    });
+    expect(result).toMatchObject({ success: true, removed: ['gh', 'gh.cmd'] });
+  });
+
   test.each([
     [{ authError: true }, 'unauthenticated'],
     [{ login: 'wrong' }, 'mismatch'],
@@ -112,7 +200,8 @@ describe('forge github lifecycle', () => {
     expect((await handler(['unset'], {}, '/repo', f.options)).success).toBe(true);
     expect((await handler(['unset'], {}, '/repo', f.options)).success).toBe(true);
     expect(f.account()).toBe('');
-    expect(f.calls.every(c => c.command === 'git' && c.args.join(' ') === 'config --local --unset-all github.account')).toBe(true);
+    expect(f.calls.filter(c => c.args.join(' ') === 'config --local --unset-all github.account')).toHaveLength(2);
+    expect(f.calls.every(c => c.command === 'git')).toBe(true);
   });
 
   test('help, malformed commands, and missing launcher delimiter perform no context work', async () => {
@@ -165,11 +254,16 @@ describe('forge github lifecycle', () => {
     expect(JSON.stringify(report).includes(CANARY)).toBe(false);
   });
 
-  test.each(['bin/forge.js', 'lib/commands/github.js'])('targeted selection always includes the launcher for %s', file => {
-    expect(getTestCandidatesForChangedFile(file)).toContain('test/github-launcher.test.js');
-    if (file.startsWith('lib/')) expect(getTestCandidatesForChangedFile(file)).toContain('test/commands/github.test.js');
+  test.each([
+    ['bin/forge.js', 'test/github-launcher.test.js'],
+    ['lib/commands/github.js', 'test/commands/github.test.js'],
+    ['lib/github-credential.js', 'test/github-credential.test.js'],
+    ['lib/github-router.js', 'test/github-router.test.js'],
+    ['lib/gh-proxy.js', 'test/gh-proxy.test.js'],
+  ])('targeted selection covers %s', (file, expectedTest) => {
+    expect(getTestCandidatesForChangedFile(file)).toContain(expectedTest);
     const plan = classifyPushTests(path.resolve(__dirname, '../..'), (_command, args) => args[0] === 'diff' ? `${file}\n` : 'origin/feature');
     expect(plan.runFullSuite).toBe(false);
-    expect(plan.testTargets).toContain('test/github-launcher.test.js');
+    expect(plan.testTargets).toContain(expectedTest);
   });
 });

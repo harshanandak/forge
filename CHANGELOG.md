@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Note**: `/check` was renamed to `/validate` and `/merge` was renamed to `/premerge` in v0.0.3. Historical entries below may use the old names.
 
+## [Unreleased]
+
+### Added
+
+- **Optional transparent GitHub account routing per clone.** `forge github use <login> --auto` extends the existing secure account binding to shell-resolved `gh` and HTTPS Git commands when Forge's router is first on PATH, so concurrent terminals and harness shells can use different native GitHub CLI accounts without per-launch wrapping. Unbound and non-enabled clones pass through unchanged, `gh auth` remains native, and Forge never stores a token. (issue `8168bee5-b74e-44e5-8fd8-1b9ccb917c1d`)
+
 ## [0.1.0-beta.7] - 2026-09-11
 
 ### Changed

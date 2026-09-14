@@ -4,8 +4,11 @@ const { describe, test, expect } = require('bun:test');
 
 const {
   createGithubContext,
+  disableGithubAuto,
+  enableGithubAuto,
   prepareGithubAccount,
   prepareGithubContext,
+  assertGithubAutoAvailable,
   readGithubAccount,
   unsetGithubAccount,
   validateGithubLogin,
@@ -69,7 +72,7 @@ describe('github context', () => {
     const calls = [];
     const context = createGithubContext('/repo', {
       runner: fakeRunner(calls, { account: 'Work-Login', liveLogin: 'work-login', token: 'token-canary' }),
-      baseEnv: { Path: 'kept', GH_TOKEN: 'wrong-token', GITHUB_TOKEN: 'wrong-token', GH_HOST: 'evil.example', GH_REPO: 'wrong/repository', gh_token: 'also-wrong' },
+      baseEnv: { Path: 'kept', GH_TOKEN: 'wrong-token', GITHUB_TOKEN: 'wrong-token', GH_ENTERPRISE_TOKEN: 'wrong-token', GITHUB_ENTERPRISE_TOKEN: 'wrong-token', GH_HOST: 'evil.example', GH_REPO: 'wrong/repository', gh_token: 'also-wrong' },
     });
 
     expect(context.status).toEqual({ state: 'ready', account: 'Work-Login', login: 'work-login' });
@@ -82,12 +85,57 @@ describe('github context', () => {
     expect(calls[1].options.env).not.toHaveProperty('GITHUB_TOKEN');
     expect(calls[1].options.env).not.toHaveProperty('GH_HOST');
     expect(calls[1].options.env).not.toHaveProperty('GH_REPO');
+    expect(calls[1].options.env).not.toHaveProperty('GH_ENTERPRISE_TOKEN');
+    expect(calls[1].options.env).not.toHaveProperty('GITHUB_ENTERPRISE_TOKEN');
     expect(calls[1].options.env).not.toHaveProperty('gh_token');
     expect(calls[2]).toMatchObject({
       args: ['api', '--hostname', 'github.com', 'user', '--jq', '.login'],
       options: { env: { GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com', Path: 'kept' } },
     });
     expect(JSON.stringify(context)).not.toContain('token-canary');
+  });
+
+  test('automatic routing rolls back partial config writes and disable removes only Forge-owned state', () => {
+    const config = new Map();
+    let failAutoWrite = true;
+    const runner = (command, args) => {
+      expect(command).toBe('git');
+      const verb = args[2];
+      const key = args[3];
+      if (verb === '--get-all') {
+        const values = config.get(key);
+        if (!values?.length) throw Object.assign(new Error('missing'), { status: 1 });
+        return values.join('\n');
+      }
+      if (verb === '--replace-all') {
+        if (key === 'github.auto' && failAutoWrite) { failAutoWrite = false; throw new Error('write failed'); }
+        config.set(key, [args[4]]);
+        return '';
+      }
+      if (verb === '--add') { config.set(key, [...(config.get(key) || []), args[4]]); return ''; }
+      if (verb === '--unset-all') {
+        if (!config.delete(key)) throw Object.assign(new Error('missing'), { status: 1 });
+        return '';
+      }
+      throw new Error(`unexpected git config args: ${args.join(' ')}`);
+    };
+    const credentialHelperValue = "!'C:/Forge/forge-github-credential-v1'";
+
+    let markerPresent = true;
+    const options = { runner, credentialHelperValue, isOwnedCredentialHelper: () => markerPresent };
+    expect(() => enableGithubAuto('/repo', options)).toThrow(/enable|config/i);
+    expect(config.size).toBe(0);
+    enableGithubAuto('/repo', options);
+    config.set('github.account', ['work']);
+    markerPresent = false;
+    expect(() => assertGithubAutoAvailable('/repo', options)).not.toThrow();
+    disableGithubAuto('/repo', options);
+    expect(config.get('github.account')).toEqual(['work']);
+    expect(config.has('github.auto')).toBe(false);
+    expect(config.has('credential.https://github.com.helper')).toBe(false);
+
+    config.set('credential.https://github.com.helper', ['', credentialHelperValue]);
+    expect(() => assertGithubAutoAvailable('/repo', options)).toThrow(/credential helper/i);
   });
 
   test('prepares a supplied account without reading or writing Git config', () => {

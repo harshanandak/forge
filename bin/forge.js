@@ -72,6 +72,8 @@ const {
 } = require('../lib/commands/_aliases');
 const { resolveCommandOpts } = require('../lib/commands/_resolve-command-opts');
 const { getPackageRoot } = require('../lib/package-root');
+const { runCredentialHelper } = require('../lib/github-credential');
+const { runGhProxy } = require('../lib/gh-proxy');
 const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
 const { normalizeStageId } = require('../lib/workflow/stages');
 const { firstPositionalIndex } = require('../lib/global-flags');
@@ -3650,6 +3652,22 @@ async function handleExternalServices(skipExternal, selectedAgents) {
 
 async function main() {
   let command = args[0];
+  if (command === 'github' && args[1] === 'credential') {
+    const operation = args[2];
+    if (!['get', 'store', 'erase'].includes(operation)) { process.exitCode = 1; return; }
+    try {
+      const input = operation === 'get' ? fs.readFileSync(0, 'utf8') : '';
+      process.exitCode = runCredentialHelper(operation, { input, projectRoot: process.cwd() });
+    } catch {
+      console.error('Forge could not read the Git credential request.');
+      process.exitCode = 1;
+    }
+    return;
+  }
+  if (command === 'github' && args[1] === 'proxy' && args[2] === '--') {
+    process.exitCode = runGhProxy(args.slice(3), process.cwd());
+    return;
+  }
   const flags = parseFlags();
   const suppressJsonIntrospectionOutput = ['options', 'explain'].includes(command) && args.includes('--json');
   const suppressCommandJsonOutput = args.includes('--json');
