@@ -153,6 +153,12 @@ describe('transparent gh proxy', () => {
     expect(f.calls).toEqual([]);
   });
 
+  test('rejects a plaintext public API URL before selecting an account', () => {
+    const f = fixture({ automatic: true });
+    expect(runGhProxy(['api', 'http://api.github.com/user'], '/work', f.options)).toBe(1);
+    expect(f.calls).toEqual([]);
+  });
+
   test('treats a positional owner/repository as an explicit GitHub.com destination', () => {
     const f = fixture({ automatic: true });
     f.options.resolveLocalTarget = () => { throw new Error('local remote must not be inspected'); };
@@ -173,6 +179,28 @@ describe('transparent gh proxy', () => {
     const f = fixture({ automatic: true });
     expect(runGhProxy(args, '/work', f.options)).toBe(0);
     expect(f.calls.find(call => call.type === 'selected')).toMatchObject({ args });
+  });
+
+  test('does not treat an autolink URL template as a GitHub destination', () => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => '  gh repo autolink create <keyPrefix> <urlTemplate> [flags]';
+    const args = ['repo', 'autolink', 'create', 'TICKET-', 'https://tracker.example/TICKET-<num>'];
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.find(call => call.type === 'selected')).toMatchObject({ args });
+  });
+
+  test('checks only the named URL positional slot from command usage', () => {
+    const f = fixture({ automatic: true });
+    const args = ['pr', 'view', 'https://github.com/org/repo/pull/1', 'https://enterprise.example/payload'];
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.find(call => call.type === 'selected')).toMatchObject({ args });
+  });
+
+  test('fails closed when native help cannot classify a positional URL', () => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => '';
+    expect(runGhProxy(['pr', 'view', 'https://enterprise.example/org/repo/pull/1'], '/work', f.options)).toBe(1);
+    expect(f.calls).toEqual([]);
   });
 
   test('refuses an enterprise target in a combined short -R option', () => {
@@ -213,6 +241,30 @@ describe('transparent gh proxy', () => {
     f.options.resolveLocalTarget = () => ({ hostname: 'enterprise.example', repository: 'org/project' });
     expect(runGhProxy(['pr', 'list'], '/work', f.options)).toBe(1);
     expect(f.calls).toEqual([]);
+  });
+
+  test('uses the sole non-origin remote when gh has no configured default', () => {
+    const f = fixture({ automatic: true });
+    delete f.options.resolveLocalTarget;
+    const gitCalls = [];
+    f.options.execFileSync = (command, args) => {
+      expect(command).toBe('git');
+      gitCalls.push(args);
+      if (args[0] === 'config') throw Object.assign(new Error('not configured'), { status: 1 });
+      if (args.join(' ') === 'remote get-url origin') throw Object.assign(new Error('missing origin'), { status: 2 });
+      if (args.join(' ') === 'remote') return 'upstream\n';
+      if (args.join(' ') === 'remote get-url upstream') return 'https://github.com/org/project.git\n';
+      throw new Error(`Unexpected git args: ${args.join(' ')}`);
+    };
+
+    expect(runGhProxy(['pr', 'list'], '/work', f.options)).toBe(0);
+    expect(gitCalls).toEqual([
+      ['config', '--local', '--get-regexp', '^remote\\..*\\.gh-resolved$'],
+      ['remote', 'get-url', 'origin'],
+      ['remote'],
+      ['remote', 'get-url', 'upstream'],
+    ]);
+    expect(f.calls.find(call => call.type === 'selected')).toBeDefined();
   });
 
   test('fails closed when explicit destinations conflict or omit a value', () => {
