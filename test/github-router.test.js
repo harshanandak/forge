@@ -512,15 +512,20 @@ describe('opt-in GitHub router installation', () => {
     fs.mkdirSync(binDir);
     installGithubRouter({ platform: 'linux', binDir, stateDir, projectRoot: repo,
       runtimeCommand: ['/opt/forge'] }).commit();
-    const lock = path.join(binDir, '.forge-github-router.lock');
+    const lock = path.join(fs.realpathSync(binDir), '.forge-github-router.lock');
+    let injectedFailures = 0;
     const fileSystem = Object.create(fs);
     fileSystem.renameSync = (source, target) => {
-      if (source === lock && target.endsWith('.released')) throw Object.assign(new Error('release denied'), { code: 'EACCES' });
+      if (source === lock && target.endsWith('.released')) {
+        injectedFailures++;
+        throw Object.assign(new Error('release denied'), { code: 'EACCES' });
+      }
       return fs.renameSync(source, target);
     };
 
     const result = uninstallGithubRouter({ platform: 'linux', binDir, stateDir, fileSystem });
 
+    expect(injectedFailures).toBe(1);
     expect(result.warning).toMatch(/cleanup failed/i);
     expect(result.removed.sort()).toEqual(['forge-github-credential-v1', 'gh']);
   });
