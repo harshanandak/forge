@@ -208,8 +208,21 @@ describe('forge github lifecycle', () => {
     expect(result.output).not.toContain('selected separately');
   });
 
-  test('router uninstall delegates only to the Forge-owned router cleanup', async () => {
-    const result = await handler(['router', '--uninstall'], {}, '/repo', {
+  test('router uninstall requires machine-wide confirmation and a disabled current clone', async () => {
+    let uninstalls = 0;
+    const unconfirmed = await handler(['router', '--uninstall'], {}, '/repo', {
+      uninstallRouter: () => { uninstalls += 1; return { removed: [] }; },
+    });
+    const enabled = await handler(['router', '--uninstall', '--force'], { force: true }, '/repo', {
+      readAuto: () => true,
+      uninstallRouter: () => { uninstalls += 1; return { removed: [] }; },
+    });
+    expect(unconfirmed).toMatchObject({ success: false, code: 'GITHUB_ROUTER_CONFIRMATION' });
+    expect(enabled).toMatchObject({ success: false, code: 'GITHUB_ROUTER_IN_USE' });
+    expect(uninstalls).toBe(0);
+
+    const result = await handler(['router', '--uninstall', '--force'], { force: true }, '/repo', {
+      readAuto: () => false,
       uninstallRouter: () => ({ removed: ['gh', 'gh.cmd'] }),
     });
     expect(result).toMatchObject({ success: true, removed: ['gh', 'gh.cmd'] });

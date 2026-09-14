@@ -81,7 +81,7 @@ be launched with `forge github run -- PROGRAM`.
 forge github status --json
 forge github auto --disable
 forge github unset
-forge github router --uninstall
+forge github router --uninstall --force
 ```
 
 Status reports the selected and verified login, clone-local binding source,
@@ -94,10 +94,13 @@ diagnostics.
 binding. `unset` is safe to repeat and removes both the binding and Forge-owned
 routing. The machine router remains because other clones may use it and passes
 through unchanged outside enabled clones. After disabling every opted-in clone,
-`router --uninstall` removes only marked Forge router files. None of these commands
+`router --uninstall --force` removes only marked Forge router files. Forge refuses
+to remove them while the current clone is still enabled; `--force` acknowledges
+that Forge cannot discover other enabled clones because it stores no machine-wide
+project registry. None of these commands
 removes a stored login or revokes authority from a running child: close that
 process after changing or removing a binding.
-The safe order is: disable or unset every opted-in clone, run `router --uninstall`
+The safe order is: disable or unset every opted-in clone, run `router --uninstall --force`
 last, then uninstall Forge itself. Package managers cannot clean clone-local Git
 configuration after the executable is gone. If that order was missed, reinstall
 Forge and run `forge github auto --disable` or `forge github unset`; these commands

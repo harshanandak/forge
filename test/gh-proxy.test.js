@@ -114,6 +114,27 @@ describe('transparent gh proxy', () => {
     expect(f.calls.some(call => call.type === 'context')).toBe(false);
   });
 
+  test.each([
+    { args: ['issue', 'view'], repository: 'enterprise.example/owner/repo' },
+    { args: ['pr', 'view', '-R', 'enterprise.example/owner/repo'] },
+    { args: ['pr', 'view', '-R=enterprise.example/owner/repo'] },
+    { args: ['pr', 'view', '--repo', 'enterprise.example/owner/repo'] },
+    { args: ['pr', 'view', '--repo=enterprise.example/owner/repo'] },
+  ])('passes host-qualified repository targets through: $args', ({ args, repository }) => {
+    const f = fixture({ automatic: true });
+    if (repository && !args.some(arg => arg === '-R' || arg.startsWith('--repo='))) f.options.baseEnv.GH_REPO = repository;
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'context')).toBe(false);
+  });
+
+  test.each([
+    ['--version'], ['--help'], ['help'], ['pr', 'create', '--help'],
+  ])('passes local-only gh invocation through without account resolution: %j', (...args) => {
+    const f = fixture({ automatic: true });
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'context')).toBe(false);
+  });
+
   test('treats gh api -H as a header and routes through the selected account', () => {
     const f = fixture({ automatic: true });
     const args = ['api', '-H', 'Accept: application/vnd.github+json', 'user'];

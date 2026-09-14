@@ -125,6 +125,22 @@ describe('opt-in GitHub router installation', () => {
     expect(fs.readFileSync(path.join(binDir, 'keep-me'), 'utf8')).toBe('native');
   });
 
+  test('failed uninstall restores files removed earlier in the operation', () => {
+    const binDir = tempRoot();
+    installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] });
+    const helper = path.join(binDir, 'forge-github-credential-v1');
+    const fileSystem = Object.create(fs);
+    fileSystem.unlinkSync = target => {
+      if (target === helper) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+      return fs.unlinkSync(target);
+    };
+
+    expect(() => uninstallGithubRouter({ platform: 'linux', binDir, fileSystem }))
+      .toThrow(/cannot remove/i);
+    expect(fs.existsSync(path.join(binDir, 'gh'))).toBe(true);
+    expect(fs.existsSync(helper)).toBe(true);
+  });
+
   test('compiled installs discover their own executable directory and rollback restores router files', () => {
     const binDir = tempRoot();
     const executablePath = path.join(binDir, 'forge-bin.exe');
