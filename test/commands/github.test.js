@@ -68,6 +68,7 @@ describe('forge github lifecycle', () => {
     const calls = [];
     let liveLogin = 'work';
     let failAutoWrite = false;
+    let failAccountWrite = false;
     let routerRollbacks = 0;
     const runner = (command, args, options) => {
       calls.push({ command, args, options });
@@ -84,6 +85,7 @@ describe('forge github lifecycle', () => {
         return verb === '--get' ? values.at(-1) : values.join('\n');
       }
       if (verb === '--replace-all') {
+        if (key === 'github.account' && failAccountWrite) { failAccountWrite = false; throw new Error('account write failure'); }
         if (key === 'github.auto' && failAutoWrite) { failAutoWrite = false; throw new Error('write failure'); }
         config.set(key, [args[4]]); return '';
       }
@@ -114,6 +116,16 @@ describe('forge github lifecycle', () => {
     expect(failed.success).toBe(false);
     expect(config.get('github.account')).toEqual(['work']);
     expect(routerRollbacks).toBe(1);
+
+    failAccountWrite = true;
+    const failedAccount = await handler(['use', 'personal', '--auto'], {}, '/repo', {
+      runner, baseEnv: {},
+      installRouter: () => ({ credentialHelperValue: helper, rollback: () => { routerRollbacks += 1; } }),
+      isOwnedCredentialHelper: () => true,
+    });
+    expect(failedAccount.success).toBe(false);
+    expect(config.get('github.account')).toEqual(['work']);
+    expect(routerRollbacks).toBe(2);
   });
 
   test('use --auto refuses to replace a pre-existing clone helper before account work', async () => {

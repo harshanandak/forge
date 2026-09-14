@@ -62,13 +62,20 @@ describe('transparent gh proxy', () => {
   test.each([
     ['--hostname', 'enterprise.example'],
     ['--hostname=enterprise.example'],
-    ['-Henterprise.example'],
   ])('passes an explicit non-GitHub hostname through without the selected token: %j', (...hostnameArgs) => {
     const f = fixture({ automatic: true });
     const args = ['api', ...hostnameArgs, 'user'];
     expect(runGhProxy(args, '/work', f.options)).toBe(0);
     expect(f.calls.some(call => call.type === 'context')).toBe(false);
     expect(f.calls[0]).toMatchObject({ type: 'spawn', args, options: { env: { PATH: 'kept', GH_TOKEN: 'ambient' } } });
+  });
+
+  test('treats gh api -H as a header and routes through the selected account', () => {
+    const f = fixture({ automatic: true });
+    const args = ['api', '-H', 'Accept: application/vnd.github+json', 'user'];
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'spawn')).toBe(false);
+    expect(f.calls).toContainEqual({ type: 'context', root: '/work', env: { PATH: 'kept', GH_TOKEN: 'ambient' } });
   });
 
   test('routes an enabled repository through its isolated selected context', () => {

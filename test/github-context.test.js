@@ -98,6 +98,7 @@ describe('github context', () => {
   test('automatic routing rolls back partial config writes and disable removes only Forge-owned state', () => {
     const config = new Map();
     let failAutoWrite = true;
+    let failHelperUnset = false;
     const runner = (command, args) => {
       expect(command).toBe('git');
       const verb = args[2];
@@ -114,6 +115,10 @@ describe('github context', () => {
       }
       if (verb === '--add') { config.set(key, [...(config.get(key) || []), args[4]]); return ''; }
       if (verb === '--unset-all') {
+        if (key === 'credential.https://github.com.helper' && failHelperUnset) {
+          failHelperUnset = false;
+          throw new Error('helper unset failed');
+        }
         if (!config.delete(key)) throw Object.assign(new Error('missing'), { status: 1 });
         return '';
       }
@@ -126,6 +131,10 @@ describe('github context', () => {
     expect(() => enableGithubAuto('/repo', options)).toThrow(/enable|config/i);
     expect(config.size).toBe(0);
     enableGithubAuto('/repo', options);
+    failHelperUnset = true;
+    expect(() => disableGithubAuto('/repo', options)).toThrow(/disable/i);
+    expect(config.get('github.auto')).toEqual(['true']);
+    expect(config.get('credential.https://github.com.helper')).toEqual(['', credentialHelperValue]);
     config.set('github.account', ['work']);
     markerPresent = false;
     expect(() => assertGithubAutoAvailable('/repo', options)).not.toThrow();
