@@ -38,6 +38,7 @@ function repository(login) {
 // reads and the explicitly trusted probe executable can reach native processes.
 function providerPreload() {
   const cp = require('node:child_process');
+  const path = require('node:path');
   const nativeExec = cp.execFileSync;
   const nativeSpawn = cp.spawn;
   const fail = () => { throw new Error('Unexpected provider boundary'); };
@@ -51,7 +52,7 @@ function providerPreload() {
       if (args[0] === 'config' && !args.includes('--get')) return fail();
       return nativeExec(command, args, { ...options, timeout: 10000 });
     }
-    if (command !== 'gh') return fail();
+    if (!/^gh(?:\.exe|\.com|\.bat|\.cmd)?$/i.test(path.basename(command))) return fail();
     const token = login => `test-only-account-session-${login}`;
     if (args[0] === 'auth') {
       if (args.join(' ') !== 'auth token --hostname github.com --user personal'
