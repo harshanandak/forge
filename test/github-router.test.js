@@ -129,15 +129,20 @@ describe('opt-in GitHub router installation', () => {
   test('failed uninstall restores files removed earlier in the operation', () => {
     const binDir = tempRoot();
     installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
-    const helper = path.join(binDir, 'forge-github-credential-v1');
+    const helper = path.join(fs.realpathSync(binDir), 'forge-github-credential-v1');
     const fileSystem = Object.create(fs);
+    let injected = false;
     fileSystem.unlinkSync = target => {
-      if (target === helper) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+      if (target === helper) {
+        injected = true;
+        throw Object.assign(new Error('denied'), { code: 'EACCES' });
+      }
       return fs.unlinkSync(target);
     };
 
     expect(() => uninstallGithubRouter({ platform: 'linux', binDir, fileSystem }))
       .toThrow(/cannot remove/i);
+    expect(injected).toBe(true);
     expect(fs.existsSync(path.join(binDir, 'gh'))).toBe(true);
     expect(fs.existsSync(helper)).toBe(true);
   });
