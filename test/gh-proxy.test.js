@@ -4,13 +4,19 @@ const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { resolveRealGh, runGhProxy } = require('../lib/gh-proxy');
+const { flagTakesValue, resolveRealGh, runGhProxy } = require('../lib/gh-proxy');
 
 function fixture({ automatic = false } = {}) {
   const calls = [];
   const spawnResult = { status: 0, signal: null };
   const options = {
     baseEnv: { PATH: 'kept', GH_TOKEN: 'ambient', FORGE_GH_PROXY_ACTIVE: '1' },
+    readCommandHelp: () => [
+      '  -b, --body string  Supply a body',
+      '  -d, --draft  Filter drafts',
+      '      --paginate  Fetch every page',
+      '  -w, --web  Open in a browser',
+    ].join('\n'),
     readAuto: () => automatic,
     resolveExecutable: () => '/real/gh',
     spawnSync: (command, args, spawnOptions) => {
@@ -82,6 +88,14 @@ describe('transparent gh proxy', () => {
     expect(selected.calls.some(call => call.type === 'context')).toBe(true);
   });
 
+  test('recognizes enterprise selectors after valueless flags', () => {
+    const f = fixture({ automatic: true });
+    const args = ['api', '--paginate', '--hostname', 'enterprise.example', 'user'];
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'context')).toBe(false);
+    expect(f.calls[0]).toMatchObject({ type: 'spawn', args });
+  });
+
   test('preserves GH_REPO only for the selected native gh child', () => {
     const calls = [];
     const options = {
@@ -120,6 +134,7 @@ describe('transparent gh proxy', () => {
     { args: ['pr', 'view', '-R=enterprise.example/owner/repo'] },
     { args: ['pr', 'view', '--repo', 'enterprise.example/owner/repo'] },
     { args: ['pr', 'view', '--repo=enterprise.example/owner/repo'] },
+    { args: ['pr', 'list', '--draft', '-R', 'enterprise.example/owner/repo'] },
   ])('passes host-qualified repository targets through: $args', ({ args, repository }) => {
     const f = fixture({ automatic: true });
     if (repository && !args.some(arg => arg === '-R' || arg.startsWith('--repo='))) f.options.baseEnv.GH_REPO = repository;
@@ -130,10 +145,42 @@ describe('transparent gh proxy', () => {
   test.each([
     ['--version'], ['--help'], ['version'], ['help'], ['pr', 'create', '--help'],
     ['completion', '-s', 'bash'], ['config', 'get', 'git_protocol'], ['alias', 'list'],
+    ['pr', 'list', '--web', '--help'],
   ])('passes local-only gh invocation through without account resolution: %j', (...args) => {
     const f = fixture({ automatic: true });
     expect(runGhProxy(args, '/work', f.options)).toBe(0);
     expect(f.calls.some(call => call.type === 'context')).toBe(false);
+  });
+
+  test('parses native help declarations without copying GitHub CLI flag tables', () => {
+    const help = '  -d, --draft  Filter drafts\n  -b, --body string  Supply a body\n';
+    expect(flagTakesValue(help, '--draft')).toBe(false);
+    expect(flagTakesValue(help, '-b')).toBe(true);
+    expect(flagTakesValue(help, '--unknown')).toBeNull();
+  });
+
+  test('loads option arity from the installed command help only when needed', () => {
+    const f = fixture({ automatic: true });
+    const helpCalls = [];
+    delete f.options.readCommandHelp;
+    f.options.execFileSync = (command, args) => {
+      helpCalls.push({ command, args });
+      return '  -d, --draft  Filter drafts\n  -R, --repo [HOST/]OWNER/REPO  Select repository\n';
+    };
+    const args = ['pr', 'list', '--draft', '-R', 'enterprise.example/owner/repo'];
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(helpCalls).toEqual([{ command: '/real/gh', args: ['help', 'pr', 'list'] }]);
+    expect(f.calls.some(call => call.type === 'context')).toBe(false);
+  });
+
+  test('stops before either account when ambiguous option arity is unavailable', () => {
+    const f = fixture({ automatic: true });
+    const errors = [];
+    f.options.readCommandHelp = () => '';
+    f.options.writeError = value => errors.push(value);
+    expect(runGhProxy(['pr', 'list', '--unknown', '--help'], '/work', f.options)).toBe(1);
+    expect(f.calls.some(call => call.type === 'spawn' || call.type === 'context')).toBe(false);
+    expect(errors.join('')).toContain('could not select');
   });
 
   test.each([

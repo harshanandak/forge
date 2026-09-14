@@ -208,12 +208,23 @@ describe('forge github lifecycle', () => {
   test('human status shows whether automatic routing is active', async () => {
     const f = fixture({ account: 'Work', login: 'work', automatic: true, helper: 'manager-core',
       scopedHelper: "!'C:/Forge/forge-github-credential-v1'" });
+    f.options.isOwnedCredentialHelper = () => true;
     const result = await handler(['status'], {}, '/repo', f.options);
     expect(result.output).toContain('Automatic routing: on');
     expect(result.output).toContain('Router: ready');
     expect(result.status.credentialHelper).toBe('forge');
     expect(result.output).toContain("HTTPS Git credentials use this clone's Forge-selected GitHub account.");
     expect(result.output).not.toContain('selected separately');
+  });
+
+  test('status reports a missing or unowned Forge credential helper as stale', async () => {
+    const f = fixture({ account: 'Work', login: 'work', automatic: true,
+      scopedHelper: "!'C:/Moved/forge-github-credential-v1'" });
+    f.options.isOwnedCredentialHelper = () => false;
+    const result = await handler(['status'], {}, '/repo', f.options);
+    expect(result.status.credentialHelper).toBe('forge-stale');
+    expect(result.output).toContain('missing or unowned');
+    expect(result.output).not.toContain('HTTPS Git credentials use this clone');
   });
 
   test('router uninstall requires machine-wide confirmation and a disabled current clone', async () => {
