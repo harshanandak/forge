@@ -7,7 +7,8 @@ describe('Forge GitHub credential helper', () => {
   test.each([
     ['get', 'protocol=ssh\nhost=github.com\n\n'],
     ['get', 'protocol=https\nhost=gitlab.com\n\n'],
-    ['get', 'protocol=https\nhost=github.com:443\n\n'],
+    ['get', 'protocol=https\nhost=github.com:444\n\n'],
+    ['get', 'protocol=https\nhost=github.com.evil.example\n\n'],
     ['store', 'protocol=https\nhost=github.com\n\n'],
     ['erase', 'protocol=https\nhost=github.com\n\n'],
   ])('ignores unsupported request %s without resolving an account', (operation, input) => {
@@ -32,6 +33,16 @@ describe('Forge GitHub credential helper', () => {
     });
     expect(runCredentialHelper('get', {
       projectRoot: '/repo', input: 'protocol=https\nhost=GitHub.com\n\n', write: () => {},
+      readAuto: () => true, createContext: () => { prepared = true; return context; },
+    })).toBe(0);
+    expect(prepared).toBe(true);
+  });
+
+  test('accepts the default HTTPS port', () => {
+    let prepared = false;
+    const context = { writeCredential: () => {} };
+    expect(runCredentialHelper('get', {
+      projectRoot: '/repo', input: 'protocol=https\nhost=GitHub.com:443\n\n', write: () => {},
       readAuto: () => true, createContext: () => { prepared = true; return context; },
     })).toBe(0);
     expect(prepared).toBe(true);

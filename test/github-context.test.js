@@ -1,7 +1,6 @@
 'use strict';
 
 const { describe, test, expect } = require('bun:test');
-const path = require('node:path');
 
 const {
   createGithubContext,
@@ -120,7 +119,7 @@ describe('github context', () => {
       }
       throw new Error(`unexpected git config args: ${args.join(' ')}`);
     };
-    const credentialHelperValue = `!'${path.resolve('forge-github-credential-v1')}'`;
+    const credentialHelperValue = "!'C:/Forge/forge-github-credential-v1'";
 
     let markerPresent = true;
     const options = { runner, credentialHelperValue, isOwnedCredentialHelper: () => markerPresent };

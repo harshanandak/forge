@@ -98,9 +98,10 @@ removes a stored login or revokes authority from a running child: close that
 process after changing or removing a binding.
 The safe order is: disable or unset every opted-in clone, run `router --uninstall`
 last, then uninstall Forge itself. Package managers cannot clean clone-local Git
-configuration after the executable is gone. If that order was missed, recover a
-clone with `git config --local --unset-all credential.https://github.com.helper`
-before enabling it again.
+configuration after the executable is gone. If that order was missed, reinstall
+Forge and run `forge github auto --disable` or `forge github unset`; these commands
+remove only Forge-owned configuration. Do not use `git config --unset-all` because
+another local HTTPS helper may share the same key.
 
 ## Three separate identities
 

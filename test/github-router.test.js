@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const spawn = require('cross-spawn');
-const { findForgeBinDir, getGithubRouterStatus, installGithubRouter, isOwnedCredentialHelperValue, uninstallGithubRouter } = require('../lib/github-router');
+const { findForgeBinDir, getGithubRouterStatus, helperPathFromValue, installGithubRouter, isOwnedCredentialHelperValue, uninstallGithubRouter } = require('../lib/github-router');
 
 const roots = [];
 afterEach(() => {
@@ -37,8 +37,21 @@ describe('opt-in GitHub router installation', () => {
       expect(fs.statSync(path.join(binDir, 'gh.ps1')).mode & 0o777).toBe(0o600);
       expect(fs.statSync(path.join(binDir, 'forge-github-credential-v1')).mode & 0o777).toBe(0o700);
     }
-    expect(fs.readFileSync(path.join(binDir, 'gh.cmd'), 'utf8')).toContain('github proxy --');
+    const cmdLauncher = fs.readFileSync(path.join(binDir, 'gh.cmd'), 'utf8');
+    const psLauncher = fs.readFileSync(path.join(binDir, 'gh.ps1'), 'utf8');
+    expect(cmdLauncher).toContain('github proxy --');
+    expect(cmdLauncher).toContain('setlocal');
+    expect(psLauncher).toContain('finally');
+    expect(psLauncher).toContain('Remove-Item Env:FORGE_GH_PROXY_ACTIVE');
     expect(fs.readFileSync(path.join(binDir, 'forge-github-credential-v1'), 'utf8')).toContain('github credential "$@"');
+  });
+
+  test('recognizes native and Windows absolute helper paths only for the Forge helper', () => {
+    expect(helperPathFromValue("!'/opt/forge/forge-github-credential-v1'")).toBe('/opt/forge/forge-github-credential-v1');
+    expect(helperPathFromValue("!'C:/Forge/forge-github-credential-v1'")).toBe('C:/Forge/forge-github-credential-v1');
+    expect(helperPathFromValue("!'C:\\Forge\\forge-github-credential-v1'")).toBe('C:\\Forge\\forge-github-credential-v1');
+    expect(helperPathFromValue("!'relative/forge-github-credential-v1'")).toBeNull();
+    expect(helperPathFromValue("!'C:/Forge/other-helper'")).toBeNull();
   });
 
   test('refuses to overwrite a non-Forge gh launcher without partial writes', () => {
@@ -49,6 +62,31 @@ describe('opt-in GitHub router installation', () => {
       .toThrow(/already exists|refus/i);
     expect(fs.readFileSync(existing, 'utf8')).toBe('@echo native\r\n');
     expect(fs.existsSync(path.join(binDir, 'gh.ps1'))).toBe(false);
+  });
+
+  test('rollback removes attempted new files without deleting untouched router files', () => {
+    const binDir = tempRoot();
+    const untouched = path.join(binDir, 'gh.ps1');
+    const originalContent = `# forge-gh-router-v1\nkeep me\n`;
+    fs.writeFileSync(untouched, originalContent);
+    const originalWrite = fs.writeFileSync;
+    let failed = false;
+    fs.writeFileSync = (target, ...args) => {
+      if (!failed && target === path.join(binDir, 'gh.cmd')) {
+        failed = true;
+        throw Object.assign(new Error('injected write failure'), { code: 'EACCES' });
+      }
+      return originalWrite(target, ...args);
+    };
+    try {
+      expect(() => installGithubRouter({ platform: 'win32', binDir, runtimeCommand: ['C:\\forge.exe'] }))
+        .toThrow(/cannot write/i);
+    } finally {
+      fs.writeFileSync = originalWrite;
+    }
+    expect(fs.readFileSync(untouched, 'utf8')).toBe(originalContent);
+    expect(fs.existsSync(path.join(binDir, 'gh'))).toBe(false);
+    expect(fs.existsSync(path.join(binDir, 'forge-github-credential-v1'))).toBe(false);
   });
 
   test('refuses a PATH order where native gh shadows Forge and reports router reachability', () => {

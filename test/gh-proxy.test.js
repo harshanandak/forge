@@ -10,15 +10,15 @@ function fixture({ automatic = false } = {}) {
   const calls = [];
   const spawnResult = { status: 0, signal: null };
   const options = {
-    baseEnv: { PATH: 'kept', GH_TOKEN: 'ambient' },
+    baseEnv: { PATH: 'kept', GH_TOKEN: 'ambient', FORGE_GH_PROXY_ACTIVE: '1' },
     readAuto: () => automatic,
     resolveExecutable: () => '/real/gh',
     spawnSync: (command, args, spawnOptions) => {
       calls.push({ type: 'spawn', command, args, options: spawnOptions });
       return spawnResult;
     },
-    createContext: root => {
-      calls.push({ type: 'context', root });
+    createContext: (root, contextOptions) => {
+      calls.push({ type: 'context', root, env: contextOptions.baseEnv });
       return {
         bound: true,
         runChild: (command, args, childOptions) => {
@@ -36,7 +36,7 @@ describe('transparent gh proxy', () => {
     const f = fixture();
     expect(runGhProxy(['repo', 'view'], '/personal', f.options)).toBe(0);
     expect(f.calls).toEqual([{ type: 'spawn', command: '/real/gh', args: ['repo', 'view'], options: {
-      cwd: '/personal', env: f.options.baseEnv, stdio: 'inherit', shell: false,
+      cwd: '/personal', env: { PATH: 'kept', GH_TOKEN: 'ambient' }, stdio: 'inherit', shell: false,
     } }]);
   });
 
@@ -55,7 +55,7 @@ describe('transparent gh proxy', () => {
     const args = ['--hostname', 'github.com', 'auth', 'status'];
     expect(runGhProxy(args, '/work', f.options)).toBe(0);
     expect(f.calls).toEqual([{ type: 'spawn', command: '/real/gh', args, options: {
-      cwd: '/work', env: f.options.baseEnv, stdio: 'inherit', shell: false,
+      cwd: '/work', env: { PATH: 'kept', GH_TOKEN: 'ambient' }, stdio: 'inherit', shell: false,
     } }]);
   });
 
@@ -68,18 +68,19 @@ describe('transparent gh proxy', () => {
     const args = ['api', ...hostnameArgs, 'user'];
     expect(runGhProxy(args, '/work', f.options)).toBe(0);
     expect(f.calls.some(call => call.type === 'context')).toBe(false);
-    expect(f.calls[0]).toMatchObject({ type: 'spawn', args, options: { env: f.options.baseEnv } });
+    expect(f.calls[0]).toMatchObject({ type: 'spawn', args, options: { env: { PATH: 'kept', GH_TOKEN: 'ambient' } } });
   });
 
   test('routes an enabled repository through its isolated selected context', () => {
     const f = fixture({ automatic: true });
     expect(runGhProxy(['pr', 'create', '--draft'], '/work', f.options)).toBe(0);
     expect(f.calls).toEqual([
-      { type: 'context', root: '/work' },
+      { type: 'context', root: '/work', env: { PATH: 'kept', GH_TOKEN: 'ambient' } },
       { type: 'selected', command: '/real/gh', args: ['pr', 'create', '--draft'], options: {
         cwd: '/work', stdio: 'inherit', shell: false,
       } },
     ]);
+    expect(f.options.baseEnv.FORGE_GH_PROXY_ACTIVE).toBe('1');
   });
 
   test('keeps simultaneous repositories independent and propagates child status', () => {
