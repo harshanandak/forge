@@ -168,6 +168,28 @@ describe('opt-in GitHub router installation', () => {
       .toEqual(['forge-github-credential-v1', 'gh']);
   });
 
+  test('uninstall locks each owned router directory once and ignores unrelated PATH directories', () => {
+    const root = tempRoot();
+    const binDir = path.join(root, 'forge-bin');
+    const alias = path.join(root, 'forge-alias');
+    const unrelated = path.join(root, 'unrelated');
+    fs.mkdirSync(binDir);
+    fs.mkdirSync(unrelated);
+    fs.symlinkSync(binDir, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
+
+    const locked = [];
+    const fileSystem = Object.create(fs);
+    fileSystem.mkdirSync = target => { locked.push(target); return fs.mkdirSync(target); };
+    const result = uninstallGithubRouter({
+      platform: 'linux', pathEnv: [binDir, alias, unrelated].join(path.delimiter), fileSystem,
+    });
+
+    expect(result.removed.sort()).toEqual(['forge-github-credential-v1', 'gh']);
+    expect(locked).toHaveLength(1);
+    expect(path.dirname(locked[0])).toBe(fs.realpathSync(binDir));
+  });
+
   test('generated router and absolute credential helper execute through paths with spaces', () => {
     const root = tempRoot();
     const binDir = path.join(root, 'bin with spaces');
