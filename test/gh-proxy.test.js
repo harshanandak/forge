@@ -140,6 +140,7 @@ describe('transparent gh proxy', () => {
     ['pr', 'view', '--repo=enterprise.example/owner/repo'],
     ['pr', 'view', 'https://enterprise.example/owner/repo/pull/1'],
     ['discussion', 'view', 'https://enterprise.example/org/project/discussions/1'],
+    ['pr', '-R', 'github.com/owner/repo', 'view', 'https://enterprise.example/owner/repo/pull/1'],
     ['discussion', 'comment', 'https://enterprise.example/org/project/discussions/1'],
     ['gist', 'clone', 'https://enterprise.example/example/0123456789'],
     ['repo', 'clone', 'https://enterprise.example/owner/repo'],

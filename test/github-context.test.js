@@ -177,13 +177,19 @@ describe('github context', () => {
     expect(config.get('credential.https://github.com.helper')).toEqual(['', credentialHelperValue]);
     config.set('github.account', ['work']);
     markerPresent = false;
-    expect(() => assertGithubAutoAvailable('/repo', options)).toThrow(/credential helper/i);
+    expect(() => assertGithubAutoAvailable('/repo', options)).not.toThrow();
     disableGithubAuto('/repo', options);
     expect(config.get('github.account')).toEqual(['work']);
     expect(config.has('github.auto')).toBe(false);
     expect(config.get('credential.https://github.com.helper')).toEqual(['', credentialHelperValue]);
 
-    config.set('credential.https://github.com.helper', ['', credentialHelperValue]);
+    const replacement = "!'C:/Moved/forge-github-credential-v1'";
+    options.credentialHelperValue = replacement;
+    options.isOwnedCredentialHelper = value => value === replacement;
+    enableGithubAuto('/repo', options);
+    expect(config.get('credential.https://github.com.helper')).toEqual(['', replacement]);
+
+    config.set('credential.https://github.com.helper', ['', "!'C:/Custom/helper'"]);
     expect(() => assertGithubAutoAvailable('/repo', options)).toThrow(/credential helper/i);
   });
 

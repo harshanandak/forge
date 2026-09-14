@@ -197,6 +197,14 @@ describe('opt-in GitHub router installation', () => {
     expect(fs.readFileSync(path.join(binDir, 'keep-me'), 'utf8')).toBe('native');
   });
 
+  test('uninstall is idempotent when no router or registry exists', () => {
+    const root = tempRoot();
+    const stateDir = path.join(root, 'state');
+
+    expect(uninstallGithubRouter({ platform: 'linux', binDir: root, stateDir }).removed).toEqual([]);
+    expect(fs.existsSync(path.join(stateDir, 'github-router-clones.json'))).toBe(false);
+  });
+
   test('global uninstall fails closed when a registered clone cannot be checked', () => {
     const root = tempRoot();
     const binDir = path.join(root, 'bin');
