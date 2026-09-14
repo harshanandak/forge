@@ -26,7 +26,7 @@ function fixture(overrides = {}) {
       }
       if (args.includes('user.name')) return 'Example Author';
       if (args.includes('user.email')) return 'author@example.test';
-      if (args.includes('credential.helper')) return `!gh auth git-credential # ${CANARY}`;
+      if (args.includes('credential.helper')) return overrides.scopedHelper ?? overrides.helper ?? `!gh auth git-credential # ${CANARY}`;
       if (args[0] === 'remote') return overrides.remote || 'https://github.com/org/project.git';
     }
     if (command === 'ssh') return `hostname ${overrides.sshHostname || 'github.com'}\nuser git\n`;
@@ -193,14 +193,19 @@ describe('forge github lifecycle', () => {
     expect(JSON.stringify(result).includes(CANARY)).toBe(false);
     expect(JSON.stringify(result).includes('https://user:')).toBe(false);
     expect(f.account()).toBe('Work');
-    expect(f.calls.every(c => c.command !== 'git' || c.args[0] === 'remote' || c.args.includes('--get') || c.args.includes('--get-all'))).toBe(true);
+    expect(f.calls.every(c => c.command !== 'git' || c.args[0] === 'remote' || c.args.includes('--get')
+      || c.args.includes('--get-all') || c.args.includes('--get-urlmatch'))).toBe(true);
   });
 
   test('human status shows whether automatic routing is active', async () => {
-    const f = fixture({ account: 'Work', login: 'work', automatic: true });
+    const f = fixture({ account: 'Work', login: 'work', automatic: true, helper: 'manager-core',
+      scopedHelper: "!'C:/Forge/forge-github-credential-v1'" });
     const result = await handler(['status'], {}, '/repo', f.options);
     expect(result.output).toContain('Automatic routing: on');
     expect(result.output).toContain('Router: ready');
+    expect(result.status.credentialHelper).toBe('forge');
+    expect(result.output).toContain("HTTPS Git credentials use this clone's Forge-selected GitHub account.");
+    expect(result.output).not.toContain('selected separately');
   });
 
   test('router uninstall delegates only to the Forge-owned router cleanup', async () => {

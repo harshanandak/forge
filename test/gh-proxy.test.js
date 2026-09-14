@@ -70,6 +70,50 @@ describe('transparent gh proxy', () => {
     expect(f.calls[0]).toMatchObject({ type: 'spawn', args, options: { env: { PATH: 'kept', GH_TOKEN: 'ambient' } } });
   });
 
+  test('passes an ambient enterprise host through unless an explicit GitHub.com host overrides it', () => {
+    const passthrough = fixture({ automatic: true });
+    passthrough.options.baseEnv.GH_HOST = 'enterprise.example';
+    expect(runGhProxy(['api', 'user'], '/work', passthrough.options)).toBe(0);
+    expect(passthrough.calls.some(call => call.type === 'context')).toBe(false);
+
+    const selected = fixture({ automatic: true });
+    selected.options.baseEnv.GH_HOST = 'enterprise.example';
+    expect(runGhProxy(['api', '--hostname', 'github.com', 'user'], '/work', selected.options)).toBe(0);
+    expect(selected.calls.some(call => call.type === 'context')).toBe(true);
+  });
+
+  test('preserves GH_REPO only for the selected native gh child', () => {
+    const calls = [];
+    const options = {
+      baseEnv: { GH_TOKEN: 'ambient', GH_REPO: 'owner/other-repo' },
+      readAuto: () => true,
+      resolveExecutable: () => '/real/gh',
+      spawnSync: (command, args, spawnOptions) => {
+        calls.push({ command, args, env: spawnOptions.env });
+        return { status: 0, signal: null };
+      },
+      createContext: (_root, contextOptions) => ({
+        bound: true,
+        runChild: (command, args, childOptions) => contextOptions.childRunner(command, args, {
+          ...childOptions, env: { GH_TOKEN: 'selected', GH_HOST: 'github.com' },
+        }),
+      }),
+    };
+
+    expect(runGhProxy(['issue', 'view'], '/work', options)).toBe(0);
+    expect(calls).toEqual([{ command: '/real/gh', args: ['issue', 'view'], env: {
+      GH_TOKEN: 'selected', GH_HOST: 'github.com', GH_REPO: 'owner/other-repo',
+    } }]);
+  });
+
+  test('reads mixed-case target selectors on Windows', () => {
+    const f = fixture({ automatic: true });
+    f.options.platform = 'win32';
+    f.options.baseEnv.Gh_Host = 'enterprise.example';
+    expect(runGhProxy(['api', 'user'], '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'context')).toBe(false);
+  });
+
   test('treats gh api -H as a header and routes through the selected account', () => {
     const f = fixture({ automatic: true });
     const args = ['api', '-H', 'Accept: application/vnd.github+json', 'user'];
