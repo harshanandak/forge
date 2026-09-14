@@ -88,6 +88,11 @@ describe('transparent gh proxy', () => {
     selected.options.baseEnv.GH_HOST = 'enterprise.example';
     expect(runGhProxy(['api', '--hostname', 'github.com', 'user'], '/work', selected.options)).toBe(0);
     expect(selected.calls.some(call => call.type === 'context')).toBe(true);
+
+    const empty = fixture({ automatic: true });
+    empty.options.baseEnv.GH_HOST = '';
+    expect(runGhProxy(['api', 'user'], '/work', empty.options)).toBe(0);
+    expect(empty.calls.some(call => call.type === 'context')).toBe(true);
   });
 
   test('recognizes enterprise selectors after valueless flags', () => {
@@ -111,6 +116,14 @@ describe('transparent gh proxy', () => {
   test('fails closed when a hostname value is missing', () => {
     const f = fixture({ automatic: true });
     expect(runGhProxy(['api', 'user', '--hostname'], '/work', f.options)).toBe(1);
+    expect(f.calls.some(call => call.type === 'context' || call.type === 'spawn')).toBe(false);
+  });
+
+  test.each([
+    ['--repo'], ['-R'], ['--repo', '--hostname', 'github.com'], ['-R', '--hostname', 'github.com'],
+  ])('fails closed when a repository value is missing: %j', (...args) => {
+    const f = fixture({ automatic: true });
+    expect(runGhProxy(['pr', 'view', ...args], '/work', f.options)).toBe(1);
     expect(f.calls.some(call => call.type === 'context' || call.type === 'spawn')).toBe(false);
   });
 
@@ -140,12 +153,25 @@ describe('transparent gh proxy', () => {
     } }]);
   });
 
+  test('treats an empty GH_REPO as unset', () => {
+    const f = fixture({ automatic: true });
+    f.options.baseEnv.GH_REPO = '';
+    expect(runGhProxy(['issue', 'view'], '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'context')).toBe(true);
+  });
+
   test('reads mixed-case target selectors on Windows', () => {
     const f = fixture({ automatic: true });
     f.options.platform = 'win32';
     f.options.baseEnv.Gh_Host = 'enterprise.example';
     expect(runGhProxy(['api', 'user'], '/work', f.options)).toBe(0);
     expect(f.calls.some(call => call.type === 'context')).toBe(false);
+
+    const empty = fixture({ automatic: true });
+    empty.options.platform = 'win32';
+    empty.options.baseEnv.Gh_Host = '';
+    expect(runGhProxy(['api', 'user'], '/work', empty.options)).toBe(0);
+    expect(empty.calls.some(call => call.type === 'context')).toBe(true);
   });
 
   test.each([
@@ -162,6 +188,29 @@ describe('transparent gh proxy', () => {
     if (repository && !args.some(arg => arg === '-R' || arg.startsWith('--repo='))) f.options.baseEnv.GH_REPO = repository;
     expect(runGhProxy(args, '/work', f.options)).toBe(0);
     expect(f.calls.some(call => call.type === 'context')).toBe(false);
+  });
+
+  test.each([
+    [['repo', 'view', 'enterprise.example/owner/repo'], false],
+    [['repo', 'view', '--web', 'enterprise.example/owner/repo'], false],
+    [['repo', 'view', '--', 'enterprise.example/owner/repo'], false],
+    [['repo', 'view', 'github.com/owner/repo'], true],
+    [['repo', 'view', 'owner/repo'], true],
+    [['repo', 'clone', 'owner/repo', 'enterprise.example/owner/repo'], true],
+  ])('routes the documented positional repository only: %j', (args, selected) => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => args[1] === 'clone'
+      ? 'USAGE\n  gh repo clone <repository> [<directory>]'
+      : 'USAGE\n  gh repo view [<repository>] [flags]\n\nFLAGS\n  -w, --web  Open in a browser';
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'context')).toBe(selected);
+  });
+
+  test('fails closed when a positional repository conflicts with an explicit hostname', () => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => 'USAGE\n  gh repo view [<repository>] [flags]';
+    expect(runGhProxy(['repo', 'view', '--hostname', 'github.com', 'enterprise.example/owner/repo'], '/work', f.options)).toBe(1);
+    expect(f.calls.some(call => call.type === 'context' || call.type === 'spawn')).toBe(false);
   });
 
   test.each([
