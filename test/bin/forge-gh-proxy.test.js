@@ -1,5 +1,6 @@
 'use strict';
 
+const { describe, expect, test } = require('bun:test');
 const { runProxyEntrypoint } = require('../../bin/forge-gh-proxy');
 
 describe('Forge GitHub proxy entrypoint', () => {

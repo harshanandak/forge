@@ -1,5 +1,6 @@
 'use strict';
 
+const { describe, expect, test } = require('bun:test');
 const { runCredentialEntrypoint } = require('../../bin/forge-github-credential');
 
 describe('Forge GitHub credential entrypoint', () => {
