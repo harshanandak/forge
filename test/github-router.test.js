@@ -102,6 +102,20 @@ describe('opt-in GitHub router installation', () => {
     expect(getGithubRouterStatus({ platform: 'win32', pathEnv })).toBe('shadowed');
   });
 
+  test('rejects transient package-runner shims and accepts a stable Forge launcher', () => {
+    const root = tempRoot();
+    const transientDir = path.join(root, 'node_modules', '.bin');
+    const stableDir = path.join(root, 'global-bin');
+    fs.mkdirSync(transientDir, { recursive: true });
+    fs.mkdirSync(stableDir);
+    fs.writeFileSync(path.join(transientDir, 'forge.cmd'), '@echo transient\r\n');
+    fs.writeFileSync(path.join(stableDir, 'forge.cmd'), '@echo stable\r\n');
+
+    expect(() => findForgeBinDir({ platform: 'win32', pathEnv: [transientDir, stableDir].join(path.delimiter) }))
+      .toThrow(/npx and bunx/i);
+    expect(findForgeBinDir({ platform: 'win32', pathEnv: stableDir })).toBe(stableDir);
+  });
+
   test('uninstall removes only marked Forge launchers', () => {
     const binDir = tempRoot();
     installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] });

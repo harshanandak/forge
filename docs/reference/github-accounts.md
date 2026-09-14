@@ -60,7 +60,8 @@ passes through unchanged. The complete `gh auth` namespace always passes through
 so login and recovery remain native. HTTPS Git uses the same account through the
 clone-local helper. SSH key selection remains controlled by SSH configuration.
 Enablement stops if another `gh` resolves before Forge on `PATH`, instead of
-claiming automatic routing when the router cannot run.
+claiming automatic routing when the router cannot run. Run automatic setup from
+an installed Forge command; transient `npx`/`bunx` package-runner shims are ignored.
 
 Repositories can therefore be opened normally in T3 Code, VS Code, terminals,
 Codex, or Claude Code. Shell-based `gh` and HTTPS Git commands started with that

@@ -144,6 +144,30 @@ describe('forge github lifecycle', () => {
     expect(calls).toHaveLength(1);
   });
 
+  test('use --auto reads the previous binding before installing router files', async () => {
+    let installs = 0;
+    const runner = (command, args) => {
+      if (command === 'gh' && args[0] === 'auth') return CANARY;
+      if (command === 'gh' && args[0] === 'api') return 'work';
+      if (command === 'gh' && args[0] === 'repo') return '{"nameWithOwner":"org/project"}';
+      if (command === 'git' && args[0] === 'remote') return 'https://github.com/org/project.git';
+      if (command === 'git' && args.join(' ') === 'config --local --get-all credential.https://github.com.helper') {
+        throw Object.assign(new Error('missing'), { status: 1 });
+      }
+      if (command === 'git' && args.join(' ') === 'config --local --get github.account') {
+        throw Object.assign(new Error('config failed'), { status: 2 });
+      }
+      throw new Error(`Unexpected fixture call: ${command} ${args.join(' ')}`);
+    };
+
+    const result = await handler(['use', 'work', '--auto'], {}, '/repo', {
+      runner, baseEnv: {}, installRouter: () => { installs += 1; return {}; },
+    });
+
+    expect(result.success).toBe(false);
+    expect(installs).toBe(0);
+  });
+
   test.each([{ authError: true }, { login: 'wrong' }, { noAccess: true }])('failed use preserves previous binding and never logs in or switches: %j', async failure => {
     const f = fixture(failure);
     const result = await handler(['use', 'work'], {}, '/repo', f.options);
