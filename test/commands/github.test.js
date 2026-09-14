@@ -71,6 +71,36 @@ describe('forge github lifecycle', () => {
     expect(f.calls.some(call => call.args.includes('--unset-all'))).toBe(false);
   });
 
+  test('switches an automatic clone through native gh instead of its existing router', async () => {
+    const f = fixture({ automatic: true });
+    const simulated = f.options.runner;
+    const executables = [];
+    delete f.options.runner;
+    f.options.resolveRealGh = () => '/native/gh';
+    f.options.execFileSync = (command, args, options) => {
+      executables.push(command);
+      return simulated(command === '/native/gh' ? 'gh' : command, args, options);
+    };
+
+    const result = await handler(['use', 'work'], {}, '/repo', f.options);
+
+    expect(result).toMatchObject({ success: true, account: 'work', automatic: true });
+    expect(executables.filter(command => command === '/native/gh')).toHaveLength(3);
+    expect(f.account()).toBe('work');
+  });
+
+  test('does not change the binding when native gh is unavailable', async () => {
+    const f = fixture({ automatic: true });
+    delete f.options.runner;
+    f.options.resolveRealGh = () => null;
+    f.options.execFileSync = () => { throw new Error('must not execute'); };
+
+    const result = await handler(['use', 'work'], {}, '/repo', f.options);
+
+    expect(result.success).toBe(false);
+    expect(f.account()).toBe('personal');
+  });
+
   test('use --auto explicitly enables clone-local gh and HTTPS Git routing', async () => {
     const config = new Map([['github.account', ['personal']]]);
     const calls = [];
