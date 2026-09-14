@@ -135,6 +135,8 @@ describe('transparent gh proxy', () => {
     { args: ['pr', 'view', '--repo', 'enterprise.example/owner/repo'] },
     { args: ['pr', 'view', '--repo=enterprise.example/owner/repo'] },
     { args: ['pr', 'list', '--draft', '-R', 'enterprise.example/owner/repo'] },
+    { args: ['pr', 'list', '-Renterprise.example/owner/repo'] },
+    { args: ['pr', 'list', '-dR', 'enterprise.example/owner/repo'] },
   ])('passes host-qualified repository targets through: $args', ({ args, repository }) => {
     const f = fixture({ automatic: true });
     if (repository && !args.some(arg => arg === '-R' || arg.startsWith('--repo='))) f.options.baseEnv.GH_REPO = repository;
@@ -191,6 +193,8 @@ describe('transparent gh proxy', () => {
     ['issue', 'create', '--body', '--repo=enterprise.example/owner/repo'],
     ['issue', 'create', '--body', '--repo', 'enterprise.example/owner/repo'],
     ['issue', 'create', '--body', '-R', 'enterprise.example/owner/repo'],
+    ['issue', 'create', '--body', '-Renterprise.example/owner/repo'],
+    ['issue', 'create', '-bRenterprise.example/owner/repo'],
     ['release', 'create', 'v1', '--', 'asset.zip', '--help'],
     ['release', 'create', 'v1', '--', '--version'],
     ['release', 'create', 'v1', '--', '--hostname=enterprise.example'],
@@ -201,6 +205,13 @@ describe('transparent gh proxy', () => {
     expect(f.calls.some(call => call.type === 'context')).toBe(true);
     expect(f.calls.some(call => call.type === 'spawn')).toBe(false);
     expect(f.calls.find(call => call.type === 'selected').args).toEqual(args);
+  });
+
+  test('uses the last repeated repository selector', () => {
+    const f = fixture({ automatic: true });
+    const args = ['pr', 'list', '-Renterprise.example/owner/repo', '-R', 'owner/repo'];
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'context')).toBe(true);
   });
 
   test('treats gh api -H as a header and routes through the selected account', () => {

@@ -77,6 +77,7 @@ describe('forge github lifecycle', () => {
     let liveLogin = 'work';
     let failAutoWrite = false;
     let failAccountWrite = false;
+    let routerCommits = 0;
     let routerRollbacks = 0;
     const runner = (command, args, options) => {
       calls.push({ command, args, options });
@@ -104,7 +105,7 @@ describe('forge github lifecycle', () => {
 
     const helper = "!'C:/Users/example/forge-github-credential-v1'";
     const result = await handler(['use', 'work', '--auto'], {}, '/repo', {
-      runner, baseEnv: {}, installRouter: () => ({ credentialHelperValue: helper }),
+      runner, baseEnv: {}, installRouter: () => ({ credentialHelperValue: helper, commit: () => { routerCommits += 1; } }),
       isOwnedCredentialHelper: () => true,
     });
 
@@ -112,6 +113,7 @@ describe('forge github lifecycle', () => {
     expect(config.get('github.account')).toEqual(['work']);
     expect(config.get('github.auto')).toEqual(['true']);
     expect(config.get('credential.https://github.com.helper')).toEqual(['', helper]);
+    expect(routerCommits).toBe(1);
     expect(JSON.stringify(result)).not.toContain(CANARY);
 
     liveLogin = 'personal';

@@ -44,6 +44,7 @@ describe('opt-in GitHub router installation', () => {
     expect(psLauncher).toContain('finally');
     expect(psLauncher).toContain('Remove-Item Env:FORGE_GH_PROXY_ACTIVE');
     expect(fs.readFileSync(path.join(binDir, 'forge-github-credential-v1'), 'utf8')).toContain('github credential "$@"');
+    result.commit();
   });
 
   test('recognizes native and Windows absolute helper paths only for the Forge helper', () => {
@@ -118,7 +119,7 @@ describe('opt-in GitHub router installation', () => {
 
   test('uninstall removes only marked Forge launchers', () => {
     const binDir = tempRoot();
-    installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] });
+    installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
     fs.writeFileSync(path.join(binDir, 'keep-me'), 'native');
     const result = uninstallGithubRouter({ platform: 'linux', binDir });
     expect(result.removed.sort()).toEqual(['forge-github-credential-v1', 'gh']);
@@ -127,7 +128,7 @@ describe('opt-in GitHub router installation', () => {
 
   test('failed uninstall restores files removed earlier in the operation', () => {
     const binDir = tempRoot();
-    installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] });
+    installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
     const helper = path.join(binDir, 'forge-github-credential-v1');
     const fileSystem = Object.create(fs);
     fileSystem.unlinkSync = target => {
@@ -151,6 +152,20 @@ describe('opt-in GitHub router installation', () => {
     installed.rollback();
     expect(fs.existsSync(path.join(binDir, 'gh.cmd'))).toBe(false);
     expect(fs.existsSync(path.join(binDir, 'forge-github-credential-v1'))).toBe(false);
+  });
+
+  test('serializes install rollback and uninstall in one launcher directory', () => {
+    const binDir = tempRoot();
+    const first = installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] });
+    expect(() => installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] }))
+      .toThrow(/operation is in progress/i);
+    expect(() => uninstallGithubRouter({ platform: 'linux', binDir })).toThrow(/operation is in progress/i);
+
+    first.rollback();
+    const second = installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] });
+    second.commit();
+    expect(uninstallGithubRouter({ platform: 'linux', binDir }).removed.sort())
+      .toEqual(['forge-github-credential-v1', 'gh']);
   });
 
   test('generated router and absolute credential helper execute through paths with spaces', () => {
