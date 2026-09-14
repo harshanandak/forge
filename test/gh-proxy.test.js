@@ -160,6 +160,12 @@ describe('transparent gh proxy', () => {
     expect(f.calls.find(call => call.type === 'selected')).toBeDefined();
   });
 
+  test.each(['api.github.com', 'uploads.github.com'])('routes the public GitHub host %s through the selected account', host => {
+    const f = fixture({ automatic: true });
+    expect(runGhProxy(['api', `https://${host}/user`], '/work', f.options)).toBe(0);
+    expect(f.calls.find(call => call.type === 'selected')).toBeDefined();
+  });
+
   test.each([
     ['issue', 'create', '--body', 'https://example.com'],
     ['pr', 'comment', '12', '--body=https://enterprise.example/reference'],

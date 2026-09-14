@@ -181,7 +181,7 @@ describe('github context', () => {
     disableGithubAuto('/repo', options);
     expect(config.get('github.account')).toEqual(['work']);
     expect(config.has('github.auto')).toBe(false);
-    expect(config.get('credential.https://github.com.helper')).toEqual(['', credentialHelperValue]);
+    expect(config.has('credential.https://github.com.helper')).toBe(false);
 
     const replacement = "!'C:/Moved/forge-github-credential-v1'";
     options.credentialHelperValue = replacement;
@@ -191,6 +191,8 @@ describe('github context', () => {
 
     config.set('credential.https://github.com.helper', ['', "!'C:/Custom/helper'"]);
     expect(() => assertGithubAutoAvailable('/repo', options)).toThrow(/credential helper/i);
+    disableGithubAuto('/repo', options);
+    expect(config.get('credential.https://github.com.helper')).toEqual(['', "!'C:/Custom/helper'"]);
   });
 
   test('prepares a supplied account without reading or writing Git config', () => {

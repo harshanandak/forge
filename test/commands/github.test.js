@@ -351,6 +351,15 @@ describe('forge github lifecycle', () => {
     expect(result.output.includes(CANARY)).toBe(false);
   });
 
+  test('status fails when automatic routing has no clone account', async () => {
+    const f = fixture({ account: '', automatic: true });
+    const result = await handler(['status', '--json'], {}, '/repo', f.options);
+
+    expect(result).toMatchObject({ success: false, error: expect.any(String) });
+    expect(result.status).toMatchObject({ state: 'unauthenticated', account: null, automatic: true, code: 'GITHUB_ACCOUNT_REQUIRED' });
+    expect(f.calls.some(call => call.command === 'gh')).toBe(false);
+  });
+
   test('unset is idempotent and removes every local value', async () => {
     const f = fixture({ account: ['personal', 'work'] });
     let unregistered = 0;
