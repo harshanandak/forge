@@ -71,7 +71,7 @@ The user-facing products are Memory, Flow, Agent Companion, and the Forge facade
 
 - Prove beta.5 inventory, non-mutating dry-run, verified backup, interrupted cutover recovery, rollback, and sole-writer behavior.
 - Resolve published runtime completeness (`95372af8`) and global bundled-workspace install behavior (`66e6890a`).
-- Keep only one-way `forge migrate --from beads` import and prove import fidelity. Remove remaining live Beads runtime/export surfaces before release; use Kernel-native backups and restoration for rollback.
+- Per the user's 2026-09-14 correction, remove all shipped Beads integration, including the importer, compatibility modules, config hints, and advertised commands. Preserve historical records and existing user data. Use Kernel-native backups and restoration for rollback.
 - Test the facade against independently packed Contracts, Memory, and Flow artifacts rather than workspace links.
 - Freeze an exact package/version/contract/source BOM before release convergence.
 
@@ -122,7 +122,7 @@ Agent Companion issues `85be2945`, `6f2dbe75`, `84c942f3`, `ce785690`, `1fc448fa
 - Physical repository split.
 - Broad policy compilation and model-winner evaluation.
 - Cache redesign, impact-aware validation, and speculative startup tuning.
-- Obsolete binary aliases, generic IssueAdapter deletion, and tracked mirror removal until compatibility windows and consumer scans complete. Beads runtime/export retirement is required before release under D45.
+- Obsolete binary aliases, generic IssueAdapter deletion, and tracked mirror removal until compatibility windows and consumer scans complete. Complete shipped Beads retirement, including import, is required before release under the user's correction.
 
 ### Supersede or remove from active planning
 
@@ -210,14 +210,14 @@ No timeout becomes green by increasing the timeout alone. Speed changes must ret
 - Document one owner for contracts, Memory, Flow, Companion, and facade behavior.
 - Convert duplicate root implementations to delegates when touched by the owning product lane.
 - Remove no-op or misleading public configuration and documentation.
-- Shrink the kernel-only issue backend selector after inbound-import tests exist; retire Beads runtime/export paths and use Kernel-native rollback.
+- Shrink the kernel-only issue backend selector; retire all shipped Beads paths, including import, and prove Kernel-native rollback and preserved user data.
 - Supersede duplicate issue records and correct stale release labels/dependency edges.
 - Add package-level entrypoints and stable unavailable diagnostics rather than more routers.
 
 ### After 0.1.0
 
 - Delete delegated Memory/Kernel and PR-monitor implementations after call-site and replay proof.
-- Retain only inbound Beads import; verify later cleanup does not reintroduce runtime/export support.
+- Keep historical Beads records as provenance; do not reintroduce executable integration.
 - Remove obsolete binary aliases after an announced compatibility period.
 - Remove unnecessary generated/tracked skill mirrors only after clean-install discovery is proven.
 - Reassess the abstract IssueAdapter and physical Contracts package from real external consumer data.

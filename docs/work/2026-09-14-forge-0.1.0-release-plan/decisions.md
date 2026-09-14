@@ -2,6 +2,8 @@
 
 ## Product model
 
+User correction, 2026-09-14: Forge 0.1.0 ships no Beads integration, including the legacy importer. This supersedes D45's retained inbound-import exception for the new release. Preserve historical evidence and existing user data; remove shipped commands, compatibility modules, configuration, dependencies, and current documentation advertising Beads. Rollback uses Kernel-native backups.
+
 1. **Memory is the authority product.** It owns Kernel state, durable knowledge, WorkPacket issuance, claims, leases, evidence acceptance, and all authoritative transitions.
 2. **Flow is an optional execution product.** It consumes authorized packets and owns its execution/cancellation/cleanup receipts. Humans, agents, and other runtimes may also produce contract-valid `RunReceipt`s without Flow; Memory alone verifies and accepts them under the same authority policy.
 3. **Agent Companion is an independent execution-provider package and repository.** It returns provider evidence to Flow. It never imports Memory storage, writes Kernel authority, advances stages, approves gates, or authorizes merges.

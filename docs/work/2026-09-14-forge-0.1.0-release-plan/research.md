@@ -88,7 +88,7 @@ The highest-value simplifications are architectural convergence rather than imme
 - Make `packages/memory` the single implementation owner; root Memory/Kernel modules become compatibility delegates before later deletion.
 - Make Flow's monitor runtime the single engine; Shepherd remains a specialization over it.
 - Simplify the one-backend issue selector after beta.5 migration behavior is proven.
-- Keep only inbound Beads import under D45. Kernel-native backup/restore provides rollback; remaining live Beads export/runtime surfaces must retire before release.
+- At the audited remote head, Kernel is the only selectable backend, but the explicit Beads importer, old-config warnings, and compatibility module with export helpers remain. The user subsequently required complete shipped Beads removal, superseding D45's import exception. Kernel-native backup/restore provides rollback; historical records and user data are preserved.
 - Keep current binary aliases through 0.1.x, then remove obsolete aliases with a announced migration.
 - Keep one canonical skill source and generate harness mirrors atomically; do not delete required tracked mirrors until clean-install discovery is proven.
 - Treat Graphiti and other graph/vector systems as optional enrichment projections. Remove or correct configuration documented as having no runtime effect.

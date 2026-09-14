@@ -99,7 +99,7 @@ Each lane owns only its named modules and focused tests. The validation owner ca
 1. Capture beta.5 state inventory and a verified backup.
 2. Prove dry-run, successful cutover, interruption recovery, and rollback.
 3. Prove sole-writer authority and no shadow writes.
-4. Verify Beads is inbound-import-only, retire runtime/export surfaces, and prove rollback through Kernel-native backup/restore.
+4. Remove remaining shipped Beads integration, including the importer, compatibility helpers, command/config hints, dependencies, and current docs. Search all callers and published artifacts; retain historical provenance and existing user data. Prove Kernel-native backup/restore and stable diagnostics for the removed command. Reconcile the older D45 import exception with the user's 2026-09-14 correction.
 5. Bind receipts to the exact package candidate BOM.
 
 ## Task 5 — release convergence
