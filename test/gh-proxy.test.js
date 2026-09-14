@@ -128,11 +128,32 @@ describe('transparent gh proxy', () => {
   });
 
   test.each([
-    ['--version'], ['--help'], ['help'], ['pr', 'create', '--help'],
+    ['--version'], ['--help'], ['version'], ['help'], ['pr', 'create', '--help'],
+    ['completion', '-s', 'bash'], ['config', 'get', 'git_protocol'], ['alias', 'list'],
   ])('passes local-only gh invocation through without account resolution: %j', (...args) => {
     const f = fixture({ automatic: true });
     expect(runGhProxy(args, '/work', f.options)).toBe(0);
     expect(f.calls.some(call => call.type === 'context')).toBe(false);
+  });
+
+  test.each([
+    ['issue', 'create', '--body', '--help'],
+    ['issue', 'create', '--body', '--version'],
+    ['issue', 'create', '--body', '--hostname=enterprise.example'],
+    ['issue', 'create', '--body', '--hostname', 'enterprise.example'],
+    ['issue', 'create', '--body', '--repo=enterprise.example/owner/repo'],
+    ['issue', 'create', '--body', '--repo', 'enterprise.example/owner/repo'],
+    ['issue', 'create', '--body', '-R', 'enterprise.example/owner/repo'],
+    ['release', 'create', 'v1', '--', 'asset.zip', '--help'],
+    ['release', 'create', 'v1', '--', '--version'],
+    ['release', 'create', 'v1', '--', '--hostname=enterprise.example'],
+    ['release', 'create', 'v1', '--', '--repo=enterprise.example/owner/repo'],
+  ])('keeps option-looking values on the selected account route: %j', (...args) => {
+    const f = fixture({ automatic: true });
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'context')).toBe(true);
+    expect(f.calls.some(call => call.type === 'spawn')).toBe(false);
+    expect(f.calls.find(call => call.type === 'selected').args).toEqual(args);
   });
 
   test('treats gh api -H as a header and routes through the selected account', () => {

@@ -54,13 +54,21 @@ describe('forge github lifecycle', () => {
     expect(result.success).toBe(true);
     expect(f.account()).toBe('work');
     expect(f.calls.map(c => [c.command, c.args[0]])).toEqual([
-      ['gh', 'auth'], ['gh', 'api'], ['git', 'remote'], ['gh', 'repo'], ['git', 'config'],
+      ['gh', 'auth'], ['gh', 'api'], ['git', 'remote'], ['gh', 'repo'], ['git', 'config'], ['git', 'config'],
     ]);
     expect(f.calls[0].options.env.GH_TOKEN).toBeUndefined();
     expect(f.calls[3].options.env.GH_TOKEN === CANARY).toBe(true);
     expect(f.calls[3].args).toEqual(['repo', 'view', 'github.com/org/project', '--json', 'nameWithOwner']);
-    expect(f.calls[4].args).toEqual(['config', '--local', '--replace-all', 'github.account', 'work']);
+    expect(f.calls[5].args).toEqual(['config', '--local', '--replace-all', 'github.account', 'work']);
     expect(JSON.stringify(result).includes(CANARY)).toBe(false);
+  });
+
+  test('plain use preserves and reports an existing automatic mode', async () => {
+    const f = fixture({ automatic: true });
+    const result = await handler(['use', 'work'], {}, '/repo', f.options);
+    expect(result).toMatchObject({ success: true, account: 'work', automatic: true });
+    expect(result.output).toContain('with automatic routing');
+    expect(f.calls.some(call => call.args.includes('--unset-all'))).toBe(false);
   });
 
   test('use --auto explicitly enables clone-local gh and HTTPS Git routing', async () => {
