@@ -17,6 +17,7 @@ function fixture({ automatic = false } = {}) {
       '      --paginate  Fetch every page',
       '  -w, --web  Open in a browser',
     ].join('\n'),
+    readAliases: () => '',
     readAuto: () => automatic,
     resolveExecutable: () => '/real/gh',
     spawnSync: (command, args, spawnOptions) => {
@@ -100,6 +101,7 @@ describe('transparent gh proxy', () => {
     const calls = [];
     const options = {
       baseEnv: { GH_TOKEN: 'ambient', GH_REPO: 'owner/other-repo' },
+      readAliases: () => '',
       readAuto: () => true,
       resolveExecutable: () => '/real/gh',
       spawnSync: (command, args, spawnOptions) => {
@@ -214,6 +216,33 @@ describe('transparent gh proxy', () => {
     expect(f.calls.some(call => call.type === 'context')).toBe(true);
   });
 
+  test.each(['enterprise-view', 'shell-view'])('fails closed before executing configured alias %s', alias => {
+    const f = fixture({ automatic: true });
+    const errors = [];
+    f.options.readAliases = () => 'enterprise-view: pr list -R enterprise.example/owner/repo\nshell-view: !gh api --hostname enterprise.example user';
+    f.options.writeError = value => errors.push(value);
+    expect(runGhProxy([alias, '--limit', '1'], '/work', f.options)).toBe(1);
+    expect(f.calls.some(call => call.type === 'spawn' || call.type === 'context')).toBe(false);
+    expect(errors.join('')).toContain('expanded gh command');
+  });
+
+  test('fails closed without exposing an alias-inspection error', () => {
+    const f = fixture({ automatic: true });
+    const errors = [];
+    f.options.readAliases = () => { throw new Error('alias-output-canary'); };
+    f.options.writeError = value => errors.push(value);
+    expect(runGhProxy(['custom'], '/work', f.options)).toBe(1);
+    expect(f.calls.some(call => call.type === 'spawn' || call.type === 'context')).toBe(false);
+    expect(errors.join('')).not.toContain('alias-output-canary');
+  });
+
+  test('does not inspect aliases when automatic routing is disabled', () => {
+    const f = fixture();
+    f.options.readAliases = () => { throw new Error('should not inspect'); };
+    expect(runGhProxy(['custom'], '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'spawn')).toBe(true);
+  });
+
   test('treats gh api -H as a header and routes through the selected account', () => {
     const f = fixture({ automatic: true });
     const args = ['api', '-H', 'Accept: application/vnd.github+json', 'user'];
@@ -237,6 +266,7 @@ describe('transparent gh proxy', () => {
   test('keeps simultaneous repositories independent and propagates child status', () => {
     const selected = [];
     const options = {
+      readAliases: () => '',
       readAuto: () => true,
       resolveExecutable: () => '/real/gh',
       createContext: root => ({ bound: true, runChild: (_command, _args, childOptions) => {

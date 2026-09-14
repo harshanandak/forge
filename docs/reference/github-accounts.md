@@ -154,6 +154,9 @@ and `--path`. Git Bash is still required for Forge's existing Windows Bash helpe
   directory on PATH, restart the application, and rerun `use --auto`.
 - **Explicit repository override:** `gh -R` and `gh --repo` still use the account
   bound to the current working clone; run them from the clone whose identity you intend.
+- **Configured `gh` alias:** automatic mode stops before executing an opaque alias because
+  its expansion can hide another hostname or arbitrary shell code. Run the expanded native
+  `gh` command explicitly; alias management through `gh alias` remains available.
 
 The supported workflow entrypoints are `forge`, `forge-workflow`, and a compiled
 Forge executable whose directory is on PATH; it installs the router beside itself. Rerun `use --auto`
