@@ -109,12 +109,28 @@ describe('opt-in GitHub router installation', () => {
     const stableDir = path.join(root, 'global-bin');
     fs.mkdirSync(transientDir, { recursive: true });
     fs.mkdirSync(stableDir);
-    fs.writeFileSync(path.join(transientDir, 'forge.cmd'), '@echo transient\r\n');
-    fs.writeFileSync(path.join(stableDir, 'forge.cmd'), '@echo stable\r\n');
+    const shim = '@node C:\\global\\node_modules\\forge-workflow\\bin\\forge.js %*\r\n';
+    fs.writeFileSync(path.join(transientDir, 'forge.cmd'), shim);
+    fs.writeFileSync(path.join(stableDir, 'forge.cmd'), shim);
 
-    expect(() => findForgeBinDir({ platform: 'win32', pathEnv: [transientDir, stableDir].join(path.delimiter) }))
+    const entrypointPath = 'C:\\global\\node_modules\\forge-workflow\\bin\\forge.js';
+    expect(() => findForgeBinDir({ platform: 'win32', pathEnv: [transientDir, stableDir].join(path.delimiter), entrypointPath }))
       .toThrow(/npx and bunx/i);
-    expect(findForgeBinDir({ platform: 'win32', pathEnv: stableDir })).toBe(stableDir);
+    expect(findForgeBinDir({ platform: 'win32', pathEnv: stableDir, entrypointPath })).toBe(stableDir);
+  });
+
+  test('skips an unrelated forge executable and selects the active forge-workflow launcher', () => {
+    const root = tempRoot();
+    const unrelatedDir = path.join(root, 'unrelated');
+    const workflowDir = path.join(root, 'workflow');
+    fs.mkdirSync(unrelatedDir);
+    fs.mkdirSync(workflowDir);
+    fs.writeFileSync(path.join(unrelatedDir, 'forge.cmd'), '@node C:\\stale\\node_modules\\forge-workflow\\bin\\forge.js %*\r\n');
+    fs.writeFileSync(path.join(workflowDir, 'forge-workflow.cmd'), '@node C:\\global\\node_modules\\forge-workflow\\bin\\forge.js %*\r\n');
+
+    expect(findForgeBinDir({ platform: 'win32', pathEnv: [unrelatedDir, workflowDir].join(path.delimiter),
+      entrypointPath: 'C:\\global\\node_modules\\forge-workflow\\bin\\forge.js' }))
+      .toBe(workflowDir);
   });
 
   test('uninstall removes only marked Forge launchers', () => {

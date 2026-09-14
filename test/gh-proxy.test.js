@@ -14,6 +14,7 @@ function fixture({ automatic = false } = {}) {
     readCommandHelp: () => [
       '  -b, --body string  Supply a body',
       '  -d, --draft  Filter drafts',
+      '  -H, --header key:value  Add a HTTP request header',
       '      --paginate  Fetch every page',
       '  -w, --web  Open in a browser',
     ].join('\n'),
@@ -35,6 +36,7 @@ function fixture({ automatic = false } = {}) {
         },
       };
     },
+    resolveLocalTarget: () => ({ hostname: 'github.com', repository: 'org/project' }),
   };
   return { calls, options };
 }
@@ -214,9 +216,10 @@ describe('transparent gh proxy', () => {
   });
 
   test.each([
-    ['--version'], ['--help'], ['version'], ['help'], ['pr', 'create', '--help'],
+    ['--version'], ['--help'], ['-h'], ['version'], ['help'], ['pr', 'create', '--help'], ['pr', 'create', '-h'],
+    ['pr', 'create', '-h=false', '-h'], ['pr', 'create', '-h=0', '-h=1'],
     ['completion', '-s', 'bash'], ['config', 'get', 'git_protocol'], ['alias', 'list'],
-    ['pr', 'list', '--web', '--help'],
+    ['pr', 'list', '--web', '--help'], ['pr', 'list', '-wh'],
   ])('passes local-only gh invocation through without account resolution: %j', (...args) => {
     const f = fixture({ automatic: true });
     expect(runGhProxy(args, '/work', f.options)).toBe(0);
@@ -256,6 +259,15 @@ describe('transparent gh proxy', () => {
 
   test.each([
     ['issue', 'create', '--body', '--help'],
+    ['issue', 'create', '--body', '-h'],
+    ['issue', 'create', '--body', '--help=true'],
+    ['issue', 'create', '-b-h'],
+    ['issue', 'create', '-dh=false'],
+    ['issue', 'create', '-h=false'],
+    ['issue', 'create', '-h=0'],
+    ['issue', 'create', '-h', '-h=false'],
+    ['issue', 'create', '--help', '--help=false'],
+    ['api', '-H', '-h'],
     ['issue', 'create', '--body', '--version'],
     ['issue', 'create', '--body', '--hostname=enterprise.example'],
     ['issue', 'create', '--body', '--hostname', 'enterprise.example'],
@@ -291,6 +303,89 @@ describe('transparent gh proxy', () => {
     f.options.readCommandHelp = () => 'USAGE\n  gh pr view [<number> | <url> | <branch>]';
     expect(runGhProxy(['pr', 'view', url], '/work', f.options)).toBe(0);
     expect(f.calls.some(call => call.type === 'context')).toBe(selected);
+  });
+
+  test.each(['<discussion-url>', '<comment-url>', '<comment_url>', '<pr-url>'])('recognizes named URL placeholder %s', placeholder => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => `USAGE\n  gh discussion view [${placeholder}]`;
+    expect(runGhProxy(['discussion', 'view', 'https://enterprise.example/owner/repo/discussions/1'], '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'context')).toBe(false);
+  });
+
+  test('ignores URL placeholders outside command usage declarations', () => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => 'USAGE\n  gh issue create [flags]\n\nEXAMPLES\n  Open <discussion-url> in a browser';
+    expect(runGhProxy(['issue', 'create', 'https://enterprise.example/not-a-target'], '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'context')).toBe(true);
+  });
+
+  test('canonicalizes a verified local SSH alias for the selected native gh child', () => {
+    const calls = [];
+    const f = fixture({ automatic: true });
+    delete f.options.resolveLocalTarget;
+    f.options.execFileSync = (command, args) => {
+      calls.push({ command, args });
+      if (command === 'git' && args[0] === 'config') throw Object.assign(new Error('unset'), { status: 1 });
+      if (command === 'git') return 'git@work-github:org/project.git';
+      if (command === 'ssh') return 'hostname github.com\nuser git\n';
+      throw new Error('unexpected command');
+    };
+    f.options.createContext = (_root, contextOptions) => ({
+      bound: true,
+      runChild: (command, args, childOptions) => contextOptions.childRunner(command, args, {
+        ...childOptions, env: { GH_TOKEN: 'selected', GH_HOST: 'github.com' },
+      }),
+    });
+
+    expect(runGhProxy(['pr', 'list'], '/work', f.options)).toBe(0);
+    expect(calls.map(call => [call.command, call.args[0]])).toEqual([['git', 'config'], ['git', 'remote'], ['ssh', '-G']]);
+    expect(f.calls.find(call => call.type === 'spawn').options.env).toMatchObject({
+      GH_TOKEN: 'selected', GH_HOST: 'github.com', GH_REPO: 'github.com/org/project',
+    });
+  });
+
+  test('canonicalizes the local SSH alias when GH_HOST already selects GitHub.com', () => {
+    const calls = [];
+    const f = fixture({ automatic: true });
+    f.options.baseEnv.GH_HOST = 'github.com';
+    f.options.resolveLocalTarget = () => ({ hostname: 'github.com', repository: 'org/project' });
+    f.options.createContext = (_root, contextOptions) => ({
+      bound: true,
+      runChild: (command, args, childOptions) => contextOptions.childRunner(command, args, {
+        ...childOptions, env: { GH_TOKEN: 'selected', GH_HOST: 'github.com' },
+      }),
+    });
+    f.options.spawnSync = (command, args, spawnOptions) => {
+      calls.push({ command, args, env: spawnOptions.env });
+      return { status: 0, signal: null };
+    };
+
+    expect(runGhProxy(['pr', 'list'], '/work', f.options)).toBe(0);
+    expect(calls[0].env.GH_REPO).toBe('github.com/org/project');
+  });
+
+  test('respects the GitHub CLI default remote and bypasses an enterprise SSH alias', () => {
+    const f = fixture({ automatic: true });
+    delete f.options.resolveLocalTarget;
+    f.options.execFileSync = (command, args) => {
+      if (command === 'git' && args[0] === 'config') return 'remote.upstream.gh-resolved base\n';
+      if (command === 'git') {
+        expect(args).toEqual(['remote', 'get-url', 'upstream']);
+        return 'git@enterprise-alias:org/project.git';
+      }
+      if (command === 'ssh') return 'hostname ghe.example\nuser git\n';
+      throw new Error('unexpected command');
+    };
+
+    expect(runGhProxy(['pr', 'list'], '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'context')).toBe(false);
+  });
+
+  test('fails closed when the local SSH alias cannot be resolved', () => {
+    const f = fixture({ automatic: true });
+    f.options.resolveLocalTarget = () => { throw new Error('unresolved'); };
+    expect(runGhProxy(['pr', 'list'], '/work', f.options)).toBe(1);
+    expect(f.calls.some(call => call.type === 'context' || call.type === 'spawn')).toBe(false);
   });
 
   test('does not treat URL-looking option values as resource targets and inspects positionals after the delimiter', () => {
@@ -395,6 +490,7 @@ describe('transparent gh proxy', () => {
       readExtensions: () => '',
       readAuto: () => true,
       resolveExecutable: () => '/real/gh',
+      resolveLocalTarget: () => ({ hostname: 'github.com', repository: 'org/project' }),
       createContext: root => ({ bound: true, runChild: (_command, _args, childOptions) => {
         selected.push({ root, cwd: childOptions.cwd });
         return { status: root === '/work' ? 7 : 0, signal: null };
