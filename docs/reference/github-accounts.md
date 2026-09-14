@@ -52,13 +52,24 @@ GitHub HTTPS credential-helper route. It refuses to overwrite a non-Forge `gh`
 launcher in that directory. It does not store a credential, log in, switch the
 globally active account, or modify another clone. Linked Git
 worktrees normally share this clone-local configuration; use separate clones when
-you need separate bindings.
+you need separate bindings. The machine-local clone registration is durable before
+automatic routing is enabled; disabling routing removes the clone setting before
+its registry entry. If either ordering step cannot complete, automatic routing
+stays disabled or fails closed.
 
 The opt-in `gh` router reads the clone marker on each invocation. In an enabled
 clone it selects the named account for the real GitHub CLI process; elsewhere it
-passes through unchanged. The complete `gh auth` namespace always passes through
-so login and recovery remain native. HTTPS Git uses the same account through the
-clone-local helper. SSH key selection remains controlled by SSH configuration.
+passes through unchanged. Zero-argument, help, completion, configuration, and
+other local-only `gh` operations also bypass account resolution. The complete
+`gh auth` namespace always passes through so login and recovery remain native.
+Network-capable built-in commands, configured aliases, and installed extensions
+inherit the selected child account; they do not trigger per-command account
+discovery. Built-in destinations from command arguments, URLs, `GH_HOST`,
+`GH_REPO`, and repository inference are checked for conflicts and public-host
+support before a credential is injected. Arbitrary code inside a user-installed
+alias or extension is outside Forge's wrong-destination guarantee. HTTPS Git uses
+the same account through the clone-local helper. SSH key selection remains
+controlled by SSH configuration.
 Enablement stops if another `gh` resolves before Forge on `PATH`, instead of
 claiming automatic routing when the router cannot run. Run automatic setup from
 an installed Forge command; transient `npx`/`bunx` package-runner shims are ignored.
@@ -92,20 +103,26 @@ diagnostics.
 
 `auto --disable` removes only Forge-owned transparent routing and keeps the clone
 binding. `unset` is safe to repeat and removes both the binding and Forge-owned
-routing. The machine router remains because other clones may use it and passes
-through unchanged outside enabled clones. After disabling every opted-in clone,
-`router --uninstall --force` removes only marked Forge router files. Forge refuses
-to remove them while the current clone is still enabled; `--force` acknowledges
-that Forge cannot discover other enabled clones because it stores no machine-wide
-project registry. None of these commands
-removes a stored login or revokes authority from a running child: close that
-process after changing or removing a binding.
-The safe order is: disable or unset every opted-in clone, run `router --uninstall --force`
-last, then uninstall Forge itself. Package managers cannot clean clone-local Git
-configuration after the executable is gone. If that order was missed, reinstall
-Forge and run `forge github auto --disable` or `forge github unset`; these commands
-remove only Forge-owned configuration. Do not use `git config --unset-all` because
-another local HTTPS helper may share the same key.
+routing. Forge records only canonical clone and Git common-directory paths in a
+machine-local registry under the router lock; it stores no credentials. Current
+enabled state comes from each clone's live `github.auto` value, and router
+ownership comes from the launcher marker. Missing or corrupt registry state, an
+enabled clone absent from the registry, or an unavailable registered clone fails
+closed and leaves the shared router in place. The shared router remains while
+another clone uses it and passes through unchanged outside enabled clones. When
+`router --uninstall --force` runs, Forge prunes only entries it can prove are
+disabled and refuses to remove marked router files while any verified clone
+remains. None of these commands removes a
+stored login or revokes authority from a running child: close that process after
+changing or removing a binding.
+
+The safe order is: disable or unset every opted-in clone, run
+`router --uninstall --force` last, then uninstall Forge itself. Package managers
+cannot clean clone-local Git configuration after the executable is gone. If that
+order was missed, reinstall Forge and run `forge github auto --disable` or
+`forge github unset`; these commands remove only Forge-owned configuration. Do not
+use `git config --unset-all` because another local HTTPS helper may share the same
+key.
 
 ## Three separate identities
 
@@ -119,8 +136,11 @@ Forge does not change your author, origin, or SSH keys. Automatic mode owns only
 the clone-local GitHub HTTPS helper it installs and refuses to replace another
 clone-local helper.
 Existing SSH keys and host aliases remain valid; custom aliases must resolve to
-`github.com` for Forge's repository-access check. HTTPS and SSH GitHub.com origins
-are supported; insecure HTTP/Git transports and Enterprise hosts are not V1 targets.
+`github.com` for Forge's repository-access check. V1 automatic routing supports
+public `github.com` only. An explicit non-public `--hostname` or remote host fails
+closed before the selected public credential is injected; GitHub Enterprise
+routing remains native and outside this feature. HTTPS and SSH GitHub.com origins
+are supported; insecure HTTP/Git transports are not V1 targets.
 
 Automatic mode routes canonical GitHub HTTPS remotes through the selected native
 GitHub CLI account. SSH key selection remains independent; keep separate SSH
@@ -154,15 +174,31 @@ and `--path`. Git Bash is still required for Forge's existing Windows Bash helpe
   directory on PATH, restart the application, and rerun `use --auto`.
 - **Explicit repository override:** `gh -R` and `gh --repo` still use the account
   bound to the current working clone; run them from the clone whose identity you intend.
-- **Configured `gh` alias or extension:** automatic mode stops before executing an opaque
-  command because it can hide another hostname or arbitrary code. Run the expanded native
-  `gh` command explicitly; management through `gh alias` and `gh extension` remains available.
+- **Configured `gh` alias or extension:** network-capable aliases and extensions inherit
+  the selected clone account. Local-only or account-management commands retain their
+  native bypass rules. Forge cannot guarantee the destination of arbitrary code inside
+  an opaque alias or extension; inspect it yourself if it targets another host.
 
 The supported workflow entrypoints are `forge`, `forge-workflow`, and a compiled
 Forge executable whose directory is on PATH; it installs the router beside itself. Rerun `use --auto`
 after moving a compiled executable or changing Forge installation managers so
 the marked launchers refresh their target. Direct developer invocation of `node bin/forge-cmd.js` is an
 internal legacy utility, not an account-isolated V1 entrypoint.
+
+## Performance and installed-product acceptance
+
+Automatic routing is designed to be warm and local on the common path. Release
+acceptance measures the added latency over at least five warm runs, excluding the
+native command itself: a median of at most 250 ms for unbound or local-only
+routing, 1,000 ms for a bound `gh` route before native command work, and 1,000 ms
+for credential-helper resolution. These are acceptance targets, not a promise
+about a slow machine or the remote GitHub operation.
+
+The installed-product acceptance run must exercise the generated PATH launchers
+and the real Forge router, proxy, and credential-helper chain in two concurrent
+clone-local contexts, plus unbound and fail-closed cases. The native `gh` process
+may be substituted only at that process boundary; Forge itself is not substituted.
+The release run uses two securely stored accounts and never prints their tokens.
 
 ## CuraPod adoption
 

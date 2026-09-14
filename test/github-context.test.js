@@ -4,12 +4,14 @@ const { describe, test, expect } = require('bun:test');
 
 const {
   createGithubContext,
+  createGithubTokenContext,
   disableGithubAuto,
   enableGithubAuto,
   prepareGithubAccount,
   prepareGithubContext,
   assertGithubAutoAvailable,
   readGithubAccount,
+  readGithubAuto,
   unsetGithubAccount,
   validateGithubLogin,
   writeGithubAccount,
@@ -31,6 +33,26 @@ function fakeRunner(calls, { account = null, liveLogin = account, token = 'token
 }
 
 describe('github context', () => {
+  test('reads automatic routing as absent, enabled, or invalid', () => {
+    const config = new Map();
+    const runner = (command, args) => {
+      if (command !== 'git' || args[0] !== 'config') throw new Error('unexpected command');
+      const values = config.get(args.at(-1));
+      if (!values) throw Object.assign(new Error('missing'), { status: 1 });
+      return values.join('\n');
+    };
+
+    expect(readGithubAuto('/repo', { runner })).toBe(false);
+    config.set('github.auto', ['true']);
+    expect(readGithubAuto('/repo', { runner })).toBe(true);
+    config.set('github.auto', ['false']);
+    expect(readGithubAuto('/repo', { runner })).toBe(false);
+    config.set('github.auto', ['true', 'true']);
+    expect(readGithubAuto('/repo', { runner })).toBe(null);
+    config.set('github.auto', ['enabled']);
+    expect(readGithubAuto('/repo', { runner })).toBe(null);
+  });
+
   test('accepts bounded GitHub logins and rejects malformed values', () => {
     expect(validateGithubLogin('octo-user')).toBe(true);
     expect(validateGithubLogin('a')).toBe(true);
@@ -95,6 +117,24 @@ describe('github context', () => {
     expect(JSON.stringify(context)).not.toContain('token-canary');
   });
 
+  test('creates a routing context from the named token without live identity verification', () => {
+    const calls = [];
+    const childCalls = [];
+    const context = createGithubTokenContext('/repo', {
+      runner: fakeRunner(calls, { account: 'Work-Login', token: 'token-canary' }),
+      childRunner: (command, args, options) => { childCalls.push({ command, args, options }); return 0; },
+      baseEnv: { PATH: 'kept', GH_TOKEN: 'ambient-token', GH_HOST: 'evil.example' },
+    });
+
+    expect(context.status).toEqual({ state: 'selected', account: 'Work-Login', login: null });
+    context.runChild('gh', ['api', 'user']);
+    const ghCalls = calls.filter(call => call.command === 'gh');
+    expect(ghCalls).toHaveLength(1);
+    expect(ghCalls[0].args).toEqual(['auth', 'token', '--hostname', 'github.com', '--user', 'Work-Login']);
+    expect(childCalls[0].options.env).toMatchObject({ PATH: 'kept', GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com' });
+    expect(JSON.stringify(context)).not.toContain('token-canary');
+  });
+
   test('automatic routing rolls back partial config writes and disable removes only Forge-owned state', () => {
     const config = new Map();
     let failAutoWrite = true;
@@ -137,11 +177,11 @@ describe('github context', () => {
     expect(config.get('credential.https://github.com.helper')).toEqual(['', credentialHelperValue]);
     config.set('github.account', ['work']);
     markerPresent = false;
-    expect(() => assertGithubAutoAvailable('/repo', options)).not.toThrow();
+    expect(() => assertGithubAutoAvailable('/repo', options)).toThrow(/credential helper/i);
     disableGithubAuto('/repo', options);
     expect(config.get('github.account')).toEqual(['work']);
     expect(config.has('github.auto')).toBe(false);
-    expect(config.has('credential.https://github.com.helper')).toBe(false);
+    expect(config.get('credential.https://github.com.helper')).toEqual(['', credentialHelperValue]);
 
     config.set('credential.https://github.com.helper', ['', credentialHelperValue]);
     expect(() => assertGithubAutoAvailable('/repo', options)).toThrow(/credential helper/i);

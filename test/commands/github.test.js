@@ -15,7 +15,9 @@ function fixture(overrides = {}) {
     calls.push({ command, args, options });
     if (command === 'git') {
       if (args.join(' ') === 'config --local --get github.account') return account;
-      if (args.join(' ') === 'config --local --get-all github.auto') return overrides.automatic ? 'true' : '';
+      if (args.join(' ') === 'config --local --get-all github.auto') {
+        return overrides.automaticValue ?? (overrides.automatic ? 'true' : '');
+      }
       if (args.join(' ') === 'config --local --get-all credential.https://github.com.helper') {
         return overrides.automatic ? '\n!forge-git-credential' : '';
       }
@@ -44,6 +46,7 @@ function fixture(overrides = {}) {
     throw new Error(`Unexpected fixture call: ${command}`);
   };
   return { calls, options: { runner, routerStatus: () => overrides.routerState || 'ready',
+    registerRouterClone: () => {}, unregisterRouterClone: () => {},
     baseEnv: { GH_TOKEN: 'ambient-canary', GH_HOST: 'other.example' } }, account: () => account };
 }
 
@@ -65,10 +68,22 @@ describe('forge github lifecycle', () => {
 
   test('plain use preserves and reports an existing automatic mode', async () => {
     const f = fixture({ automatic: true });
+    const registered = [];
+    f.options.registerRouterClone = root => registered.push(root);
     const result = await handler(['use', 'work'], {}, '/repo', f.options);
     expect(result).toMatchObject({ success: true, account: 'work', automatic: true });
     expect(result.output).toContain('with automatic routing');
     expect(f.calls.some(call => call.args.includes('--unset-all'))).toBe(false);
+    expect(registered).toEqual(['/repo']);
+  });
+
+  test('plain use fails closed without changing an invalid automatic clone', async () => {
+    const f = fixture({ automaticValue: 'true\ntrue' });
+    const result = await handler(['use', 'work'], {}, '/repo', f.options);
+
+    expect(result).toMatchObject({ success: false, code: 'GITHUB_AUTO_INVALID' });
+    expect(f.account()).toBe('personal');
+    expect(f.calls.some(call => call.args.includes('--replace-all'))).toBe(false);
   });
 
   test('switches an automatic clone through native gh instead of its existing router', async () => {
@@ -283,9 +298,20 @@ describe('forge github lifecycle', () => {
 
     const result = await handler(['router', '--uninstall', '--force'], { force: true }, '/repo', {
       readAuto: () => false,
-      uninstallRouter: () => ({ removed: ['gh', 'gh.cmd'] }),
+      uninstallRouter: () => ({ removed: ['gh', 'gh.cmd'], warning: 'Router cleanup needs attention.' }),
     });
-    expect(result).toMatchObject({ success: true, removed: ['gh', 'gh.cmd'] });
+    expect(result).toMatchObject({ success: true, removed: ['gh', 'gh.cmd'], warning: 'Router cleanup needs attention.' });
+    expect(result.output).toContain('Router cleanup needs attention.');
+  });
+
+  test('router lock contention is a retryable safe failure', async () => {
+    const result = await handler(['router', '--uninstall', '--force'], { force: true }, '/repo', {
+      readAuto: () => false,
+      uninstallRouter: () => { throw Object.assign(new Error(CANARY), { code: 'GITHUB_ROUTER_BUSY' }); },
+    });
+    expect(result).toMatchObject({ success: false, code: 'GITHUB_ROUTER_BUSY' });
+    expect(result.error).toMatch(/retry/i);
+    expect(JSON.stringify(result)).not.toContain(CANARY);
   });
 
   test.each([
@@ -311,11 +337,29 @@ describe('forge github lifecycle', () => {
 
   test('unset is idempotent and removes every local value', async () => {
     const f = fixture({ account: ['personal', 'work'] });
+    let unregistered = 0;
+    f.options.unregisterRouterClone = () => { unregistered += 1; };
     expect((await handler(['unset'], {}, '/repo', f.options)).success).toBe(true);
     expect((await handler(['unset'], {}, '/repo', f.options)).success).toBe(true);
     expect(f.account()).toBe('');
     expect(f.calls.filter(c => c.args.join(' ') === 'config --local --unset-all github.account')).toHaveLength(2);
     expect(f.calls.every(c => c.command === 'git')).toBe(true);
+    expect(unregistered).toBe(2);
+  });
+
+  test('disable removes the clone from the machine registry after local routing is off', async () => {
+    const f = fixture({ automatic: true });
+    const events = [];
+    const runner = f.options.runner;
+    f.options.runner = (...args) => {
+      const result = runner(...args);
+      if (args[0] === 'git' && args[1].includes('--unset-all')) events.push('disabled');
+      return result;
+    };
+    f.options.unregisterRouterClone = () => events.push('unregistered');
+
+    expect(await handler(['auto', '--disable'], {}, '/repo', f.options)).toMatchObject({ success: true, automatic: false });
+    expect(events).toEqual(['disabled', 'unregistered']);
   });
 
   test('help, malformed commands, and missing launcher delimiter perform no context work', async () => {
@@ -370,6 +414,8 @@ describe('forge github lifecycle', () => {
 
   test.each([
     ['bin/forge.js', 'test/github-launcher.test.js'],
+    ['bin/forge-gh-proxy.js', 'test/bin/forge-gh-proxy.test.js'],
+    ['bin/forge-github-credential.js', 'test/bin/forge-github-credential.test.js'],
     ['lib/commands/github.js', 'test/commands/github.test.js'],
     ['lib/github-credential.js', 'test/github-credential.test.js'],
     ['lib/github-router.js', 'test/github-router.test.js'],

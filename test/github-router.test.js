@@ -6,7 +6,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const spawn = require('cross-spawn');
-const { findForgeBinDir, getGithubRouterStatus, helperPathFromValue, installGithubRouter, isOwnedCredentialHelperValue, uninstallGithubRouter } = require('../lib/github-router');
+const { assertGithubRouterCloneRegistered, findForgeBinDir, getGithubRouterStatus, helperPathFromValue,
+  installGithubRouter, isOwnedCredentialHelperValue, registerGithubRouterClone, unregisterGithubRouterClone,
+  uninstallGithubRouter } = require('../lib/github-router');
 
 const roots = [];
 afterEach(() => {
@@ -17,6 +19,13 @@ function tempRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-github-router-'));
   roots.push(root);
   return root;
+}
+
+function disabledRepo(root, name = 'repo') {
+  const repo = path.join(root, name);
+  fs.mkdirSync(repo);
+  execFileSync('git', ['init', '--quiet'], { cwd: repo, windowsHide: true });
+  return repo;
 }
 
 describe('opt-in GitHub router installation', () => {
@@ -39,12 +48,46 @@ describe('opt-in GitHub router installation', () => {
     }
     const cmdLauncher = fs.readFileSync(path.join(binDir, 'gh.cmd'), 'utf8');
     const psLauncher = fs.readFileSync(path.join(binDir, 'gh.ps1'), 'utf8');
-    expect(cmdLauncher).toContain('github proxy --');
+    expect(cmdLauncher).toContain('"github" "proxy" --');
+    expect(cmdLauncher).not.toMatch(/^call /im);
     expect(cmdLauncher).toContain('setlocal');
     expect(psLauncher).toContain('finally');
     expect(psLauncher).toContain('Remove-Item Env:FORGE_GH_PROXY_ACTIVE');
-    expect(fs.readFileSync(path.join(binDir, 'forge-github-credential-v1'), 'utf8')).toContain('github credential "$@"');
+    expect(fs.readFileSync(path.join(binDir, 'forge-github-credential-v1'), 'utf8')).toContain("'github' 'credential' \"$@\"");
     result.commit();
+  });
+
+  if (process.platform === 'win32') test('Windows cmd launcher preserves opaque argv once and returns the child exit status', () => {
+    const root = tempRoot();
+    const binDir = path.join(root, 'bin with spaces');
+    const fakeForge = path.join(root, 'runtime 100% ^caret', 'fake forge.js');
+    fs.mkdirSync(binDir);
+    fs.mkdirSync(path.dirname(fakeForge));
+    fs.writeFileSync(fakeForge, [
+      "process.stdout.write(JSON.stringify(process.argv.slice(5)));",
+      'process.exitCode = 37;',
+    ].join('\n'));
+    installGithubRouter({ platform: 'win32', binDir, runtimeCommand: [process.execPath, fakeForge] }).commit();
+
+    const args = ['two words', '100%literal%', '^caret', 'say "hello"'];
+    const routed = spawn.sync(path.join(binDir, 'gh.cmd'), args, { encoding: 'utf8', shell: false });
+
+    expect(routed.status).toBe(37);
+    expect(JSON.parse(routed.stdout)).toEqual(args);
+  });
+
+  test('non-compiled router targets the dedicated proxy entrypoint', () => {
+    const binDir = tempRoot();
+    const proxyEntrypointPath = 'C:\\Forge App\\bin\\forge-gh-proxy.js';
+    const credentialEntrypointPath = 'C:\\Forge App\\bin\\forge-github-credential.js';
+    installGithubRouter({ platform: 'win32', compiled: false, binDir, proxyEntrypointPath, credentialEntrypointPath }).commit();
+
+    const launcher = fs.readFileSync(path.join(binDir, 'gh.cmd'), 'utf8');
+    const helper = fs.readFileSync(path.join(binDir, 'forge-github-credential-v1'), 'utf8');
+    expect(launcher).toContain('forge-gh-proxy.js" -- %*');
+    expect(launcher).not.toContain('"github" "proxy"');
+    expect(helper).toContain("forge-github-credential.js'");
+    expect(helper).not.toContain("'github' 'credential'");
   });
 
   test('recognizes native and Windows absolute helper paths only for the Forge helper', () => {
@@ -145,16 +188,184 @@ describe('opt-in GitHub router installation', () => {
 
   test('uninstall removes only marked Forge launchers', () => {
     const binDir = tempRoot();
-    installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
+    const repo = disabledRepo(binDir);
+    installGithubRouter({ platform: 'linux', binDir, stateDir: path.join(binDir, 'state'), projectRoot: repo,
+      runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
     fs.writeFileSync(path.join(binDir, 'keep-me'), 'native');
-    const result = uninstallGithubRouter({ platform: 'linux', binDir });
+    const result = uninstallGithubRouter({ platform: 'linux', binDir, stateDir: path.join(binDir, 'state') });
     expect(result.removed.sort()).toEqual(['forge-github-credential-v1', 'gh']);
     expect(fs.readFileSync(path.join(binDir, 'keep-me'), 'utf8')).toBe('native');
   });
 
+  test('global uninstall fails closed when a registered clone cannot be checked', () => {
+    const root = tempRoot();
+    const binDir = path.join(root, 'bin');
+    const stateDir = path.join(root, 'state');
+    const first = path.join(root, 'first');
+    const second = path.join(root, 'second');
+    fs.mkdirSync(binDir);
+    for (const repo of [first, second]) {
+      fs.mkdirSync(repo);
+      execFileSync('git', ['init', '--quiet'], { cwd: repo, windowsHide: true });
+      execFileSync('git', ['config', '--local', 'github.auto', 'true'], { cwd: repo, windowsHide: true });
+      installGithubRouter({ platform: 'linux', binDir, stateDir, projectRoot: repo,
+        runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
+    }
+    fs.rmSync(first, { recursive: true, force: true });
+
+    let failure;
+    try { uninstallGithubRouter({ platform: 'linux', binDir, stateDir }); } catch (error) { failure = error; }
+    expect(failure?.code).toBe('GITHUB_ROUTER_REGISTRY_INVALID');
+    const registry = JSON.parse(fs.readFileSync(path.join(stateDir, 'github-router-clones.json'), 'utf8'));
+    expect(registry.clones).toHaveLength(2);
+    expect(fs.existsSync(path.join(binDir, 'gh'))).toBe(true);
+  });
+
+  test('does not recreate a missing registry while owned router files exist', () => {
+    const root = tempRoot();
+    const binDir = path.join(root, 'bin');
+    const stateDir = path.join(root, 'state');
+    const repo = disabledRepo(root);
+    fs.mkdirSync(binDir);
+    installGithubRouter({ platform: 'linux', binDir, stateDir, projectRoot: repo,
+      runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
+    fs.unlinkSync(path.join(stateDir, 'github-router-clones.json'));
+    const otherBin = path.join(root, 'other-bin');
+    fs.mkdirSync(otherBin);
+
+    for (const operation of [
+      () => registerGithubRouterClone(repo, { platform: 'linux', binDir, stateDir }),
+      () => installGithubRouter({ platform: 'linux', binDir, stateDir, projectRoot: repo,
+        runtimeCommand: ['/opt/forge/bin/forge'] }),
+      () => installGithubRouter({ platform: 'linux', binDir: otherBin,
+        pathEnv: [otherBin, binDir].join(path.delimiter), stateDir, projectRoot: repo,
+        runtimeCommand: ['/opt/forge/bin/forge'] }),
+    ]) {
+      let failure;
+      try { operation(); } catch (error) { failure = error; }
+      expect(failure?.code).toBe('GITHUB_ROUTER_REGISTRY_INVALID');
+    }
+    expect(fs.existsSync(path.join(binDir, 'gh'))).toBe(true);
+    expect(fs.existsSync(path.join(stateDir, 'github-router-clones.json'))).toBe(false);
+  });
+
+  test('registry keys linked worktrees by canonical git common-dir', () => {
+    const root = tempRoot();
+    const binDir = path.join(root, 'bin');
+    const stateDir = path.join(root, 'state');
+    const main = disabledRepo(root);
+    const common = path.join(main, '.git');
+    execFileSync('git', ['config', '--local', 'github.auto', 'true'], { cwd: main, windowsHide: true });
+    fs.mkdirSync(binDir);
+    const identities = [
+      { root: main, gitCommonDir: common },
+      { root: path.join(root, 'linked'), gitCommonDir: common },
+    ];
+    for (const identity of identities) {
+      installGithubRouter({ platform: 'linux', binDir, stateDir, projectRoot: identity.root,
+        resolveCloneIdentity: () => identity, runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
+    }
+
+    const registry = JSON.parse(fs.readFileSync(path.join(stateDir, 'github-router-clones.json'), 'utf8'));
+    expect(registry.clones).toEqual([{ root: identities[1].root, gitCommonDir: fs.realpathSync.native(common) }]);
+
+    let failure;
+    try { uninstallGithubRouter({ platform: 'linux', binDir, stateDir }); } catch (error) { failure = error; }
+    expect(failure?.code).toBe('GITHUB_ROUTER_IN_USE');
+    expect(JSON.parse(fs.readFileSync(path.join(stateDir, 'github-router-clones.json'), 'utf8')).clones[0].root)
+      .toBe(fs.realpathSync.native(main));
+  });
+
+  test('registration assertion fails closed for missing, corrupt, and unregistered state', () => {
+    const root = tempRoot();
+    const binDir = path.join(root, 'bin');
+    const stateDir = path.join(root, 'state');
+    const registered = disabledRepo(root, 'registered');
+    const other = disabledRepo(root, 'other');
+    fs.mkdirSync(binDir);
+    installGithubRouter({ platform: 'linux', binDir, stateDir, projectRoot: registered,
+      runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
+
+    expect(assertGithubRouterCloneRegistered(registered, { stateDir })).toBe(true);
+    let failure;
+    try { assertGithubRouterCloneRegistered(other, { stateDir }); } catch (error) { failure = error; }
+    expect(failure?.code).toBe('GITHUB_ROUTER_REGISTRY_INVALID');
+
+    fs.writeFileSync(path.join(stateDir, 'github-router-clones.json'), '{corrupt');
+    expect(() => assertGithubRouterCloneRegistered(registered, { stateDir }))
+      .toThrow(/verify/i);
+    fs.unlinkSync(path.join(stateDir, 'github-router-clones.json'));
+    failure = null;
+    try { uninstallGithubRouter({ platform: 'linux', binDir, stateDir }); } catch (error) { failure = error; }
+    expect(failure?.code).toBe('GITHUB_ROUTER_REGISTRY_INVALID');
+    expect(fs.existsSync(path.join(binDir, 'gh'))).toBe(true);
+  });
+
+  test('router rollback restores the previous registry membership', () => {
+    const root = tempRoot();
+    const binDir = path.join(root, 'bin');
+    const stateDir = path.join(root, 'state');
+    const first = disabledRepo(root, 'first');
+    const second = disabledRepo(root, 'second');
+    fs.mkdirSync(binDir);
+    installGithubRouter({ platform: 'linux', binDir, stateDir, projectRoot: first,
+      runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
+
+    const secondInstall = installGithubRouter({ platform: 'linux', binDir, stateDir, projectRoot: second,
+      runtimeCommand: ['/opt/forge/bin/forge'] });
+    secondInstall.rollback();
+
+    expect(assertGithubRouterCloneRegistered(first, { stateDir })).toBe(true);
+    let failure;
+    try { assertGithubRouterCloneRegistered(second, { stateDir }); } catch (error) { failure = error; }
+    expect(failure?.code).toBe('GITHUB_ROUTER_REGISTRY_INVALID');
+  });
+
+  test('switch and disable registry operations share canonical membership', () => {
+    const root = tempRoot();
+    const binDir = path.join(root, 'bin');
+    const stateDir = path.join(root, 'state');
+    const repo = disabledRepo(root);
+    fs.mkdirSync(binDir);
+
+    registerGithubRouterClone(repo, { binDir, stateDir });
+    expect(assertGithubRouterCloneRegistered(repo, { stateDir })).toBe(true);
+    unregisterGithubRouterClone(repo, { binDir, stateDir });
+    let failure;
+    try { assertGithubRouterCloneRegistered(repo, { stateDir }); } catch (error) { failure = error; }
+    expect(failure?.code).toBe('GITHUB_ROUTER_REGISTRY_INVALID');
+  });
+
+  test('uninstall refuses malformed or unreadable registered clone state', () => {
+    const root = tempRoot();
+    const binDir = path.join(root, 'bin');
+    const stateDir = path.join(root, 'state');
+    const repo = disabledRepo(root);
+    fs.mkdirSync(binDir);
+    execFileSync('git', ['config', '--local', '--add', 'github.auto', 'invalid'], { cwd: repo, windowsHide: true });
+    installGithubRouter({ platform: 'linux', binDir, stateDir, projectRoot: repo,
+      runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
+
+    let failure;
+    try { uninstallGithubRouter({ platform: 'linux', binDir, stateDir }); } catch (error) { failure = error; }
+    expect(failure?.code).toBe('GITHUB_ROUTER_REGISTRY_INVALID');
+    expect(fs.existsSync(path.join(binDir, 'gh'))).toBe(true);
+
+    failure = null;
+    try {
+      uninstallGithubRouter({ platform: 'linux', binDir, stateDir,
+        registryRunner: () => { throw Object.assign(new Error('offline'), { status: 2 }); } });
+    } catch (error) { failure = error; }
+    expect(failure?.code).toBe('GITHUB_ROUTER_REGISTRY_INVALID');
+    expect(fs.existsSync(path.join(binDir, 'gh'))).toBe(true);
+  });
+
   test('failed uninstall restores files removed earlier in the operation', () => {
     const binDir = tempRoot();
-    installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
+    const stateDir = path.join(binDir, 'state');
+    const repo = disabledRepo(binDir);
+    installGithubRouter({ platform: 'linux', binDir, stateDir, projectRoot: repo,
+      runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
     const helper = path.join(fs.realpathSync(binDir), 'forge-github-credential-v1');
     const fileSystem = Object.create(fs);
     let injected = false;
@@ -166,7 +377,7 @@ describe('opt-in GitHub router installation', () => {
       return fs.unlinkSync(target);
     };
 
-    expect(() => uninstallGithubRouter({ platform: 'linux', binDir, fileSystem }))
+    expect(() => uninstallGithubRouter({ platform: 'linux', binDir, stateDir, fileSystem }))
       .toThrow(/cannot remove/i);
     expect(injected).toBe(true);
     expect(fs.existsSync(path.join(binDir, 'gh'))).toBe(true);
@@ -187,15 +398,19 @@ describe('opt-in GitHub router installation', () => {
 
   test('serializes install rollback and uninstall in one launcher directory', () => {
     const binDir = tempRoot();
-    const first = installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] });
+    const stateDir = path.join(binDir, 'state');
+    const repo = disabledRepo(binDir);
+    const first = installGithubRouter({ platform: 'linux', binDir, stateDir, projectRoot: repo,
+      runtimeCommand: ['/opt/forge/bin/forge'] });
     expect(() => installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] }))
       .toThrow(/operation is in progress/i);
-    expect(() => uninstallGithubRouter({ platform: 'linux', binDir })).toThrow(/operation is in progress/i);
+    expect(() => uninstallGithubRouter({ platform: 'linux', binDir, stateDir })).toThrow(/operation is in progress/i);
 
     first.rollback();
-    const second = installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] });
+    const second = installGithubRouter({ platform: 'linux', binDir, stateDir, projectRoot: repo,
+      runtimeCommand: ['/opt/forge/bin/forge'] });
     second.commit();
-    expect(uninstallGithubRouter({ platform: 'linux', binDir }).removed.sort())
+    expect(uninstallGithubRouter({ platform: 'linux', binDir, stateDir }).removed.sort())
       .toEqual(['forge-github-credential-v1', 'gh']);
   });
 
@@ -289,6 +504,27 @@ describe('opt-in GitHub router installation', () => {
     expect(fs.existsSync(path.join(binDir, 'gh'))).toBe(true);
   });
 
+  test('reports uninstall lock cleanup failure after removing router files', () => {
+    const root = tempRoot();
+    const binDir = path.join(root, 'bin');
+    const stateDir = path.join(root, 'state');
+    const repo = disabledRepo(root);
+    fs.mkdirSync(binDir);
+    installGithubRouter({ platform: 'linux', binDir, stateDir, projectRoot: repo,
+      runtimeCommand: ['/opt/forge'] }).commit();
+    const lock = path.join(binDir, '.forge-github-router.lock');
+    const fileSystem = Object.create(fs);
+    fileSystem.renameSync = (source, target) => {
+      if (source === lock && target.endsWith('.released')) throw Object.assign(new Error('release denied'), { code: 'EACCES' });
+      return fs.renameSync(source, target);
+    };
+
+    const result = uninstallGithubRouter({ platform: 'linux', binDir, stateDir, fileSystem });
+
+    expect(result.warning).toMatch(/cleanup failed/i);
+    expect(result.removed.sort()).toEqual(['forge-github-credential-v1', 'gh']);
+  });
+
   test('uninstall locks each owned router directory once and ignores unrelated PATH directories', () => {
     const root = tempRoot();
     const binDir = path.join(root, 'forge-bin');
@@ -297,13 +533,19 @@ describe('opt-in GitHub router installation', () => {
     fs.mkdirSync(binDir);
     fs.mkdirSync(unrelated);
     fs.symlinkSync(binDir, alias, process.platform === 'win32' ? 'junction' : 'dir');
-    installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
+    const stateDir = path.join(root, 'state');
+    const repo = disabledRepo(root);
+    installGithubRouter({ platform: 'linux', binDir, stateDir, projectRoot: repo,
+      runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
 
     const locked = [];
     const fileSystem = Object.create(fs);
-    fileSystem.mkdirSync = target => { locked.push(target); return fs.mkdirSync(target); };
+    fileSystem.mkdirSync = (target, ...args) => {
+      if (path.basename(target).startsWith('.forge-github-router.lock')) locked.push(target);
+      return fs.mkdirSync(target, ...args);
+    };
     const result = uninstallGithubRouter({
-      platform: 'linux', pathEnv: [binDir, alias, unrelated].join(path.delimiter), fileSystem,
+      platform: 'linux', pathEnv: [binDir, alias, unrelated].join(path.delimiter), stateDir, fileSystem,
     });
 
     expect(result.removed.sort()).toEqual(['forge-github-credential-v1', 'gh']);

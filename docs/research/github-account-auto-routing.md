@@ -18,8 +18,8 @@ ordinary `gh` and HTTPS Git processes started from a bound clone.
   `GH_TOKEN` providing process-local authority.
 - Git supports URL-scoped credential helpers, so a clone can route HTTPS
   credentials without changing global Git state or the remote URL.
-- Live CuraPod testing proved `forge github run` selects `harshalite`, while an
-  ordinary unwrapped process does not. This is the product gap.
+- Live testing proved `forge github run` selects the clone-bound account, while
+  an ordinary unwrapped process does not. This is the product gap.
 - Prior research and rejected alternatives remain in
   `docs/work/2026-09-08-github-account-context/research/multi-account-options.md`.
 
@@ -34,7 +34,12 @@ ordinary `gh` and HTTPS Git processes started from a bound clone.
 4. The proxy bypasses the complete `gh auth` namespace so login, logout,
    refresh, status, switch, token inspection, and setup remain native account
    management operations.
-5. `forge github unset` removes the binding, auto marker, and helper owned by
+5. Built-in destinations from command arguments, URLs, `GH_HOST`, `GH_REPO`, and
+   repository inference fail closed on conflicts or non-public hosts before a
+   selected public credential is injected. Aliases and extensions inherit the
+   selected child environment, but arbitrary user-installed code is outside
+   Forge's wrong-destination guarantee.
+6. `forge github unset` removes the binding, auto marker, and helper owned by
    Forge. Stored GitHub CLI accounts are untouched.
 
 ## Constraints and risks
@@ -45,6 +50,8 @@ ordinary `gh` and HTTPS Git processes started from a bound clone.
   not Forge's proxy.
 - Unbound and non-enabled clones must preserve native behavior and ambient env.
 - Missing, invalid, or mismatched enabled bindings fail closed.
+- Missing or corrupt clone-registry state, including an enabled unregistered
+  clone, fails closed for router uninstall and leaves shared router files in place.
 - Two repositories in concurrent processes must resolve independently.
 - Tools with embedded OAuth that do not call system Git or `gh` remain outside
   this guarantee and must be documented.
@@ -55,5 +62,13 @@ ordinary `gh` and HTTPS Git processes started from a bound clone.
   pass-through, recursion prevention, secret-clean failures, and concurrent
   per-repository selection.
 - A packaged-bin test proves the `gh` proxy is shipped.
-- Focused tests and repository validation pass from the isolated worktree.
-
+- The installed PATH test exercises generated launchers and the real Forge router,
+  proxy, and helper chain across two concurrent clone-local contexts, plus unbound
+  and fail-closed cases. Native `gh` may be substituted only at its process
+  boundary; Forge itself is not substituted.
+- Warm median added latency over at least five runs is at most 250 ms for
+  unbound/local-only routing, 1,000 ms for a bound `gh` route before native work,
+  and 1,000 ms for credential-helper resolution.
+- A release acceptance run uses two securely stored accounts without printing
+  their tokens; focused tests and repository validation must pass from the
+  isolated worktree.
