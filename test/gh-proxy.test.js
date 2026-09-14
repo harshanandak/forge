@@ -216,6 +216,35 @@ describe('transparent gh proxy', () => {
     expect(f.calls.some(call => call.type === 'context')).toBe(true);
   });
 
+  test.each([
+    ['https://enterprise.example/owner/repo/pull/1', false],
+    ['https://gist.github.com/owner/id', true],
+  ])('routes positional resource URL %s by its host', (url, selected) => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => 'USAGE\n  gh pr view [<number> | <url> | <branch>]';
+    expect(runGhProxy(['pr', 'view', url], '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'context')).toBe(selected);
+  });
+
+  test('does not treat URL-looking option values or delimiter arguments as resource targets', () => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => 'USAGE\n  gh pr comment [<number> | <url> | <branch>]\n\nFLAGS\n  -b, --body string  Body';
+    expect(runGhProxy(['pr', 'comment', '--body', 'https://enterprise.example/not-a-target'], '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'context')).toBe(true);
+
+    const delimited = fixture({ automatic: true });
+    delimited.options.readCommandHelp = f.options.readCommandHelp;
+    expect(runGhProxy(['pr', 'comment', '--', 'https://enterprise.example/not-a-target'], '/work', delimited.options)).toBe(0);
+    expect(delimited.calls.some(call => call.type === 'context')).toBe(true);
+  });
+
+  test('fails closed when explicit target hosts conflict', () => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => 'USAGE\n  gh pr view [<number> | <url> | <branch>]';
+    expect(runGhProxy(['pr', 'view', '--hostname', 'github.com', 'https://enterprise.example/owner/repo/pull/1'], '/work', f.options)).toBe(1);
+    expect(f.calls.some(call => call.type === 'context' || call.type === 'spawn')).toBe(false);
+  });
+
   test.each(['enterprise-view', 'shell-view'])('fails closed before executing configured alias %s', alias => {
     const f = fixture({ automatic: true });
     const errors = [];

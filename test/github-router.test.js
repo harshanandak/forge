@@ -73,7 +73,7 @@ describe('opt-in GitHub router installation', () => {
     const originalWrite = fs.writeFileSync;
     let failed = false;
     fs.writeFileSync = (target, ...args) => {
-      if (!failed && target === path.join(binDir, 'gh.cmd')) {
+      if (!failed && target.startsWith(`${path.join(binDir, 'gh.cmd')}.`) && target.endsWith('.tmp')) {
         failed = true;
         throw Object.assign(new Error('injected write failure'), { code: 'EACCES' });
       }
@@ -166,6 +166,58 @@ describe('opt-in GitHub router installation', () => {
     second.commit();
     expect(uninstallGithubRouter({ platform: 'linux', binDir }).removed.sort())
       .toEqual(['forge-github-credential-v1', 'gh']);
+  });
+
+  test('reclaims a valid abandoned lock only when its owner is demonstrably dead', () => {
+    const binDir = tempRoot();
+    const lock = path.join(binDir, '.forge-github-router.lock');
+    fs.mkdirSync(lock);
+    fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({
+      marker: 'forge-gh-router-v1', pid: 999999, token: 'abandoned',
+    }));
+
+    const installed = installGithubRouter({
+      platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'], isProcessRunning: () => false,
+    });
+    installed.commit();
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  test('keeps a malformed abandoned lock fail closed', () => {
+    const binDir = tempRoot();
+    fs.mkdirSync(path.join(binDir, '.forge-github-router.lock'));
+    expect(() => installGithubRouter({
+      platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'], isProcessRunning: () => false,
+    })).toThrow(/confirming its owner is gone/i);
+  });
+
+  test('atomic refresh failure preserves the previous launcher and cleans temporary files', () => {
+    const binDir = tempRoot();
+    installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/old/forge'] }).commit();
+    const launcher = path.join(binDir, 'gh');
+    const previous = fs.readFileSync(launcher, 'utf8');
+    const originalRename = fs.renameSync;
+    fs.renameSync = (source, target) => {
+      if (target === launcher) throw Object.assign(new Error('rename denied'), { code: 'EACCES' });
+      return originalRename(source, target);
+    };
+    try {
+      expect(() => installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/new/forge'] }))
+        .toThrow(/cannot write/i);
+    } finally {
+      fs.renameSync = originalRename;
+    }
+    expect(fs.readFileSync(launcher, 'utf8')).toBe(previous);
+    expect(fs.readdirSync(binDir).some(name => name.endsWith('.tmp'))).toBe(false);
+  });
+
+  test('atomically refreshes existing launchers', () => {
+    const binDir = tempRoot();
+    installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/old/forge'] }).commit();
+    const refreshed = installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/new/forge'] });
+    refreshed.commit();
+    expect(fs.readFileSync(path.join(binDir, 'gh'), 'utf8')).toContain("'/new/forge'");
+    expect(fs.readdirSync(binDir).some(name => name.endsWith('.tmp'))).toBe(false);
   });
 
   test('uninstall locks each owned router directory once and ignores unrelated PATH directories', () => {
