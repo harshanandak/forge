@@ -98,6 +98,22 @@ describe('transparent gh proxy', () => {
     expect(f.calls[0]).toMatchObject({ type: 'spawn', args });
   });
 
+  test('uses the last repeated hostname selector', () => {
+    const f = fixture({ automatic: true });
+    expect(runGhProxy(['api', '--hostname', 'enterprise.example', '--hostname', 'github.com', 'user'], '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'context')).toBe(true);
+
+    const enterprise = fixture({ automatic: true });
+    expect(runGhProxy(['api', '--hostname=github.com', '--hostname=enterprise.example', 'user'], '/work', enterprise.options)).toBe(0);
+    expect(enterprise.calls.some(call => call.type === 'context')).toBe(false);
+  });
+
+  test('fails closed when a hostname value is missing', () => {
+    const f = fixture({ automatic: true });
+    expect(runGhProxy(['api', 'user', '--hostname'], '/work', f.options)).toBe(1);
+    expect(f.calls.some(call => call.type === 'context' || call.type === 'spawn')).toBe(false);
+  });
+
   test('preserves GH_REPO only for the selected native gh child', () => {
     const calls = [];
     const options = {
@@ -228,16 +244,16 @@ describe('transparent gh proxy', () => {
     expect(f.calls.some(call => call.type === 'context')).toBe(selected);
   });
 
-  test('does not treat URL-looking option values or delimiter arguments as resource targets', () => {
+  test('does not treat URL-looking option values as resource targets and inspects positionals after the delimiter', () => {
     const f = fixture({ automatic: true });
     f.options.readCommandHelp = () => 'USAGE\n  gh pr comment [<number> | <url> | <branch>]\n\nFLAGS\n  -b, --body string  Body';
     expect(runGhProxy(['pr', 'comment', '--body', 'https://enterprise.example/not-a-target'], '/work', f.options)).toBe(0);
     expect(f.calls.some(call => call.type === 'context')).toBe(true);
 
     const delimited = fixture({ automatic: true });
-    delimited.options.readCommandHelp = f.options.readCommandHelp;
-    expect(runGhProxy(['pr', 'comment', '--', 'https://enterprise.example/not-a-target'], '/work', delimited.options)).toBe(0);
-    expect(delimited.calls.some(call => call.type === 'context')).toBe(true);
+    delimited.options.readCommandHelp = () => 'USAGE\n  gh pr view [<number> | <url> | <branch>]';
+    expect(runGhProxy(['pr', 'view', '--', 'https://enterprise.example/owner/repo/pull/1'], '/work', delimited.options)).toBe(0);
+    expect(delimited.calls.some(call => call.type === 'context')).toBe(false);
   });
 
   test('fails closed when explicit target hosts conflict', () => {

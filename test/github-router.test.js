@@ -183,6 +183,28 @@ describe('opt-in GitHub router installation', () => {
     expect(fs.existsSync(lock)).toBe(false);
   });
 
+  test('publishes lock ownership atomically', () => {
+    const binDir = tempRoot();
+    const lock = path.join(binDir, '.forge-github-router.lock');
+    const originalWrite = fs.writeFileSync;
+    let observed = false;
+    fs.writeFileSync = (target, ...args) => {
+      if (path.basename(target) === 'owner.json') {
+        observed = true;
+        expect(fs.existsSync(lock)).toBe(false);
+      }
+      return originalWrite(target, ...args);
+    };
+    let installed;
+    try {
+      installed = installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge'] });
+    } finally {
+      fs.writeFileSync = originalWrite;
+    }
+    installed.commit();
+    expect(observed).toBe(true);
+  });
+
   test('keeps a malformed abandoned lock fail closed', () => {
     const binDir = tempRoot();
     fs.mkdirSync(path.join(binDir, '.forge-github-router.lock'));
