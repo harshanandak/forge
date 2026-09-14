@@ -31,7 +31,7 @@ This task list begins after this planning checkpoint is accepted. Every implemen
 **Files:** `packages/memory/**` and Memory package tests/docs.
 
 1. Start with a failing packed-install journey: create default Memory, store, recall with provenance, close, restart, recall.
-2. Add public authority/receipt acceptance cases for idempotent duplicate, conflict, stale head, wrong capability, and incomplete evidence.
+2. Add public authority/receipt acceptance cases for idempotent duplicate, conflict, stale head, wrong capability, and incomplete evidence. Include a contract-valid receipt from a non-Flow executor with Flow uninstalled.
 3. Implement the supported default local assembly without Flow imports.
 4. Prove stable setup/unavailable errors in package-local Windows and Linux development smoke; final RC coverage expands to the approved platform/runtime matrix.
 
@@ -68,7 +68,7 @@ This task list begins after this planning checkpoint is accepted. Every implemen
 2. Run existing focused capability/Doctor/preflight tests at the rebased exact head.
 3. Keep unsupported adapter tiers explicitly unavailable.
 4. Add only package presence/setup diagnostics required for standalone Memory and Flow.
-5. Ship the bounded facade slice; leave full adapter implementation in its dedicated issues.
+5. Ship the bounded facade slice without closing PR5. Implement and certify supported Claude, Codex, Cursor, and Hermes T0-T4 adapters in subsequent dedicated slices with explicit path ownership. Close PR5 only after those supported behaviors pass; truthful installed-version degradation does not excuse missing implementation.
 
 ## Task 2E — parallel authority, controls, and validation
 
@@ -99,7 +99,7 @@ Each lane owns only its named modules and focused tests. The validation owner ca
 1. Capture beta.5 state inventory and a verified backup.
 2. Prove dry-run, successful cutover, interruption recovery, and rollback.
 3. Prove sole-writer authority and no shadow writes.
-4. Verify Beads is migration/rollback compatibility only.
+4. Verify Beads is inbound-import-only, retire runtime/export surfaces, and prove rollback through Kernel-native backup/restore.
 5. Bind receipts to the exact package candidate BOM.
 
 ## Task 5 — release convergence

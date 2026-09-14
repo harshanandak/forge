@@ -3,7 +3,7 @@
 ## Product model
 
 1. **Memory is the authority product.** It owns Kernel state, durable knowledge, WorkPacket issuance, claims, leases, evidence acceptance, and all authoritative transitions.
-2. **Flow is the execution product.** It consumes authorized packets, owns bounded execution/cancellation/cleanup, and is the only producer of canonical Forge `RunReceipt`s.
+2. **Flow is an optional execution product.** It consumes authorized packets and owns its execution/cancellation/cleanup receipts. Humans, agents, and other runtimes may also produce contract-valid `RunReceipt`s without Flow; Memory alone verifies and accepts them under the same authority policy.
 3. **Agent Companion is an independent execution-provider package and repository.** It returns provider evidence to Flow. It never imports Memory storage, writes Kernel authority, advances stages, approves gates, or authorizes merges.
 4. **Forge is a stateless compatibility facade.** It composes installed products explicitly and preserves existing CLI behavior. Missing products or providers return stable diagnostics.
 5. **`@forge/contracts` remains a physical shared library, not a product.** Memory governs authoritative schemas and acceptance semantics. Flow and Companion consume the library without importing Memory implementation code.
@@ -22,7 +22,7 @@
 
 1. Forge 0.1.0 must ship usable standalone Memory and Flow assemblies, the truthful facade, beta.5 migration/rollback, and the complete approved exact-artifact matrix across Ubuntu, macOS, Windows, Node 22/24, and every supported harness projection.
 2. The Agent Companion bridge may develop in parallel but is not included in the Forge 0.1.0 BOM and cannot block Forge promotion.
-3. PR5 ships its bounded facade/capability work with unsupported adapter tiers reported as unavailable. Full T0-T4 implementation and certification is later work.
+3. PR5 may ship its bounded facade/capability slice first, but remains incomplete until T0-T4 delivery adapters for supported Claude, Codex, Cursor, and Hermes versions are implemented and certified. Installed-version limitations are reported truthfully; a missing implementation does not satisfy supported behavior.
 4. Existing Shepherd, review, monitor, and merge behavior is preserved through regression evidence. The release train does not redesign it again.
 5. `@forge/contracts` is not folded into Memory during 0.1.0. That would create unnecessary consumer and versioning churn. Revisit physical consolidation only after a consumer census and compatibility window.
 6. Performance work enters 0.1.0 only when it repairs a measured false pass, false failure, resource contention problem, release timeout, or unusable package journey.

@@ -39,7 +39,7 @@ The user-facing products are Memory, Flow, Agent Companion, and the Forge facade
 - Expose a supported default local assembly through the public package.
 - Prove install, store, provenance-backed recall, close/restart, and repeat recall.
 - Prove issue/claim/lease authority through the public API.
-- Accept one valid receipt idempotently; reject stale, malformed, wrong-capability, conflicting, and incomplete receipts.
+- Accept one valid receipt idempotently; reject stale, malformed, wrong-capability, conflicting, and incomplete receipts. Prove receipt submission from a contract-conforming non-Flow executor with Flow absent.
 - Have no Flow dependency or private Flow import.
 - Return stable setup/unavailable errors.
 
@@ -58,7 +58,7 @@ The user-facing products are Memory, Flow, Agent Companion, and the Forge facade
 - Route only through public product surfaces.
 - Report missing products and unsupported harness tiers truthfully through `capabilities --json`, preflight, and Doctor.
 - Fold the minimum manifest-driven Doctor work into the PR5 owner because it shares capability and health files. Broader health dashboards are later.
-- Split full adapter delivery from PR5 acceptance; absent T0-T4 handlers remain explicit `UNAVAILABLE`, not implied support.
+- Split supported adapter delivery into subsequent PR5 implementation slices. T0-T4 adapters for Claude, Codex, Cursor, and Hermes remain release requirements; `UNAVAILABLE` is valid for actual installed-version limitations, not a substitute for implementing supported behavior.
 
 ### Authority and control reconciliation
 
@@ -71,7 +71,7 @@ The user-facing products are Memory, Flow, Agent Companion, and the Forge facade
 
 - Prove beta.5 inventory, non-mutating dry-run, verified backup, interrupted cutover recovery, rollback, and sole-writer behavior.
 - Resolve published runtime completeness (`95372af8`) and global bundled-workspace install behavior (`66e6890a`).
-- Keep Beads as inbound migration and temporary rollback compatibility. Do not expose it as live authority.
+- Keep only one-way `forge migrate --from beads` import and prove import fidelity. Remove remaining live Beads runtime/export surfaces before release; use Kernel-native backups and restoration for rollback.
 - Test the facade against independently packed Contracts, Memory, and Flow artifacts rather than workspace links.
 - Freeze an exact package/version/contract/source BOM before release convergence.
 
@@ -92,7 +92,7 @@ The user-facing products are Memory, Flow, Agent Companion, and the Forge facade
 | Area | Issues | Why |
 |---|---|---|
 | Public products | `12d92893`, `1ff3d2f9` | Advertised packages are not independently usable without these journeys |
-| Facade and authority | `5f4da13f`, `9e31a2f0` | Required before migration; avoid hidden fallback and stale claims |
+| Facade and authority | `5f4da13f`, `9e31a2f0` | Required before migration, including supported T0-T4 adapters; avoid hidden fallback and stale claims |
 | Migration and release | `f2a96ff1`, `eb2f1753`, `8e634347` | Cutover, rollback, exact artifacts, and promotion |
 | Control projections | `7268bc9b`, `9658c21a` | Truthful hook/MCP permissions and capability digests |
 | PR4B consistency | `6ddd30c6`, `c5112cd4`, `209d80bc`, `c94f36f9` | Parent is closed while child acceptance remains open |
@@ -116,13 +116,13 @@ Agent Companion issues `85be2945`, `6f2dbe75`, `84c942f3`, `ce785690`, `1fc448fa
 
 ### Later
 
-- Full T0-T4 implementation and certification for every harness.
+- Adapter expansion beyond the supported Claude, Codex, Cursor, and Hermes release set.
 - Plugin kernel, marketplace, cloud skill sync, broad notification adapters, dashboards, and cross-harness phase hopping.
 - Vector memory, Graphiti/OpenViking/Mem0 production integration, and Graphify beyond an optional measured projection.
 - Physical repository split.
 - Broad policy compilation and model-winner evaluation.
 - Cache redesign, impact-aware validation, and speculative startup tuning.
-- Beads export/runtime deletion, obsolete binary aliases, generic IssueAdapter deletion, and tracked mirror removal until compatibility windows and consumer scans complete.
+- Obsolete binary aliases, generic IssueAdapter deletion, and tracked mirror removal until compatibility windows and consumer scans complete. Beads runtime/export retirement is required before release under D45.
 
 ### Supersede or remove from active planning
 
@@ -172,7 +172,7 @@ One Sol owner controls `packages/contracts/**` and the compatibility baseline. A
 | Memory | `packages/memory/**`, Memory public assembly and package tests/docs | Flow, facade, root manifests, lockfile, release files |
 | Flow | `packages/flow/**`, its provider seam, Flow/monitor runtime and package tests/docs | Memory internals, facade, root manifests, lockfile |
 | Companion | External Companion repository/package and its conformance tests | Forge Memory/Flow implementation or Forge authority |
-| PR5 | `lib/capabilities/**`, `lib/health/**`, its command/facade files and focused tests | Memory/Flow internals and new adapter implementations |
+| PR5 | `lib/capabilities/**`, `lib/health/**`, its command/facade files and focused tests; supported adapter slices follow the facade slice with explicit path ownership | Memory/Flow private internals |
 | Kernel claims | Claim projections and migration preflight only | Package assemblies and capability routing |
 | Control projections | Hook and MCP registry/consent adapters and their tests | Memory/Flow internals |
 | Validation | Full-suite runner, process/shard scheduling and their tests | Product behavior, package APIs, lockfile |
@@ -210,14 +210,14 @@ No timeout becomes green by increasing the timeout alone. Speed changes must ret
 - Document one owner for contracts, Memory, Flow, Companion, and facade behavior.
 - Convert duplicate root implementations to delegates when touched by the owning product lane.
 - Remove no-op or misleading public configuration and documentation.
-- Shrink the kernel-only issue backend selector after migration compatibility tests exist.
+- Shrink the kernel-only issue backend selector after inbound-import tests exist; retire Beads runtime/export paths and use Kernel-native rollback.
 - Supersede duplicate issue records and correct stale release labels/dependency edges.
 - Add package-level entrypoints and stable unavailable diagnostics rather than more routers.
 
 ### After 0.1.0
 
 - Delete delegated Memory/Kernel and PR-monitor implementations after call-site and replay proof.
-- Retire Beads export/runtime support after the rollback window.
+- Retain only inbound Beads import; verify later cleanup does not reintroduce runtime/export support.
 - Remove obsolete binary aliases after an announced compatibility period.
 - Remove unnecessary generated/tracked skill mirrors only after clean-install discovery is proven.
 - Reassess the abstract IssueAdapter and physical Contracts package from real external consumer data.
