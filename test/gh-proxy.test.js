@@ -18,6 +18,7 @@ function fixture({ automatic = false } = {}) {
       '  -w, --web  Open in a browser',
     ].join('\n'),
     readAliases: () => '',
+    readExtensions: () => '',
     readAuto: () => automatic,
     resolveExecutable: () => '/real/gh',
     spawnSync: (command, args, spawnOptions) => {
@@ -102,6 +103,7 @@ describe('transparent gh proxy', () => {
     const options = {
       baseEnv: { GH_TOKEN: 'ambient', GH_REPO: 'owner/other-repo' },
       readAliases: () => '',
+      readExtensions: () => '',
       readAuto: () => true,
       resolveExecutable: () => '/real/gh',
       spawnSync: (command, args, spawnOptions) => {
@@ -255,6 +257,17 @@ describe('transparent gh proxy', () => {
     expect(errors.join('')).toContain('expanded gh command');
   });
 
+  test.each([
+    [['enterprise-tool', 'run'], 'gh enterprise-tool\towner/gh-enterprise-tool\tv1.0.0'],
+    [['extension', 'exec', 'enterprise-tool', 'run'], 'gh enterprise-tool\towner/gh-enterprise-tool\tv1.0.0'],
+    [['ext', 'exec', 'enterprise-tool', 'run'], 'gh enterprise-tool\towner/gh-enterprise-tool\tv1.0.0'],
+  ])('fails closed before executing installed extension: %j', (args, extensions) => {
+    const f = fixture({ automatic: true });
+    f.options.readExtensions = () => extensions;
+    expect(runGhProxy(args, '/work', f.options)).toBe(1);
+    expect(f.calls.some(call => call.type === 'spawn' || call.type === 'context')).toBe(false);
+  });
+
   test('fails closed without exposing an alias-inspection error', () => {
     const f = fixture({ automatic: true });
     const errors = [];
@@ -268,8 +281,26 @@ describe('transparent gh proxy', () => {
   test('does not inspect aliases when automatic routing is disabled', () => {
     const f = fixture();
     f.options.readAliases = () => { throw new Error('should not inspect'); };
+    f.options.readExtensions = () => { throw new Error('should not inspect'); };
     expect(runGhProxy(['custom'], '/work', f.options)).toBe(0);
     expect(f.calls.some(call => call.type === 'spawn')).toBe(true);
+  });
+
+  test.each([['extension', 'list'], ['extensions', 'list'], ['ext', 'list']])('keeps extension management native: %j', (...args) => {
+    const f = fixture({ automatic: true });
+    f.options.readExtensions = () => { throw new Error('should not inspect'); };
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.some(call => call.type === 'spawn')).toBe(true);
+  });
+
+  test('fails closed without exposing an extension-inspection error', () => {
+    const f = fixture({ automatic: true });
+    const errors = [];
+    f.options.readExtensions = () => { throw new Error('extension-output-canary'); };
+    f.options.writeError = value => errors.push(value);
+    expect(runGhProxy(['custom'], '/work', f.options)).toBe(1);
+    expect(f.calls.some(call => call.type === 'spawn' || call.type === 'context')).toBe(false);
+    expect(errors.join('')).not.toContain('extension-output-canary');
   });
 
   test('treats gh api -H as a header and routes through the selected account', () => {
@@ -296,6 +327,7 @@ describe('transparent gh proxy', () => {
     const selected = [];
     const options = {
       readAliases: () => '',
+      readExtensions: () => '',
       readAuto: () => true,
       resolveExecutable: () => '/real/gh',
       createContext: root => ({ bound: true, runChild: (_command, _args, childOptions) => {

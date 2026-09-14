@@ -116,6 +116,15 @@ describe('forge github lifecycle', () => {
     expect(routerCommits).toBe(1);
     expect(JSON.stringify(result)).not.toContain(CANARY);
 
+    const cleanupWarning = 'Configuration applied; router lock cleanup failed.';
+    const autoResult = await handler(['auto'], {}, '/repo', {
+      runner, baseEnv: {}, routerStatus: () => 'ready',
+      installRouter: () => ({ credentialHelperValue: helper, commit: () => ({ warning: cleanupWarning }) }),
+      isOwnedCredentialHelper: () => true,
+    });
+    expect(autoResult).toMatchObject({ success: true, warning: cleanupWarning });
+    expect(config.get('github.auto')).toEqual(['true']);
+
     liveLogin = 'personal';
     failAutoWrite = true;
     const failed = await handler(['use', 'personal', '--auto'], {}, '/repo', {

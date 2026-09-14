@@ -216,8 +216,24 @@ describe('opt-in GitHub router installation', () => {
     installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/old/forge'] }).commit();
     const refreshed = installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/new/forge'] });
     refreshed.commit();
+    refreshed.rollback();
     expect(fs.readFileSync(path.join(binDir, 'gh'), 'utf8')).toContain("'/new/forge'");
     expect(fs.readdirSync(binDir).some(name => name.endsWith('.tmp'))).toBe(false);
+  });
+
+  test('reports lock release failure without rolling back committed router files', () => {
+    const binDir = tempRoot();
+    const installed = installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge'] });
+    const originalRename = fs.renameSync;
+    fs.renameSync = (source, target) => {
+      if (source === path.join(binDir, '.forge-github-router.lock')) throw Object.assign(new Error('release denied'), { code: 'EACCES' });
+      return originalRename(source, target);
+    };
+    let result;
+    try { result = installed.commit(); } finally { fs.renameSync = originalRename; }
+    installed.rollback();
+    expect(result.warning).toContain('Configuration applied');
+    expect(fs.existsSync(path.join(binDir, 'gh'))).toBe(true);
   });
 
   test('uninstall locks each owned router directory once and ignores unrelated PATH directories', () => {
