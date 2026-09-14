@@ -53,6 +53,7 @@ describe('transparent gh proxy', () => {
   test.each([
     [], ['--version'], ['--help'], ['-h'], ['version'], ['help'],
     ['pr', 'create', '--help'], ['completion', '-s', 'bash'], ['config', 'get', 'git_protocol'], ['alias', 'list'],
+    ['licenses'], ['preview'], ['skill', 'list'], ['skills', 'list'],
   ])('bypasses zero-argument and local-only calls before clone state lookup: %j', (...args) => {
     const f = fixture({ automatic: true });
     f.options.readAuto = () => { throw new Error('state lookup must not run'); };
@@ -138,8 +139,13 @@ describe('transparent gh proxy', () => {
     ['pr', 'view', '--repo', 'enterprise.example/owner/repo'],
     ['pr', 'view', '--repo=enterprise.example/owner/repo'],
     ['pr', 'view', 'https://enterprise.example/owner/repo/pull/1'],
+    ['discussion', 'view', 'https://enterprise.example/org/project/discussions/1'],
+    ['discussion', 'comment', 'https://enterprise.example/org/project/discussions/1'],
+    ['gist', 'clone', 'https://enterprise.example/example/0123456789'],
     ['repo', 'clone', 'https://enterprise.example/owner/repo'],
     ['repo', 'view', 'enterprise.example/owner/repo'],
+    ['repo', 'create', 'new', '--template', 'enterprise.example/owner/template'],
+    ['repo', 'create', 'new', '-p', 'enterprise.example/owner/template'],
   ])('refuses an explicit non-GitHub.com target without spawning either account: %j', (...args) => {
     const f = fixture({ automatic: true });
     expect(runGhProxy(args, '/work', f.options)).toBe(1);

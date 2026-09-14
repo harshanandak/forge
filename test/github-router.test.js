@@ -414,6 +414,27 @@ describe('opt-in GitHub router installation', () => {
       .toEqual(['forge-github-credential-v1', 'gh']);
   });
 
+  test('serializes the machine registry across different launcher directories', () => {
+    const root = tempRoot();
+    const stateDir = path.join(root, 'state');
+    const firstBin = path.join(root, 'first-bin');
+    const secondBin = path.join(root, 'second-bin');
+    const firstRepo = disabledRepo(root, 'first');
+    const secondRepo = disabledRepo(root, 'second');
+    fs.mkdirSync(firstBin);
+    fs.mkdirSync(secondBin);
+    const first = installGithubRouter({ platform: 'linux', binDir: firstBin, stateDir, projectRoot: firstRepo,
+      runtimeCommand: ['/opt/forge/bin/forge'] });
+
+    expect(() => registerGithubRouterClone(secondRepo, { platform: 'linux', binDir: secondBin, stateDir }))
+      .toThrow(/operation is in progress/i);
+
+    first.commit();
+    registerGithubRouterClone(secondRepo, { platform: 'linux', binDir: secondBin, stateDir });
+    expect(assertGithubRouterCloneRegistered(firstRepo, { stateDir })).toBe(true);
+    expect(assertGithubRouterCloneRegistered(secondRepo, { stateDir })).toBe(true);
+  });
+
   test('reclaims a valid abandoned lock only when its owner is demonstrably dead', () => {
     const binDir = tempRoot();
     const lock = path.join(binDir, '.forge-github-router.lock');

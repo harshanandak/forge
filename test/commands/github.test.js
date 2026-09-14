@@ -46,6 +46,7 @@ function fixture(overrides = {}) {
     throw new Error(`Unexpected fixture call: ${command}`);
   };
   return { calls, options: { runner, routerStatus: () => overrides.routerState || 'ready',
+    assertRegistered: () => {},
     registerRouterClone: () => {}, unregisterRouterClone: () => {},
     baseEnv: { GH_TOKEN: 'ambient-canary', GH_HOST: 'other.example' } }, account: () => account };
 }
@@ -281,6 +282,21 @@ describe('forge github lifecycle', () => {
     expect(result.status.credentialHelper).toBe('forge-stale');
     expect(result.output).toContain('missing or unowned');
     expect(result.output).not.toContain('HTTPS Git credentials use this clone');
+  });
+
+  test('status reports an enabled clone missing from the machine registry', async () => {
+    const f = fixture({ account: 'Work', automatic: true });
+    f.options.assertRegistered = () => {
+      throw Object.assign(new Error(CANARY), { code: 'GITHUB_ROUTER_REGISTRY_INVALID' });
+    };
+
+    const result = await handler(['status', '--json'], {}, '/repo', f.options);
+
+    expect(result.status).toMatchObject({
+      state: 'router_error', account: 'Work', automatic: true, code: 'GITHUB_ROUTER_REGISTRY_INVALID',
+    });
+    expect(f.calls.some(call => call.command === 'gh')).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(CANARY);
   });
 
   test('router uninstall requires machine-wide confirmation and a disabled current clone', async () => {
