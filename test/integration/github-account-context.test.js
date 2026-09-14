@@ -74,6 +74,11 @@ function npmOutput(args, options) {
   return result.stdout || '';
 }
 
+function parsePackMetadata(output) {
+  const text = String(output);
+  return JSON.parse(text.slice(text.lastIndexOf('\n[') + 1));
+}
+
 function installTestProduct() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-account-product-'));
   productRoots.push(root);
@@ -83,7 +88,7 @@ function installTestProduct() {
   fs.mkdirSync(nativeDir);
   fs.writeFileSync(globalConfig, '', 'utf8');
 
-  const packed = JSON.parse(npmOutput(['pack', '--ignore-scripts', '--pack-destination', root, '--json'], {
+  const packed = parsePackMetadata(npmOutput(['pack', '--ignore-scripts', '--pack-destination', root, '--json'], {
     cwd: path.resolve(__dirname, '../..'), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 30000,
   }));
   const archive = path.join(root, packed[0].filename);
@@ -195,6 +200,10 @@ function credentialFill(product, cwd) {
 }
 
 describe('simultaneous clone-local GitHub sessions', () => {
+  test('accepts npm pack metadata after lifecycle chatter', () => {
+    expect(parsePackMetadata('sync hooks\n[{"filename":"forge.tgz"}]')).toEqual([{ filename: 'forge.tgz' }]);
+  });
+
   test('packed and installed PATH launchers isolate two concurrent clones, switch bindings, pass through unbound state, and fail closed', async () => {
     const product = installTestProduct();
     const personal = repository(); const work = repository();
