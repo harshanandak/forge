@@ -344,10 +344,10 @@ describe('transparent gh proxy', () => {
     });
   });
 
-  test('canonicalizes the local SSH alias when GH_HOST already selects GitHub.com', () => {
+  test('canonicalizes the local SSH alias when GH_HOST case-insensitively selects GitHub.com', () => {
     const calls = [];
     const f = fixture({ automatic: true });
-    f.options.baseEnv.GH_HOST = 'github.com';
+    f.options.baseEnv.GH_HOST = 'GitHub.COM';
     f.options.resolveLocalTarget = () => ({ hostname: 'github.com', repository: 'org/project' });
     f.options.createContext = (_root, contextOptions) => ({
       bound: true,
