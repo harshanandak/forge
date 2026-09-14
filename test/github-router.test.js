@@ -31,6 +31,12 @@ describe('opt-in GitHub router installation', () => {
     for (const name of ['gh', 'gh.cmd', 'gh.ps1', 'forge-github-credential-v1']) {
       expect(fs.readFileSync(path.join(binDir, name), 'utf8')).toContain('forge-gh-router-v1');
     }
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(path.join(binDir, 'gh')).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(path.join(binDir, 'gh.cmd')).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(path.join(binDir, 'gh.ps1')).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(path.join(binDir, 'forge-github-credential-v1')).mode & 0o777).toBe(0o700);
+    }
     expect(fs.readFileSync(path.join(binDir, 'gh.cmd'), 'utf8')).toContain('github proxy --');
     expect(fs.readFileSync(path.join(binDir, 'forge-github-credential-v1'), 'utf8')).toContain('github credential "$@"');
   });
