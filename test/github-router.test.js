@@ -133,6 +133,16 @@ describe('opt-in GitHub router installation', () => {
       .toBe(workflowDir);
   });
 
+  test('normalizes a POSIX package shim with target-platform path rules', () => {
+    const binDir = tempRoot();
+    const launcher = path.join(binDir, 'forge-workflow');
+    fs.writeFileSync(launcher, '#!/bin/sh\nnode /opt/forge/node_modules/forge-workflow/bin/forge.js "$@"\n', { mode: 0o755 });
+    fs.chmodSync(launcher, 0o755);
+
+    expect(findForgeBinDir({ platform: 'linux', pathEnv: binDir,
+      entrypointPath: '/opt/forge/node_modules/forge-workflow/bin/forge.js' })).toBe(binDir);
+  });
+
   test('uninstall removes only marked Forge launchers', () => {
     const binDir = tempRoot();
     installGithubRouter({ platform: 'linux', binDir, runtimeCommand: ['/opt/forge/bin/forge'] }).commit();
