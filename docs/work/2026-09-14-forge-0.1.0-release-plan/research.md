@@ -78,6 +78,8 @@ Release-relevant open stability work includes resource-aware push/full-suite exe
 
 General cache redesign, impact-aware validation, broad CI deduplication, and startup micro-optimization lack a release-candidate baseline. They should be measured after 0.1.0 unless a current failure demonstrates that they block reproducible release evidence.
 
+The approved release matrix remains broader than package development smoke: Ubuntu, macOS, Windows, Node 22 and 24, Memory-only, Flow stateless, Flow connected, facade installs, all supported harness projections, migration/rollback, monitor lifecycle, package integrity/provenance/OIDC/dist-tags, and a sequential merge-train simulation. RC acceptance requires immutable prerelease artifacts published under `next`, at least 50 distinct clean journey/environment pairs, every G0-G8 lane, and seven cumulative automated observation days without an unresolved S0/S1 event.
+
 ## Confusion and low-value surfaces
 
 The highest-value simplifications are architectural convergence rather than immediate deletion:
@@ -94,4 +96,3 @@ The highest-value simplifications are architectural convergence rather than imme
 - Audit the very large worktree inventory after ownership checks; never bulk-delete dirty or active worktrees.
 
 Physical deletion before consumer, migration, and replay evidence would increase release risk. The 0.1.0 goal is one owner per behavior and truthful diagnostics; most compatibility-file deletion belongs to a post-0.1 cleanup release.
-

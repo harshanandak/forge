@@ -33,7 +33,7 @@ This task list begins after this planning checkpoint is accepted. Every implemen
 1. Start with a failing packed-install journey: create default Memory, store, recall with provenance, close, restart, recall.
 2. Add public authority/receipt acceptance cases for idempotent duplicate, conflict, stale head, wrong capability, and incomplete evidence.
 3. Implement the supported default local assembly without Flow imports.
-4. Prove stable setup/unavailable errors on Windows and Linux.
+4. Prove stable setup/unavailable errors in package-local Windows and Linux development smoke; final RC coverage expands to the approved platform/runtime matrix.
 
 ## Task 2B — standalone Flow and monitor reconciliation
 
@@ -107,10 +107,11 @@ Each lane owns only its named modules and focused tests. The validation owner ca
 **Issues:** `eb2f1753`, then `8e634347`.
 
 1. Resolve every must/conditional disposition in `plan.md` against live state.
-2. Run packed Memory, Flow, and facade journeys on Windows and Linux.
-3. Run the exact-head full suite and security gates; require a durable `PASS` aggregate.
-4. Run the minimal supported-skill acceptance corpus; move continuous self-improvement work out of the release gate.
-5. Freeze signed source/package/contract BOM and rollback artifacts.
-6. Perform a metadata-only version, changelog, documentation, tag, and publish promotion.
-7. Re-fetch the live release root and enumerate every dependency before declaring completion.
-
+2. Freeze the signed source/package/contract BOM, tag the exact candidate, and publish immutable prerelease packages in dependency order under `next`.
+3. Run the exact-artifact matrix against those registry packages on Ubuntu, macOS, Windows, Node 22 and 24, Memory-only, Flow stateless, Flow connected, facade installs, and Claude/Codex/Cursor/Hermes projections with truthful T0-T4 degradation.
+4. Prove migration/rollback, monitor/cancellation/cleanup, package integrity/provenance/OIDC/dist-tags, and one sequential merge-train simulation.
+5. Run the exact-head full suite and security gates; require durable `PASS` receipts for every G0-G8 lane.
+6. Run the minimal supported-skill acceptance corpus; move continuous self-improvement work out of the release gate.
+7. Accumulate at least 50 distinct clean RC journey/environment pairs and seven automated observation days across RCs with no unresolved S0/S1 event. A behavioral change creates a new RC; unaffected evidence remains reusable only when the BOM proves unchanged inputs.
+8. Perform a metadata-only version, changelog, documentation, and `latest` promotion of the accepted RC. Reverify fresh install, beta.5 upgrade, and rollback from the promoted artifacts.
+9. Re-fetch the live release root and enumerate every dependency before declaring completion.

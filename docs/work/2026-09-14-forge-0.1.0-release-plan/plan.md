@@ -32,7 +32,7 @@ The user-facing products are Memory, Flow, Agent Companion, and the Forge facade
 - Preserve the existing public contract package and add only the generic provider behavior needed by standalone Flow.
 - Freeze packet identity, authority bindings, provider identity, cancellation/cleanup evidence, terminal semantics, stable errors, and compatibility rules.
 - Provide shared conformance fixtures. Memory, Flow, and Companion may consume them; they do not fork validators.
-- Publish Contracts before Memory and Flow and test consumers against packed artifacts.
+- Publish Contracts before Memory and Flow and test consumers first as packed artifacts, then as immutable registry RC artifacts under `next`.
 
 ### Standalone Memory (`12d92893`)
 
@@ -80,7 +80,9 @@ The user-facing products are Memory, Flow, Agent Companion, and the Forge facade
 - Resolve or live-prove stale the open Sonar security rating (`247ec784`).
 - Complete process-tree isolation (`50d3f2c3`) and bounded Windows process-heavy scheduling (`fd64f6c9`).
 - A child failure, caller timeout, missing shard result, or incomplete aggregate must block release.
-- Run the final exact-head matrix on Windows and Linux from packed candidates, then promote without behavioral code changes.
+- Tag the frozen RC candidate, publish immutable prerelease packages in BOM order under `next`, and run the complete exact-artifact/exact-SHA matrix against what users will install.
+- Cover Ubuntu, macOS, Windows, Node 22 and 24, Memory-only, Flow stateless, Flow connected, facade installs, Claude/Codex/Cursor/Hermes projections, and truthful T0-T4 degradation.
+- Require at least 50 distinct clean RC journey/environment pairs, every G0-G8 lane, seven cumulative automated observation days, and no unresolved S0/S1 event before metadata-only stable promotion.
 - Narrow the remaining skills evaluation blocker (`d362bd71`) to a release acceptance corpus for supported skills. Move the self-improving/continuous optimization loop after 0.1.0.
 
 ## Release disposition
@@ -95,7 +97,7 @@ The user-facing products are Memory, Flow, Agent Companion, and the Forge facade
 | Control projections | `7268bc9b`, `9658c21a` | Truthful hook/MCP permissions and capability digests |
 | PR4B consistency | `6ddd30c6`, `c5112cd4`, `209d80bc`, `c94f36f9` | Parent is closed while child acceptance remains open |
 | Package integrity | `95372af8`, `66e6890a` | Fresh installs must contain and resolve runtime workspace modules |
-| Release stability | `247ec784`, `50d3f2c3`, `fd64f6c9` | Security disposition and reproducible Windows/Linux validation |
+| Release stability | `247ec784`, `50d3f2c3`, `fd64f6c9` | Security disposition and reproducible cross-platform/runtime validation |
 | Supported skill behavior | minimal acceptance slice of `d362bd71` | Stable release should prove the skills it advertises without pulling in a self-improvement platform |
 
 ### Conditional, fold into an owner or explicitly defer
@@ -183,7 +185,7 @@ After Memory and Flow public APIs are stable, one integration owner updates root
 
 ### R4 — migration and release
 
-PR6 consumes immutable packed candidates and produces backup/cutover/rollback evidence. PR7 consumes the frozen PR6 BOM, completes Windows/Linux and security gates, dispositions remaining issues, and changes only release metadata. Stable promotion contains no product behavior changes.
+PR6 consumes immutable packed candidates and produces backup/cutover/rollback evidence. PR7 freezes the signed BOM, publishes the exact RC artifacts under `next`, then validates those registry artifacts across the full platform/runtime/product/harness matrix. It also completes security gates, 50 clean journey/environment pairs, and seven cumulative observation days. Stable promotion contains no product behavior changes.
 
 ## Stability and performance gates
 
@@ -191,7 +193,7 @@ These budgets are proposed release targets until the candidate produces measured
 
 | Journey | Gate |
 |---|---|
-| Cold `forge --version` | p95 at or below 2 seconds on Windows and Linux after dependencies are installed |
+| Cold `forge --version` | p95 at or below 2 seconds on Ubuntu, macOS, and Windows after dependencies are installed |
 | Quick setup | p95 at or below 30 seconds, excluding package download |
 | Packed package smoke | at or below 60 seconds per package/OS; repeat three times on Windows |
 | Memory recall | p95 at or below 2 seconds over 1,000 local records; restart durability 3/3 |
@@ -223,5 +225,4 @@ No timeout becomes green by increasing the timeout alone. Speed changes must ret
 
 ## Release completion rule
 
-0.1.0 is complete only when every named required outcome has fresh exact-head evidence, all packed artifacts reproduce from the signed BOM, Memory and Flow work independently on Windows and Linux, migration and rollback are proven, validation returns `PASS`, security gates are green or explicitly resolved, and the live Kernel release root is re-fetched with no unresolved blocking dependency. A merged PR, green focused test, or old receipt cannot substitute for that proof.
-
+0.1.0 is complete only when every named required outcome has fresh exact-head evidence and the immutable RC artifacts published under `next` reproduce from the signed BOM. The full approved matrix must pass across Ubuntu, macOS, Windows, Node 22/24, Memory-only, Flow stateless, Flow connected, facade installs, and Claude/Codex/Cursor/Hermes projections with truthful capability degradation. Migration and rollback must pass; all G0-G8 receipts must be `PASS`; at least 50 distinct clean RC journey/environment pairs and seven cumulative automated observation days must complete with no unresolved S0/S1 event; the live Kernel release root must be re-fetched with no unresolved blocking dependency. A merged PR, locally packed smoke, green focused test, or old receipt cannot substitute for that proof.

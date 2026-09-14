@@ -20,12 +20,13 @@
 
 ## 0.1.0 boundary
 
-1. Forge 0.1.0 must ship usable standalone Memory and Flow assemblies, the truthful facade, beta.5 migration/rollback, exact published-artifact proof, and reproducible Windows/Linux validation.
+1. Forge 0.1.0 must ship usable standalone Memory and Flow assemblies, the truthful facade, beta.5 migration/rollback, and the complete approved exact-artifact matrix across Ubuntu, macOS, Windows, Node 22/24, and every supported harness projection.
 2. The Agent Companion bridge may develop in parallel but is not included in the Forge 0.1.0 BOM and cannot block Forge promotion.
 3. PR5 ships its bounded facade/capability work with unsupported adapter tiers reported as unavailable. Full T0-T4 implementation and certification is later work.
 4. Existing Shepherd, review, monitor, and merge behavior is preserved through regression evidence. The release train does not redesign it again.
 5. `@forge/contracts` is not folded into Memory during 0.1.0. That would create unnecessary consumer and versioning churn. Revisit physical consolidation only after a consumer census and compatibility window.
 6. Performance work enters 0.1.0 only when it repairs a measured false pass, false failure, resource contention problem, release timeout, or unusable package journey.
+7. The signed RC BOM is published in dependency order under `next`; validation runs against those immutable registry artifacts. Stable `latest` promotion is metadata-only after at least 50 clean RC journey/environment pairs and seven cumulative automated observation days with no unresolved S0/S1 event.
 
 ## Parallel work rules
 
@@ -36,4 +37,3 @@
 5. Old beta.5-based branches are never merged wholesale. Reuse is by reviewed commit or reimplementation against the frozen current contract only.
 6. Every merge checkpoint records exact source SHA, contract digest, package versions, validation receipts, and remaining incompatible consumers.
 7. Sol owns implementation and integration. Luna owns bounded exploration, evidence gathering, and review. No two agents edit the same lane.
-
