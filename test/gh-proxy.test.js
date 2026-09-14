@@ -424,8 +424,28 @@ describe('transparent gh proxy', () => {
     fs.writeFileSync(path.join(proxyDir, 'gh.cmd'), '@rem forge-gh-router-v1\r\n');
     fs.writeFileSync(path.join(realDir, 'gh.exe'), 'fake');
     try {
-      expect(resolveRealGh({ platform: 'win32', pathEnv: [proxyDir, realDir].join(path.delimiter), pathExt: '.CMD;.EXE' }))
+      expect(resolveRealGh({
+        platform: 'win32', pathEnv: [proxyDir, realDir].join(path.delimiter), pathExt: '.CMD;.EXE',
+        ownPath: '/$bunfs/root/forge.exe',
+      }))
         .toBe(path.join(realDir, 'gh.exe'));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('skips invalid candidates and returns null when only a marked router exists', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-gh-proxy-'));
+    const invalidDir = path.join(root, 'invalid');
+    const routerDir = path.join(root, 'router');
+    fs.mkdirSync(invalidDir);
+    fs.mkdirSync(routerDir);
+    fs.mkdirSync(path.join(invalidDir, 'gh'));
+    fs.writeFileSync(path.join(routerDir, 'gh'), '#!/bin/sh\n# forge-gh-router-v1\n', { mode: 0o755 });
+    try {
+      expect(resolveRealGh({
+        platform: 'linux', pathEnv: [invalidDir, routerDir].join(path.delimiter), ownPath: '/$bunfs/root/forge',
+      })).toBeNull();
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
