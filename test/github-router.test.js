@@ -155,10 +155,11 @@ describe('opt-in GitHub router installation', () => {
     const available = { ...unavailable, accessSync: () => {} };
     const helper = "!'/forge/forge-github-credential-v1'";
 
-    expect(getGithubRouterStatus({ platform: 'linux', pathEnv: '/forge', fs: unavailable })).toBe('unusable');
-    expect(isUsableCredentialHelperValue(helper, { platform: 'linux', fs: unavailable })).toBe(false);
-    expect(getGithubRouterStatus({ platform: 'linux', pathEnv: '/forge', fs: available })).toBe('ready');
-    expect(isUsableCredentialHelperValue(helper, { platform: 'linux', fs: available })).toBe(true);
+    const current = { isCurrentRouterFile: () => true };
+    expect(getGithubRouterStatus({ platform: 'linux', pathEnv: '/forge', fs: unavailable, ...current })).toBe('unusable');
+    expect(isUsableCredentialHelperValue(helper, { platform: 'linux', fs: unavailable, ...current })).toBe(false);
+    expect(getGithubRouterStatus({ platform: 'linux', pathEnv: '/forge', fs: available, ...current })).toBe('ready');
+    expect(isUsableCredentialHelperValue(helper, { platform: 'linux', fs: available, ...current })).toBe(true);
   });
 
   test('ignores non-executable POSIX gh files before the executable router', () => {
@@ -171,7 +172,44 @@ describe('opt-in GitHub router installation', () => {
     };
     const pathEnv = ['/native', '/forge'].join(path.delimiter);
 
-    expect(getGithubRouterStatus({ platform: 'linux', pathEnv, fs: fileSystem })).toBe('ready');
+    expect(getGithubRouterStatus({ platform: 'linux', pathEnv, fs: fileSystem, isCurrentRouterFile: () => true })).toBe('ready');
+  });
+
+  test('requires live dedicated entrypoints before reporting generated launchers ready', () => {
+    const root = tempRoot();
+    const binDir = path.join(root, 'bin');
+    const proxyEntrypointPath = path.join(root, 'forge-gh-proxy.js');
+    const credentialEntrypointPath = path.join(root, 'forge-github-credential.js');
+    fs.mkdirSync(binDir);
+    fs.writeFileSync(proxyEntrypointPath, '');
+    fs.writeFileSync(credentialEntrypointPath, '');
+    const options = { platform: process.platform, binDir, compiled: false, proxyEntrypointPath, credentialEntrypointPath };
+    const installed = installGithubRouter(options);
+    installed.commit();
+
+    expect(getGithubRouterStatus({ ...options, pathEnv: binDir })).toBe('ready');
+    expect(isUsableCredentialHelperValue(installed.credentialHelperValue, options)).toBe(true);
+    fs.unlinkSync(proxyEntrypointPath);
+    expect(getGithubRouterStatus({ ...options, pathEnv: binDir })).toBe('unusable');
+    expect(isUsableCredentialHelperValue(installed.credentialHelperValue, options)).toBe(true);
+    fs.unlinkSync(credentialEntrypointPath);
+    expect(isUsableCredentialHelperValue(installed.credentialHelperValue, options)).toBe(false);
+  });
+
+  test('requires a live compiled target before reporting generated launchers ready', () => {
+    const binDir = tempRoot();
+    const executablePath = path.join(binDir, 'forge.exe');
+    fs.writeFileSync(executablePath, '');
+    if (process.platform !== 'win32') fs.chmodSync(executablePath, 0o755);
+    const options = { platform: process.platform, binDir, compiled: true, executablePath };
+    const installed = installGithubRouter(options);
+    installed.commit();
+
+    expect(getGithubRouterStatus({ ...options, pathEnv: binDir })).toBe('ready');
+    expect(isUsableCredentialHelperValue(installed.credentialHelperValue, options)).toBe(true);
+    fs.unlinkSync(executablePath);
+    expect(getGithubRouterStatus({ ...options, pathEnv: binDir })).toBe('unusable');
+    expect(isUsableCredentialHelperValue(installed.credentialHelperValue, options)).toBe(false);
   });
 
   test('rejects transient package-runner shims and accepts a stable Forge launcher', () => {
