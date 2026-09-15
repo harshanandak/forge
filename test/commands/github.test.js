@@ -479,6 +479,7 @@ describe('forge github lifecycle', () => {
   test.each([
     { remote: 'http://github.com/org/project.git' },
     { remote: 'git://github.com/org/project.git' },
+    { remote: 'https://github.com:8443/org/project.git' },
     { remote: 'https://gitlab.com/org/project.git' },
     { remote: 'https://github.com/org/project/extra' },
     { remote: `https://user:${CANARY}@github.com/org/project.git` },
@@ -498,6 +499,11 @@ describe('forge github lifecycle', () => {
     expect(report.status.state).toBe('no_repository_access');
     expect(report.status.repositoryAccess).toBe(false);
     expect(JSON.stringify(report).includes(CANARY)).toBe(false);
+  });
+
+  test('use accepts the default HTTPS port explicitly', async () => {
+    const f = fixture({ remote: 'https://github.com:443/org/project.git' });
+    expect((await handler(['use', 'work'], {}, '/repo', f.options)).success).toBe(true);
   });
 
   test.each([

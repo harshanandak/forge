@@ -53,8 +53,9 @@ describe('transparent gh proxy', () => {
   test.each([
     [], ['--version'], ['--version=true'], ['--help'], ['--help=true'], ['-h'], ['--help', 'pr'], ['version'], ['help'],
     ['pr', 'create', '--help'], ['pr', 'list', '--help=true'], ['completion', '-s', 'bash'], ['config', 'get', 'git_protocol'], ['alias', 'list'],
-    ['copilot', '--help'], ['discussion', '--help'], ['extension', '--help'], ['skill', '--help'], ['skills', '--help'],
-    ['licenses'], ['preview'], ['skill', 'list'], ['skills', 'list'],
+    ['co', '--help'], ['copilot', '--help'], ['discussion', '--help'], ['extension', '--help'], ['skill', '--help'], ['skills', '--help'],
+    ['accessibility'], ['actions'], ['environment'], ['exit-codes'], ['formatting'], ['licenses'], ['mintty'], ['preview'], ['reference'], ['telemetry'],
+    ['skill', 'list'], ['skills', 'list'],
     ['skill', 'install', './skills', '--from-local'], ['skills', 'add', './skills', '--from-local=true'],
     ['extension', 'install', '.'], ['extension', 'install', '--force', '.'], ['extension', 'install', '.', '--pin=v1'],
   ])('bypasses zero-argument and local-only calls before clone state lookup: %j', (...args) => {
