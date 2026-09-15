@@ -18,6 +18,7 @@ function fixture({ automatic = false } = {}) {
 
 Flags:
   -b, --body string   Body text
+  -L, --limit int     Maximum number of items
   -R, --repo string   Repository
   -w, --web           Open in browser
       --hostname string   GitHub hostname
@@ -70,6 +71,9 @@ describe('transparent gh proxy', () => {
     ['pr', 'list', '-R', 'github.com/owner/repo', '--help'],
     ['pr', 'list', '--repo=github.com/owner/repo', '-h'],
     ['pr', '--help', '-R', 'github.com/owner/repo'],
+    ['pr', 'list', '--limit', '10', '--help'],
+    ['pr', 'list', '-L10', '--help'],
+    ['pr', 'comment', '1', '--body', '--title', '--help'],
   ])('bypasses local help with an inherited repository option: %j', (...args) => {
     const f = fixture({ automatic: true });
     f.options.readAuto = () => { throw new Error('state lookup must not run'); };
@@ -80,6 +84,8 @@ describe('transparent gh proxy', () => {
 
   test.each([
     ['pr', 'comment', '1', '--body', '--help'],
+    ['pr', 'comment', '1', '--body=--help'],
+    ['pr', 'list', '--help=false'],
     ['pr', '--', '--help'],
   ])('does not bypass help-shaped option data: %j', (...args) => {
     const f = fixture({ automatic: true });
@@ -193,6 +199,8 @@ describe('transparent gh proxy', () => {
     ['repo', 'clone', 'git@@enterprise.example:owner/repo.git'],
     ['repo', 'clone', 'C:owner/repo.git'],
     ['repo', 'view', 'enterprise.example/owner/repo'],
+    ['repo', 'create', 'enterprise.example/org/new', '--public'],
+    ['repo', 'new', 'enterprise.example/org/new', '--public'],
     ['label', 'clone', 'enterprise.example/owner/source', '--repo', 'github.com/owner/destination'],
     ['repo', 'create', 'new', '--template', 'enterprise.example/owner/template'],
     ['repo', 'create', 'new', '-p', 'enterprise.example/owner/template'],
@@ -212,6 +220,15 @@ describe('transparent gh proxy', () => {
     const f = fixture({ automatic: true });
     f.options.resolveLocalTarget = () => { throw new Error('local remote must not be inspected'); };
     expect(runGhProxy(['repo', 'clone', repository], '/work', f.options)).toBe(0);
+    expect(f.calls.find(call => call.type === 'selected')).toBeDefined();
+  });
+
+  test.each([
+    ['create', 'new'], ['create', 'owner/new'], ['new', 'new'], ['new', 'owner/new'],
+  ])('routes repo %s name %s through GitHub.com without local inference', (verb, name) => {
+    const f = fixture({ automatic: true });
+    f.options.resolveLocalTarget = () => { throw new Error('local remote must not be inspected'); };
+    expect(runGhProxy(['repo', verb, name, '--public'], '/work', f.options)).toBe(0);
     expect(f.calls.find(call => call.type === 'selected')).toBeDefined();
   });
 
