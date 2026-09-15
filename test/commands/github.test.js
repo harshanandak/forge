@@ -21,6 +21,7 @@ function fixture(overrides = {}) {
         throw Object.assign(new Error('missing'), { status: 1 });
       }
       if (args.join(' ') === 'config --local --get-all credential.https://github.com.helper') {
+        if (overrides.automaticHelpers) return `${overrides.automaticHelpers.join('\n')}\n`;
         if (overrides.automatic) return '\n!forge-git-credential\n';
         throw Object.assign(new Error('missing'), { status: 1 });
       }
@@ -293,8 +294,40 @@ describe('forge github lifecycle', () => {
     f.options.isOwnedCredentialHelper = () => false;
     const result = await handler(['status'], {}, '/repo', f.options);
     expect(result.status.credentialHelper).toBe('forge-stale');
+    expect(result).toMatchObject({ success: false, status: { state: 'router_error', code: 'GITHUB_CREDENTIAL_HELPER_UNAVAILABLE' } });
+    expect(f.calls.some(call => call.command === 'gh')).toBe(false);
     expect(result.output).toContain('missing or unowned');
     expect(result.output).not.toContain('HTTPS Git credentials use this clone');
+  });
+
+  test('status rejects a conflicting helper before the Forge helper', async () => {
+    const helper = "!'C:/Forge/forge-github-credential-v1'";
+    const f = fixture({ account: 'Work', automatic: true, automaticHelpers: ['', '!manager', helper],
+      scopedHelper: `!manager\n${helper}` });
+    f.options.isOwnedCredentialHelper = value => value === helper;
+
+    const result = await handler(['status'], {}, '/repo', f.options);
+
+    expect(result).toMatchObject({ success: false, status: {
+      state: 'router_error', code: 'GITHUB_CREDENTIAL_HELPER_UNAVAILABLE', credentialHelper: 'forge-conflict',
+    } });
+    expect(result.output).toContain('another helper conflicts');
+    expect(result.output).not.toContain('HTTPS Git credentials use this clone');
+    expect(f.calls.some(call => call.command === 'gh')).toBe(false);
+  });
+
+  test.each([
+    ['missing', 'GITHUB_ROUTER_UNAVAILABLE'],
+    ['shadowed', 'GITHUB_ROUTER_SHADOWED'],
+  ])('status rejects unavailable automatic gh routing: %s', async (routerState, code) => {
+    const f = fixture({ account: 'Work', automatic: true, routerState,
+      scopedHelper: "!'C:/Forge/forge-github-credential-v1'" });
+    f.options.isOwnedCredentialHelper = () => true;
+
+    const result = await handler(['status', '--json'], {}, '/repo', f.options);
+
+    expect(result).toMatchObject({ success: false, status: { state: 'router_error', code } });
+    expect(f.calls.some(call => call.command === 'gh')).toBe(false);
   });
 
   test('status reports an enabled clone missing from the machine registry', async () => {

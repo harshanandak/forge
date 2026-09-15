@@ -54,6 +54,7 @@ describe('transparent gh proxy', () => {
     [], ['--version'], ['--help'], ['-h'], ['version'], ['help'],
     ['pr', 'create', '--help'], ['completion', '-s', 'bash'], ['config', 'get', 'git_protocol'], ['alias', 'list'],
     ['licenses'], ['preview'], ['skill', 'list'], ['skills', 'list'],
+    ['skill', 'install', './skills', '--from-local'], ['skills', 'add', './skills', '--from-local'],
   ])('bypasses zero-argument and local-only calls before clone state lookup: %j', (...args) => {
     const f = fixture({ automatic: true });
     f.options.readAuto = () => { throw new Error('state lookup must not run'); };
@@ -81,6 +82,16 @@ describe('transparent gh proxy', () => {
   });
 
   test.each([
+    ['skill', 'install', './skills', '--dir', '--from-local'],
+    ['skill', 'install', './skills', '--from-local', '--upstream'],
+    ['skill', 'install', './skills', '--', '--from-local'],
+  ])('does not bypass non-local skill invocations: %j', (...args) => {
+    const f = fixture({ automatic: true });
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.find(call => call.type === 'selected')).toMatchObject({ args });
+  });
+
+  test.each([
     ['auth'], ['auth', 'login'], ['auth', 'logout'], ['auth', 'status'], ['auth', 'token'],
     ['--hostname', 'enterprise.example', 'auth', 'status'],
   ])('always bypasses native gh account management: %j', (...args) => {
@@ -100,6 +111,14 @@ describe('transparent gh proxy', () => {
     expect(runGhProxy(args, '/work', f.options)).toBe(0);
     expect(f.calls.some(call => call.type === 'spawn')).toBe(false);
     expect(f.calls.find(call => call.type === 'selected')).toMatchObject({ command: '/real/gh', args });
+  });
+
+  test('passes opaque alias URL option values to the selected account', () => {
+    const f = fixture({ automatic: true });
+    const args = ['my-alias', '--target', 'https://enterprise.example/value'];
+    f.options.readCommandHelp = () => 'Usage: gh my-alias [flags]\n';
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.find(call => call.type === 'selected')).toMatchObject({ args });
   });
 
   test('uses no help, alias, extension, or live API discovery on the common path', () => {
