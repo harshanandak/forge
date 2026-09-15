@@ -69,7 +69,7 @@ describe('transparent gh proxy', () => {
 
   test.each([
     ['pr', 'list', '-R', 'github.com/owner/repo', '--help'],
-    ['pr', 'list', '--repo=github.com/owner/repo', '-h'],
+    ['pr', 'list', '--repo=github.com/owner/repo', '--help'],
     ['pr', '--help', '-R', 'github.com/owner/repo'],
     ['pr', 'list', '--limit', '10', '--help'],
     ['pr', 'list', '-L10', '--help'],
@@ -82,6 +82,14 @@ describe('transparent gh proxy', () => {
     expect(f.calls[0]).toMatchObject({ type: 'spawn', args });
   });
 
+  test('bypasses short help only when native metadata declares it boolean', () => {
+    const f = fixture({ automatic: true });
+    f.options.readAuto = () => { throw new Error('state lookup must not run'); };
+    f.options.readCommandHelp = () => '  -h, --help   Show help for command\n';
+    expect(runGhProxy(['pr', 'list', '-h'], '/work', f.options)).toBe(0);
+    expect(f.calls[0]).toMatchObject({ type: 'spawn', args: ['pr', 'list', '-h'] });
+  });
+
   test.each([
     ['pr', 'comment', '1', '--body', '--help'],
     ['pr', 'comment', '1', '--body=--help'],
@@ -91,6 +99,21 @@ describe('transparent gh proxy', () => {
     const f = fixture({ automatic: true });
     expect(runGhProxy(args, '/work', f.options)).toBe(0);
     expect(f.calls.find(call => call.type === 'selected')).toMatchObject({ args });
+  });
+
+  test('does not treat repo create -h homepage as local help', () => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => '  -h, --homepage URL   Repository home page URL\n';
+    const args = ['repo', 'create', 'new', '--public', '-h', 'https://example.com'];
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.find(call => call.type === 'selected')).toMatchObject({ args });
+  });
+
+  test('fails closed when short-help metadata is unavailable', () => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => { throw new Error('help unavailable'); };
+    expect(runGhProxy(['repo', 'create', 'new', '--public', '-h', 'https://example.com'], '/work', f.options)).toBe(1);
+    expect(f.calls).toEqual([]);
   });
 
   test.each([
@@ -186,6 +209,7 @@ describe('transparent gh proxy', () => {
     ['api', '--hostname', 'enterprise.example', 'user'],
     ['api', '--hostname=enterprise.example', 'user'],
     ['api', 'https://enterprise.example/user'],
+    ['api', 'https://api.github.com:8443/user'],
     ['pr', 'view', '--repo', 'enterprise.example/owner/repo'],
     ['pr', 'view', '--repo=enterprise.example/owner/repo'],
     ['pr', 'view', 'https://enterprise.example/owner/repo/pull/1'],
@@ -195,6 +219,7 @@ describe('transparent gh proxy', () => {
     ['issue', 'transfer', '1', 'enterprise.example/owner/destination'],
     ['gist', 'clone', 'https://enterprise.example/example/0123456789'],
     ['repo', 'clone', 'https://enterprise.example/owner/repo'],
+    ['repo', 'clone', 'https://github.com:8443/owner/repo'],
     ['repo', 'clone', 'git@enterprise.example:owner/repo.git'],
     ['repo', 'clone', 'git@@enterprise.example:owner/repo.git'],
     ['repo', 'clone', 'C:owner/repo.git'],
@@ -216,7 +241,9 @@ describe('transparent gh proxy', () => {
     expect(f.calls).toEqual([]);
   });
 
-  test.each(['owner/repository', 'git@github.com:owner/repository.git'])('treats positional %s as an explicit GitHub.com destination', repository => {
+  test.each([
+    'owner/repository', 'git@github.com:owner/repository.git', 'ssh://git@github.com/owner/repository.git',
+  ])('treats positional %s as an explicit GitHub.com destination', repository => {
     const f = fixture({ automatic: true });
     f.options.resolveLocalTarget = () => { throw new Error('local remote must not be inspected'); };
     expect(runGhProxy(['repo', 'clone', repository], '/work', f.options)).toBe(0);
@@ -236,6 +263,34 @@ describe('transparent gh proxy', () => {
     const f = fixture({ automatic: true });
     expect(runGhProxy(['api', `https://${host}/user`], '/work', f.options)).toBe(0);
     expect(f.calls.find(call => call.type === 'selected')).toBeDefined();
+  });
+
+  test('routes the explicit default HTTPS API port through the selected account', () => {
+    const f = fixture({ automatic: true });
+    expect(runGhProxy(['api', 'https://api.github.com:443/user'], '/work', f.options)).toBe(0);
+    expect(f.calls.find(call => call.type === 'selected')).toBeDefined();
+  });
+
+  test('resolves the repo set-default remote-name operand', () => {
+    const f = fixture({ automatic: true });
+    const requested = [];
+    f.options.resolveLocalTarget = (_root, remoteName) => {
+      requested.push(remoteName);
+      return { hostname: 'github.com', repository: 'org/project' };
+    };
+    const args = ['repo', 'set-default', 'origin'];
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(requested).toEqual(['origin']);
+    expect(f.calls.find(call => call.type === 'selected')).toMatchObject({ args });
+  });
+
+  test('refuses an enterprise repo set-default remote-name target', () => {
+    const f = fixture({ automatic: true });
+    f.options.resolveLocalTarget = (_root, remoteName) => ({
+      hostname: remoteName === 'upstream' ? 'enterprise.example' : 'github.com', repository: 'org/project',
+    });
+    expect(runGhProxy(['repo', 'set-default', 'upstream'], '/work', f.options)).toBe(1);
+    expect(f.calls).toEqual([]);
   });
 
   test.each([
@@ -380,6 +435,37 @@ describe('transparent gh proxy', () => {
       ['remote', 'get-url', 'upstream'],
     ]);
     expect(f.calls.find(call => call.type === 'selected')).toBeDefined();
+  });
+
+  test('reads only the remote named by repo set-default', () => {
+    const f = fixture({ automatic: true });
+    delete f.options.resolveLocalTarget;
+    const gitCalls = [];
+    f.options.execFileSync = (command, args) => {
+      expect(command).toBe('git');
+      gitCalls.push(args);
+      if (args.join(' ') === 'remote get-url work') return 'https://github.com/org/project.git\n';
+      throw new Error(`Unexpected git args: ${args.join(' ')}`);
+    };
+
+    expect(runGhProxy(['repo', 'set-default', 'work'], '/work', f.options)).toBe(0);
+    expect(gitCalls).toEqual([['remote', 'get-url', 'work']]);
+    expect(f.calls.find(call => call.type === 'selected')).toBeDefined();
+  });
+
+  test('does not fall back when a named repo set-default remote is missing', () => {
+    const f = fixture({ automatic: true });
+    delete f.options.resolveLocalTarget;
+    const gitCalls = [];
+    f.options.execFileSync = (command, args) => {
+      expect(command).toBe('git');
+      gitCalls.push(args);
+      throw Object.assign(new Error('missing remote'), { status: 2 });
+    };
+
+    expect(runGhProxy(['repo', 'set-default', 'missing'], '/work', f.options)).toBe(1);
+    expect(gitCalls).toEqual([['remote', 'get-url', 'missing']]);
+    expect(f.calls).toEqual([]);
   });
 
   test('fails closed when explicit destinations conflict or omit a value', () => {
