@@ -400,6 +400,19 @@ describe('transparent gh proxy', () => {
     expect(f.calls[0].options.env.GH_REPO).toBe('github.com/org/project');
   });
 
+  test('sets canonical GH_REPO when --hostname accompanies an SSH-alias remote', () => {
+    const f = fixture({ automatic: true });
+    delete f.options.createContext;
+    f.options.runner = (command, args) => {
+      if (command === 'git') return 'work-account\n';
+      if (command === 'gh' && args[0] === 'auth' && args[1] === 'token') return 'selected-token\n';
+      throw new Error('unexpected account lookup');
+    };
+
+    expect(runGhProxy(['api', '--hostname', 'github.com', 'repos/{owner}/{repo}'], '/work', f.options)).toBe(0);
+    expect(f.calls[0].options.env.GH_REPO).toBe('github.com/org/project');
+  });
+
   test('fails closed for an unknown explicit repository destination', () => {
     const f = fixture({ automatic: true });
     expect(runGhProxy(['pr', 'view', '--repo', 'too/many/path/parts'], '/work', f.options)).toBe(1);

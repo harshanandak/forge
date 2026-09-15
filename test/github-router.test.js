@@ -161,6 +161,23 @@ describe('opt-in GitHub router installation', () => {
     expect(getGithubRouterStatus({ platform: 'win32', pathEnv })).toBe('shadowed');
   });
 
+  test('treats an empty PATH component as the current directory during precedence checks', () => {
+    const forgeDir = tempRoot();
+    const currentGh = path.join('.', 'gh');
+    const fileSystem = {
+      existsSync: candidate => candidate === currentGh,
+      accessSync: () => {},
+      readFileSync: () => 'native',
+    };
+    const options = {
+      platform: 'linux', compiled: true, executablePath: path.join(forgeDir, 'forge'),
+      pathEnv: ['', forgeDir].join(path.delimiter), fs: fileSystem,
+    };
+
+    expect(() => installGithubRouter(options)).toThrow(/before Forge|PATH/i);
+    expect(getGithubRouterStatus(options)).toBe('shadowed');
+  });
+
   test('requires executable POSIX router and credential-helper files for readiness', () => {
     const unavailable = {
       existsSync: () => true,
