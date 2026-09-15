@@ -24,6 +24,10 @@ function fixture(overrides = {}) {
         if (overrides.automatic) return '\n!forge-git-credential\n';
         throw Object.assign(new Error('missing'), { status: 1 });
       }
+      if (args.join(' ') === 'config --local --get-regexp ^remote\\..*\\.gh-resolved$') {
+        if (overrides.resolvedRemote) return `remote.${overrides.resolvedRemote}.gh-resolved true\n`;
+        throw Object.assign(new Error('missing'), { status: 1 });
+      }
       if (args[2] === '--replace-all' && args[3] === 'github.account') { account = args[4]; return ''; }
       if (args[2] === '--unset-all') {
         if (!account) throw Object.assign(new Error(CANARY), { status: 5 });
@@ -32,7 +36,12 @@ function fixture(overrides = {}) {
       if (args.includes('user.name')) return 'Example Author';
       if (args.includes('user.email')) return 'author@example.test';
       if (args.includes('credential.helper')) return overrides.scopedHelper ?? overrides.helper ?? `!gh auth git-credential # ${CANARY}`;
-      if (args[0] === 'remote') return overrides.remote || 'https://github.com/org/project.git';
+      if (args[0] === 'remote') {
+        const remoteName = overrides.resolvedRemote || overrides.remoteName || 'origin';
+        if (args.length === 1) return `${remoteName}\n`;
+        if (args[1] === 'get-url' && args[2] === remoteName) return overrides.remote || 'https://github.com/org/project.git';
+        if (args[1] === 'get-url') throw Object.assign(new Error('missing remote'), { status: 2 });
+      }
     }
     if (command === 'ssh') return `hostname ${overrides.sshHostname || 'github.com'}\nuser git\n`;
     if (command === 'gh') {
@@ -61,12 +70,12 @@ describe('forge github lifecycle', () => {
     expect(result.success).toBe(true);
     expect(f.account()).toBe('work');
     expect(f.calls.map(c => [c.command, c.args[0]])).toEqual([
-      ['gh', 'auth'], ['gh', 'api'], ['git', 'remote'], ['gh', 'repo'], ['git', 'config'], ['git', 'config'],
+      ['gh', 'auth'], ['gh', 'api'], ['git', 'config'], ['git', 'remote'], ['gh', 'repo'], ['git', 'config'], ['git', 'config'],
     ]);
     expect(f.calls[0].options.env.GH_TOKEN).toBeUndefined();
-    expect(f.calls[3].options.env.GH_TOKEN === CANARY).toBe(true);
-    expect(f.calls[3].args).toEqual(['repo', 'view', 'github.com/org/project', '--json', 'nameWithOwner']);
-    expect(f.calls[5].args).toEqual(['config', '--local', '--replace-all', 'github.account', 'work']);
+    expect(f.calls[4].options.env.GH_TOKEN === CANARY).toBe(true);
+    expect(f.calls[4].args).toEqual(['repo', 'view', 'github.com/org/project', '--json', 'nameWithOwner']);
+    expect(f.calls[6].args).toEqual(['config', '--local', '--replace-all', 'github.account', 'work']);
     expect(JSON.stringify(result).includes(CANARY)).toBe(false);
   });
 
@@ -137,6 +146,7 @@ describe('forge github lifecycle', () => {
       if (command !== 'git' || args[0] !== 'config') throw new Error(`Unexpected call: ${command}`);
       const verb = args[2];
       const key = args[3];
+      if (verb === '--get-regexp') throw Object.assign(new Error('missing'), { status: 1 });
       if (verb === '--get' || verb === '--get-all') {
         const values = config.get(key);
         if (!values?.length) throw Object.assign(new Error('missing'), { status: 1 });
@@ -241,7 +251,7 @@ describe('forge github lifecycle', () => {
     const result = await handler(['use', 'work'], {}, '/repo', f.options);
     expect(result.success).toBe(false);
     expect(f.account()).toBe('personal');
-    expect(f.calls.some(c => c.command === 'git' && c.args[0] === 'config')).toBe(false);
+    expect(f.calls.some(c => c.command === 'git' && c.args.includes('--replace-all'))).toBe(false);
     expect(f.calls.some(c => ['login', 'switch'].includes(c.args[1]))).toBe(false);
     expect(JSON.stringify(result).includes(CANARY)).toBe(false);
   });
@@ -262,7 +272,7 @@ describe('forge github lifecycle', () => {
     expect(JSON.stringify(result).includes('https://user:')).toBe(false);
     expect(f.account()).toBe('Work');
     expect(f.calls.every(c => c.command !== 'git' || c.args[0] === 'remote' || c.args.includes('--get')
-      || c.args.includes('--get-all') || c.args.includes('--get-urlmatch'))).toBe(true);
+      || c.args.includes('--get-all') || c.args.includes('--get-regexp') || c.args.includes('--get-urlmatch'))).toBe(true);
   });
 
   test('human status shows whether automatic routing is active', async () => {
@@ -352,6 +362,14 @@ describe('forge github lifecycle', () => {
     expect(f.calls.some(c => c.command === 'gh')).toBe(false);
     expect(result.output).toContain('SSH');
     expect(result.output.includes(CANARY)).toBe(false);
+  });
+
+  test('use and status honor a sole non-origin remote', async () => {
+    const f = fixture({ account: 'work', remoteName: 'upstream' });
+    expect((await handler(['use', 'work'], {}, '/repo', f.options)).success).toBe(true);
+    const report = await handler(['status', '--json'], {}, '/repo', f.options);
+    expect(report.status).toMatchObject({ state: 'ready', transport: 'https', repositoryAccess: true });
+    expect(f.calls.some(call => call.command === 'git' && call.args.join(' ') === 'remote get-url upstream')).toBe(true);
   });
 
   test('status fails when automatic routing has no clone account', async () => {

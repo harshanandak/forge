@@ -63,6 +63,24 @@ describe('transparent gh proxy', () => {
   });
 
   test.each([
+    ['pr', 'list', '-R', 'github.com/owner/repo', '--help'],
+    ['pr', 'list', '--repo=github.com/owner/repo', '-h'],
+  ])('bypasses local help with an inherited repository option: %j', (...args) => {
+    const f = fixture({ automatic: true });
+    f.options.readAuto = () => { throw new Error('state lookup must not run'); };
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0]).toMatchObject({ type: 'spawn', args });
+  });
+
+  test('does not bypass help-shaped option data', () => {
+    const f = fixture({ automatic: true });
+    const args = ['pr', 'comment', '1', '--body', '--help'];
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.find(call => call.type === 'selected')).toMatchObject({ args });
+  });
+
+  test.each([
     ['auth'], ['auth', 'login'], ['auth', 'logout'], ['auth', 'status'], ['auth', 'token'],
     ['--hostname', 'enterprise.example', 'auth', 'status'],
   ])('always bypasses native gh account management: %j', (...args) => {
@@ -220,6 +238,17 @@ describe('transparent gh proxy', () => {
     f.options.readCommandHelp = () => '';
     expect(runGhProxy(['pr', 'view', 'https://enterprise.example/org/repo/pull/1'], '/work', f.options)).toBe(1);
     expect(f.calls).toEqual([]);
+  });
+
+  test.each([
+    [['-iX', 'GET']],
+    [['-iXGET']],
+  ])('parses a value-taking clustered short option without misclassifying URL-shaped option data: %j', cluster => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => `  gh api <endpoint> [flags]\n  -f, --raw-field key=value   Add a string parameter\n  -i, --include               Include response headers\n  -X, --method string         The HTTP method`;
+    const args = ['api', ...cluster, 'user', '-f', 'query=https://example.com'];
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.find(call => call.type === 'selected')).toMatchObject({ args });
   });
 
   test('refuses an enterprise target in a combined short -R option', () => {
