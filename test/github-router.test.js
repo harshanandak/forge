@@ -359,6 +359,11 @@ describe('opt-in GitHub router installation', () => {
     expect(failure?.code).toBe('GITHUB_ROUTER_REGISTRY_INVALID');
     expect(fs.existsSync(path.join(binDir, 'gh'))).toBe(true);
 
+    execFileSync('git', ['config', '--local', '--replace-all', 'github.auto', ''], { cwd: repo, windowsHide: true });
+    expect(() => uninstallGithubRouter({ platform: 'linux', binDir, stateDir }))
+      .toThrow(/invalid automatic-routing state/i);
+    expect(fs.existsSync(path.join(binDir, 'gh'))).toBe(true);
+
     failure = null;
     try {
       uninstallGithubRouter({ platform: 'linux', binDir, stateDir,

@@ -16,10 +16,13 @@ function fixture(overrides = {}) {
     if (command === 'git') {
       if (args.join(' ') === 'config --local --get github.account') return account;
       if (args.join(' ') === 'config --local --get-all github.auto') {
-        return overrides.automaticValue ?? (overrides.automatic ? 'true' : '');
+        if (overrides.automaticValue !== undefined) return `${overrides.automaticValue}\n`;
+        if (overrides.automatic) return 'true\n';
+        throw Object.assign(new Error('missing'), { status: 1 });
       }
       if (args.join(' ') === 'config --local --get-all credential.https://github.com.helper') {
-        return overrides.automatic ? '\n!forge-git-credential' : '';
+        if (overrides.automatic) return '\n!forge-git-credential\n';
+        throw Object.assign(new Error('missing'), { status: 1 });
       }
       if (args[2] === '--replace-all' && args[3] === 'github.account') { account = args[4]; return ''; }
       if (args[2] === '--unset-all') {

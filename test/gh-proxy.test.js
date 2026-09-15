@@ -142,9 +142,11 @@ describe('transparent gh proxy', () => {
     ['discussion', 'view', 'https://enterprise.example/org/project/discussions/1'],
     ['pr', '-R', 'github.com/owner/repo', 'view', 'https://enterprise.example/owner/repo/pull/1'],
     ['discussion', 'comment', 'https://enterprise.example/org/project/discussions/1'],
+    ['issue', 'transfer', '1', 'enterprise.example/owner/destination'],
     ['gist', 'clone', 'https://enterprise.example/example/0123456789'],
     ['repo', 'clone', 'https://enterprise.example/owner/repo'],
     ['repo', 'view', 'enterprise.example/owner/repo'],
+    ['label', 'clone', 'enterprise.example/owner/source', '--repo', 'github.com/owner/destination'],
     ['repo', 'create', 'new', '--template', 'enterprise.example/owner/template'],
     ['repo', 'create', 'new', '-p', 'enterprise.example/owner/template'],
   ])('refuses an explicit non-GitHub.com target without spawning either account: %j', (...args) => {
@@ -192,6 +194,23 @@ describe('transparent gh proxy', () => {
   test('checks only the named URL positional slot from command usage', () => {
     const f = fixture({ automatic: true });
     const args = ['pr', 'view', 'https://github.com/org/repo/pull/1', 'https://enterprise.example/payload'];
+    expect(runGhProxy(args, '/work', f.options)).toBe(0);
+    expect(f.calls.find(call => call.type === 'selected')).toMatchObject({ args });
+  });
+
+  test.each([0, 1, 2])('checks every URL in a plural URL positional at index %d', enterpriseIndex => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => '  gh issue edit {<numbers> | <urls>} [flags]';
+    const urls = [1, 2, 3].map(number => `https://github.com/org/repo/issues/${number}`);
+    urls[enterpriseIndex] = `https://enterprise.example/org/repo/issues/${enterpriseIndex + 1}`;
+    expect(runGhProxy(['issue', 'edit', ...urls], '/work', f.options)).toBe(1);
+    expect(f.calls).toEqual([]);
+  });
+
+  test('routes multiple public URLs in a plural URL positional', () => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => '  gh issue edit {<numbers> | <urls>} [flags]';
+    const args = ['issue', 'edit', 'https://github.com/org/repo/issues/1', 'https://github.com/org/repo/issues/2'];
     expect(runGhProxy(args, '/work', f.options)).toBe(0);
     expect(f.calls.find(call => call.type === 'selected')).toMatchObject({ args });
   });

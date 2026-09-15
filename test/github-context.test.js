@@ -39,7 +39,7 @@ describe('github context', () => {
       if (command !== 'git' || args[0] !== 'config') throw new Error('unexpected command');
       const values = config.get(args.at(-1));
       if (!values) throw Object.assign(new Error('missing'), { status: 1 });
-      return values.join('\n');
+      return `${values.join('\n')}\n`;
     };
 
     expect(readGithubAuto('/repo', { runner })).toBe(false);
@@ -50,6 +50,12 @@ describe('github context', () => {
     config.set('github.auto', ['true', 'true']);
     expect(readGithubAuto('/repo', { runner })).toBe(null);
     config.set('github.auto', ['enabled']);
+    expect(readGithubAuto('/repo', { runner })).toBe(null);
+    config.set('github.auto', ['']);
+    expect(readGithubAuto('/repo', { runner })).toBe(null);
+    config.set('github.auto', [' ']);
+    expect(readGithubAuto('/repo', { runner })).toBe(null);
+    config.set('github.auto', ['true', '']);
     expect(readGithubAuto('/repo', { runner })).toBe(null);
   });
 
