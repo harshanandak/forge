@@ -1,0 +1,205 @@
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+
+const companionRoot = "C:/Users/harsha_befach/Downloads/agent-companion";
+const planningRoot = "C:/Users/harsha_befach/Downloads/forge-planning-review";
+const forgeRoot = "C:/Users/harsha_befach/Downloads/forge";
+const mode = process.argv[2] || "status";
+const foreground = mode.endsWith("fg");
+const usePi = mode.startsWith("graphpi");
+const usePlan = mode.startsWith("graphplan");
+const baseRequestId = `forge-010-architecture-redteam-20260915-${usePlan ? "v6" : (usePi ? "v4" : (mode.startsWith("graph") ? "v3" : (foreground ? "v2" : "v1")))}`;
+
+const requireFromCompanion = createRequire(`${companionRoot}/package.json`);
+const clientUrl = pathToFileURL(requireFromCompanion.resolve("@modelcontextprotocol/client")).href;
+const stdioUrl = pathToFileURL(requireFromCompanion.resolve("@modelcontextprotocol/client/stdio")).href;
+const { Client } = await import(clientUrl);
+const { StdioClientTransport } = await import(stdioUrl);
+
+const client = new Client(
+  { name: "forge-010-architecture-redteam", version: "1.0.0" },
+  { versionNegotiation: { mode: "auto" } },
+);
+await client.connect(new StdioClientTransport({
+  command: process.execPath,
+  args: [`${companionRoot}/src/mcp-server.mjs`],
+  cwd: companionRoot,
+}));
+
+async function call(name, args) {
+  const response = await client.callTool({ name, arguments: args }, { timeout: 3_700_000, maxTotalTimeout: 3_700_000 });
+  const body = JSON.parse(response.content?.[0]?.text || "{}");
+  if (response.isError) throw Object.assign(new Error(body.message || `${name} failed`), { body });
+  return body;
+}
+
+const task = `Independently red-team the proposed Forge 0.1.0 capability architecture and parallel release plan. Find material missing issues, contradictions, unsafe assumptions, dependency gaps, API/lifecycle/versioning flaws, authority or privacy leaks, false capability claims, performance/stability risks, confusing or valueless retained surfaces, and PR/file-ownership conflicts that the existing reviews missed.
+
+Read these local artifacts completely:
+- ${planningRoot}/forge-010-final-parallel-plan.md
+- ${planningRoot}/capability-to-issue-plan.md
+- ${planningRoot}/capability-scope-architecture.md
+- ${planningRoot}/feedback-capability-research.md
+- ${planningRoot}/n8n-kestra-architecture-comparison.md
+- ${planningRoot}/astra-validation-log.md
+
+Inspect tracked origin/master in ${forgeRoot} and use read-only Forge CLI queries only where needed to prove or disprove a finding. Do not edit files, create issues, change issue state, create branches/worktrees/PRs, install dependencies, push, or invoke live external effects.
+
+Report only material findings that change the 0.1.0 plan or acceptance. Deduplicate issues already explicitly handled by the plan. For each finding include: severity, exact evidence, concrete failure scenario, smallest correction, 0.1.0/later/drop disposition, and confidence. Separate proven source facts from inference. Identify planned areas you checked and found sound. End with a ranked top-five list and an overall PASS/REVISE/REJECT verdict for the planning baseline.`;
+
+const request = {
+  requestId: baseRequestId,
+  target: "opencode",
+  task,
+  cwd: planningRoot,
+  context: {
+    goal: "Find additional material issues in the Astra-validated Forge 0.1.0 architecture and conflict-free parallel PR plan.",
+    acceptanceCriteria: [
+      "Both lanes inspect the same complete evidence set.",
+      "Every reported issue has exact evidence and a concrete failure scenario.",
+      "Findings already handled in the plans are not repeated as new issues.",
+      "Recommendations use the smallest correction and classify 0.1.0 versus later versus drop.",
+      "No repository, issue, PR, credential, network-effect, or live-system write occurs.",
+    ],
+    requiredResultFields: ["finalText"],
+  },
+  route: { harnessVersion: "v2" },
+  execution: { background: !foreground, timeoutMs: 3_600_000 },
+  policy: { write: false, tools: ["read"] },
+  metadata: {
+    routing: {
+      mode: "pin",
+      difficulty: "hard",
+      allowTrainingEndpoints: true,
+    },
+  },
+};
+
+const candidates = [
+  {
+    name: "muse-spark-1.3-xhigh",
+    target: usePi ? "pi" : "opencode",
+    route: {
+      provider: "opencode-go",
+      model: "muse-spark-1.3-contributor",
+      thinking: "xhigh",
+      ...(usePlan ? { agent: "plan" } : {}),
+      ...(!usePi ? { harnessVersion: "v2" } : {}),
+    },
+  },
+  {
+    name: "deepseek-v4.1-max",
+    target: usePi ? "pi" : "opencode",
+    route: {
+      provider: "opencode-go",
+      model: "deepseek-v4.1-flash",
+      thinking: "max",
+      ...(usePlan ? { agent: "plan" } : {}),
+      ...(!usePi ? { harnessVersion: "v2" } : {}),
+    },
+  },
+];
+
+try {
+  if (mode === "graphstatus" || mode === "graphresult") {
+    const graphId = process.argv[3] || "graph-16369c73ce981a33a03df4a0a442d7206daf42e7821fdf4fc38fdb3c36c8f9d4";
+    const result = await call(mode === "graphstatus" ? "handoff_graph_status" : "handoff_graph_result", { graphId });
+    console.log(JSON.stringify(result, null, 2));
+  } else if (mode === "graphfg" || mode === "graphpifg" || mode === "graphplanfg") {
+    const graph = {
+      requestId: baseRequestId,
+      cwd: planningRoot,
+      task: "Independent Forge 0.1.0 architecture red-team",
+      context: request.context,
+      policy: request.policy,
+      metadata: request.metadata,
+      execution: { background: false, timeoutMs: 3_600_000, maxConcurrency: 2 },
+      nodes: candidates.map((candidate) => ({
+        id: candidate.name,
+        target: candidate.target,
+        task,
+        route: candidate.route,
+        context: request.context,
+        policy: request.policy,
+        metadata: request.metadata,
+        execution: { timeoutMs: 3_600_000 },
+      })),
+      outputs: candidates.map((candidate) => candidate.name),
+    };
+    const validation = await call("handoff_graph_validate", { graph });
+    console.error(`Starting validated Companion graph ${validation.graphId}...`);
+    const result = await call("handoff_graph_start", { graph });
+    console.log(JSON.stringify({ validation, result }, null, 2));
+  } else if (mode === "start" || mode === "startfg") {
+    if (foreground) console.error("Starting long-lived foreground Companion comparison...");
+    const comparison = await call("handoff_compare", { request, candidates });
+    console.log(JSON.stringify({
+      comparisonId: comparison.comparisonId,
+      state: comparison.state,
+      contextDigest: comparison.contextDigest,
+      lanes: comparison.lanes.map((lane) => ({
+        name: lane.name,
+        requestId: lane.requestId,
+        resolved: lane.resolved,
+        jobId: lane.receipt?.jobId,
+        state: lane.receipt?.state,
+        finalText: foreground ? lane.receipt?.result?.finalText : undefined,
+        usage: foreground ? lane.receipt?.usage : undefined,
+        trace: foreground ? lane.receipt?.trace : undefined,
+        error: lane.error,
+      })),
+    }, null, 2));
+  } else if (mode === "status") {
+    const statuses = await Promise.all(candidates.map(async (candidate) => {
+      const requestId = `${baseRequestId}:${candidate.name}`;
+      try {
+        const status = await call("handoff_status", { requestId });
+        return {
+          name: candidate.name,
+          requestId,
+          jobId: status.jobId,
+          state: status.state,
+          route: status.route,
+          trace: status.trace,
+          recovery: status.recovery,
+          error: status.error,
+        };
+      } catch (error) {
+        return { name: candidate.name, requestId, error: error.body || error.message };
+      }
+    }));
+    console.log(JSON.stringify(statuses, null, 2));
+  } else if (mode === "result") {
+    const results = await Promise.all(candidates.map(async (candidate) => {
+      const requestId = `${baseRequestId}:${candidate.name}`;
+      try {
+        const receipt = await call("handoff_result", { requestId });
+        return {
+          name: candidate.name,
+          requestId,
+          jobId: receipt.jobId,
+          state: receipt.state,
+          contextDigest: receipt.contextDigest,
+          target: receipt.target,
+          route: receipt.route,
+          sessionId: receipt.sessionId,
+          usage: receipt.usage,
+          trace: receipt.trace,
+          recovery: receipt.recovery,
+          finalText: receipt.result?.finalText,
+          evidence: receipt.result?.evidence,
+          tests: receipt.result?.tests,
+          risks: receipt.result?.risks,
+          error: receipt.error,
+        };
+      } catch (error) {
+        return { name: candidate.name, requestId, error: error.body || error.message };
+      }
+    }));
+    console.log(JSON.stringify(results, null, 2));
+  } else {
+    throw new Error(`unknown mode: ${mode}`);
+  }
+} finally {
+  await client.close();
+}
