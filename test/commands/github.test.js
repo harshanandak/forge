@@ -14,7 +14,21 @@ function fixture(overrides = {}) {
   const runner = (command, args, options) => {
     calls.push({ command, args, options });
     if (command === 'git') {
-      if (args.join(' ') === 'config --local --get github.account') return account;
+      if (args.join(' ') === 'config --local --get-all github.account') return account;
+      if (args.join(' ') === 'config --local --get-all github.auto') {
+        if (overrides.automaticValue !== undefined) return `${overrides.automaticValue}\n`;
+        if (overrides.automatic) return 'true\n';
+        throw Object.assign(new Error('missing'), { status: 1 });
+      }
+      if (args.join(' ') === 'config --local --get-all credential.https://github.com.helper') {
+        if (overrides.automaticHelpers) return `${overrides.automaticHelpers.join('\n')}\n`;
+        if (overrides.automatic) return '\n!forge-git-credential\n';
+        throw Object.assign(new Error('missing'), { status: 1 });
+      }
+      if (args.join(' ') === 'config --local --get-regexp ^remote\\..*\\.gh-resolved$') {
+        if (overrides.resolvedRemote) return `remote.${overrides.resolvedRemote}.gh-resolved true\n`;
+        throw Object.assign(new Error('missing'), { status: 1 });
+      }
       if (args[2] === '--replace-all' && args[3] === 'github.account') { account = args[4]; return ''; }
       if (args[2] === '--unset-all') {
         if (!account) throw Object.assign(new Error(CANARY), { status: 5 });
@@ -22,8 +36,13 @@ function fixture(overrides = {}) {
       }
       if (args.includes('user.name')) return 'Example Author';
       if (args.includes('user.email')) return 'author@example.test';
-      if (args.includes('credential.helper')) return `!gh auth git-credential # ${CANARY}`;
-      if (args[0] === 'remote') return overrides.remote || 'https://github.com/org/project.git';
+      if (args.includes('credential.helper')) return overrides.scopedHelper ?? overrides.helper ?? `!gh auth git-credential # ${CANARY}`;
+      if (args[0] === 'remote') {
+        const remoteName = overrides.resolvedRemote || overrides.remoteName || 'origin';
+        if (args.length === 1) return `${remoteName}\n`;
+        if (args[1] === 'get-url' && args[2] === remoteName) return overrides.remote || 'https://github.com/org/project.git';
+        if (args[1] === 'get-url') throw Object.assign(new Error('missing remote'), { status: 2 });
+      }
     }
     if (command === 'ssh') return `hostname ${overrides.sshHostname || 'github.com'}\nuser git\n`;
     if (command === 'gh') {
@@ -39,7 +58,10 @@ function fixture(overrides = {}) {
     }
     throw new Error(`Unexpected fixture call: ${command}`);
   };
-  return { calls, options: { runner, baseEnv: { GH_TOKEN: 'ambient-canary', GH_HOST: 'other.example' } }, account: () => account };
+  return { calls, options: { runner, routerStatus: () => overrides.routerState || 'ready',
+    assertRegistered: () => {},
+    registerRouterClone: () => {}, unregisterRouterClone: () => {},
+    baseEnv: { GH_TOKEN: 'ambient-canary', GH_HOST: 'other.example' } }, account: () => account };
 }
 
 describe('forge github lifecycle', () => {
@@ -49,13 +71,180 @@ describe('forge github lifecycle', () => {
     expect(result.success).toBe(true);
     expect(f.account()).toBe('work');
     expect(f.calls.map(c => [c.command, c.args[0]])).toEqual([
-      ['gh', 'auth'], ['gh', 'api'], ['git', 'remote'], ['gh', 'repo'], ['git', 'config'],
+      ['gh', 'auth'], ['gh', 'api'], ['git', 'config'], ['git', 'remote'], ['gh', 'repo'], ['git', 'config'], ['git', 'config'],
     ]);
     expect(f.calls[0].options.env.GH_TOKEN).toBeUndefined();
-    expect(f.calls[3].options.env.GH_TOKEN === CANARY).toBe(true);
-    expect(f.calls[3].args).toEqual(['repo', 'view', 'github.com/org/project', '--json', 'nameWithOwner']);
-    expect(f.calls[4].args).toEqual(['config', '--local', '--replace-all', 'github.account', 'work']);
+    expect(f.calls[4].options.env.GH_TOKEN === CANARY).toBe(true);
+    expect(f.calls[4].args).toEqual(['repo', 'view', 'github.com/org/project', '--json', 'nameWithOwner']);
+    expect(f.calls[6].args).toEqual(['config', '--local', '--replace-all', 'github.account', 'work']);
     expect(JSON.stringify(result).includes(CANARY)).toBe(false);
+  });
+
+  test('plain use preserves and reports an existing automatic mode', async () => {
+    const f = fixture({ automatic: true });
+    const registered = [];
+    f.options.registerRouterClone = root => registered.push(root);
+    const result = await handler(['use', 'work'], {}, '/repo', f.options);
+    expect(result).toMatchObject({ success: true, account: 'work', automatic: true });
+    expect(result.output).toContain('with automatic routing');
+    expect(f.calls.some(call => call.args.includes('--unset-all'))).toBe(false);
+    expect(registered).toEqual(['/repo']);
+  });
+
+  test('plain use fails closed without changing an invalid automatic clone', async () => {
+    const f = fixture({ automaticValue: 'true\ntrue' });
+    const result = await handler(['use', 'work'], {}, '/repo', f.options);
+
+    expect(result).toMatchObject({ success: false, code: 'GITHUB_AUTO_INVALID' });
+    expect(f.account()).toBe('personal');
+    expect(f.calls.some(call => call.args.includes('--replace-all'))).toBe(false);
+  });
+
+  test('switches an automatic clone through native gh instead of its existing router', async () => {
+    const f = fixture({ automatic: true });
+    const simulated = f.options.runner;
+    const executables = [];
+    delete f.options.runner;
+    f.options.resolveRealGh = () => '/native/gh';
+    f.options.execFileSync = (command, args, options) => {
+      executables.push(command);
+      return simulated(command === '/native/gh' ? 'gh' : command, args, options);
+    };
+
+    const result = await handler(['use', 'work'], {}, '/repo', f.options);
+
+    expect(result).toMatchObject({ success: true, account: 'work', automatic: true });
+    expect(executables.filter(command => command === '/native/gh')).toHaveLength(3);
+    expect(f.account()).toBe('work');
+  });
+
+  test('does not change the binding when native gh is unavailable', async () => {
+    const f = fixture({ automatic: true });
+    delete f.options.runner;
+    f.options.resolveRealGh = () => null;
+    f.options.execFileSync = () => { throw new Error('must not execute'); };
+
+    const result = await handler(['use', 'work'], {}, '/repo', f.options);
+
+    expect(result.success).toBe(false);
+    expect(f.account()).toBe('personal');
+  });
+
+  test('use --auto explicitly enables clone-local gh and HTTPS Git routing', async () => {
+    const config = new Map([['github.account', ['personal']]]);
+    const calls = [];
+    let liveLogin = 'work';
+    let failAutoWrite = false;
+    let failAccountWrite = false;
+    let routerCommits = 0;
+    let routerRollbacks = 0;
+    const runner = (command, args, options) => {
+      calls.push({ command, args, options });
+      if (command === 'gh' && args[0] === 'auth') return CANARY;
+      if (command === 'gh' && args[0] === 'api') return liveLogin;
+      if (command === 'gh' && args[0] === 'repo') return '{"nameWithOwner":"org/project"}';
+      if (command === 'git' && args[0] === 'remote') return 'https://github.com/org/project.git';
+      if (command !== 'git' || args[0] !== 'config') throw new Error(`Unexpected call: ${command}`);
+      const verb = args[2];
+      const key = args[3];
+      if (verb === '--get-regexp') throw Object.assign(new Error('missing'), { status: 1 });
+      if (verb === '--get' || verb === '--get-all') {
+        const values = config.get(key);
+        if (!values?.length) throw Object.assign(new Error('missing'), { status: 1 });
+        return verb === '--get' ? values.at(-1) : values.join('\n');
+      }
+      if (verb === '--replace-all') {
+        if (key === 'github.account' && failAccountWrite) { failAccountWrite = false; throw new Error('account write failure'); }
+        if (key === 'github.auto' && failAutoWrite) { failAutoWrite = false; throw new Error('write failure'); }
+        config.set(key, [args[4]]); return '';
+      }
+      if (verb === '--add') { config.set(key, [...(config.get(key) || []), args[4]]); return '';
+      }
+      throw new Error(`Unexpected git config call: ${args.join(' ')}`);
+    };
+
+    const helper = "!'C:/Users/example/forge-github-credential-v1'";
+    const result = await handler(['use', 'work', '--auto'], {}, '/repo', {
+      runner, baseEnv: {}, installRouter: () => ({ credentialHelperValue: helper, commit: () => { routerCommits += 1; } }),
+      isOwnedCredentialHelper: () => true,
+    });
+
+    expect(result).toMatchObject({ success: true, account: 'work', automatic: true });
+    expect(config.get('github.account')).toEqual(['work']);
+    expect(config.get('github.auto')).toEqual(['true']);
+    expect(config.get('credential.https://github.com.helper')).toEqual(['', helper]);
+    expect(routerCommits).toBe(1);
+    expect(JSON.stringify(result)).not.toContain(CANARY);
+
+    const cleanupWarning = 'Configuration applied; router lock cleanup failed.';
+    const autoResult = await handler(['auto'], {}, '/repo', {
+      runner, baseEnv: {}, routerStatus: () => 'ready',
+      installRouter: () => ({ credentialHelperValue: helper, commit: () => ({ warning: cleanupWarning }) }),
+      isOwnedCredentialHelper: () => true,
+    });
+    expect(autoResult).toMatchObject({ success: true, warning: cleanupWarning });
+    expect(config.get('github.auto')).toEqual(['true']);
+
+    liveLogin = 'personal';
+    failAutoWrite = true;
+    const failed = await handler(['use', 'personal', '--auto'], {}, '/repo', {
+      runner, baseEnv: {},
+      installRouter: () => ({ credentialHelperValue: helper, rollback: () => { routerRollbacks += 1; } }),
+      isOwnedCredentialHelper: () => true,
+    });
+    expect(failed.success).toBe(false);
+    expect(config.get('github.account')).toEqual(['work']);
+    expect(routerRollbacks).toBe(1);
+
+    failAccountWrite = true;
+    const failedAccount = await handler(['use', 'personal', '--auto'], {}, '/repo', {
+      runner, baseEnv: {},
+      installRouter: () => ({ credentialHelperValue: helper, rollback: () => { routerRollbacks += 1; } }),
+      isOwnedCredentialHelper: () => true,
+    });
+    expect(failedAccount.success).toBe(false);
+    expect(config.get('github.account')).toEqual(['work']);
+    expect(routerRollbacks).toBe(2);
+  });
+
+  test('use --auto refuses to replace a pre-existing clone helper before account work', async () => {
+    const calls = [];
+    const runner = (command, args) => {
+      calls.push({ command, args });
+      if (command === 'git' && args.join(' ') === 'config --local --get-all credential.https://github.com.helper') {
+        return 'manager-core';
+      }
+      throw new Error('should stop after helper preflight');
+    };
+
+    const result = await handler(['use', 'work', '--auto'], {}, '/repo', { runner });
+
+    expect(result).toMatchObject({ success: false, code: 'GIT_CREDENTIAL_HELPER_CONFLICT' });
+    expect(calls).toHaveLength(1);
+  });
+
+  test('use --auto reads the previous binding before installing router files', async () => {
+    let installs = 0;
+    const runner = (command, args) => {
+      if (command === 'gh' && args[0] === 'auth') return CANARY;
+      if (command === 'gh' && args[0] === 'api') return 'work';
+      if (command === 'gh' && args[0] === 'repo') return '{"nameWithOwner":"org/project"}';
+      if (command === 'git' && args[0] === 'remote') return 'https://github.com/org/project.git';
+      if (command === 'git' && args.join(' ') === 'config --local --get-all credential.https://github.com.helper') {
+        throw Object.assign(new Error('missing'), { status: 1 });
+      }
+      if (command === 'git' && args.join(' ') === 'config --local --get-all github.account') {
+        throw Object.assign(new Error('config failed'), { status: 2 });
+      }
+      throw new Error(`Unexpected fixture call: ${command} ${args.join(' ')}`);
+    };
+
+    const result = await handler(['use', 'work', '--auto'], {}, '/repo', {
+      runner, baseEnv: {}, installRouter: () => { installs += 1; return {}; },
+    });
+
+    expect(result.success).toBe(false);
+    expect(installs).toBe(0);
   });
 
   test.each([{ authError: true }, { login: 'wrong' }, { noAccess: true }])('failed use preserves previous binding and never logs in or switches: %j', async failure => {
@@ -63,7 +252,7 @@ describe('forge github lifecycle', () => {
     const result = await handler(['use', 'work'], {}, '/repo', f.options);
     expect(result.success).toBe(false);
     expect(f.account()).toBe('personal');
-    expect(f.calls.some(c => c.command === 'git' && c.args[0] === 'config')).toBe(false);
+    expect(f.calls.some(c => c.command === 'git' && c.args.includes('--replace-all'))).toBe(false);
     expect(f.calls.some(c => ['login', 'switch'].includes(c.args[1]))).toBe(false);
     expect(JSON.stringify(result).includes(CANARY)).toBe(false);
   });
@@ -83,7 +272,117 @@ describe('forge github lifecycle', () => {
     expect(JSON.stringify(result).includes(CANARY)).toBe(false);
     expect(JSON.stringify(result).includes('https://user:')).toBe(false);
     expect(f.account()).toBe('Work');
-    expect(f.calls.every(c => c.command !== 'git' || c.args[0] === 'remote' || c.args.includes('--get') || c.args.includes('--get-all'))).toBe(true);
+    expect(f.calls.every(c => c.command !== 'git' || c.args[0] === 'remote' || c.args.includes('--get')
+      || c.args.includes('--get-all') || c.args.includes('--get-regexp') || c.args.includes('--get-urlmatch'))).toBe(true);
+  });
+
+  test('human status shows whether automatic routing is active', async () => {
+    const f = fixture({ account: 'Work', login: 'work', automatic: true, helper: 'manager-core',
+      scopedHelper: "!'C:/Forge/forge-github-credential-v1'" });
+    f.options.isOwnedCredentialHelper = () => true;
+    const result = await handler(['status'], {}, '/repo', f.options);
+    expect(result.output).toContain('Automatic routing: on');
+    expect(result.output).toContain('Router: ready');
+    expect(result.status.credentialHelper).toBe('forge');
+    expect(result.output).toContain("HTTPS Git credentials use this clone's Forge-selected GitHub account.");
+    expect(result.output).not.toContain('selected separately');
+  });
+
+  test('status reports a missing or unowned Forge credential helper as stale', async () => {
+    const f = fixture({ account: 'Work', login: 'work', automatic: true,
+      scopedHelper: "!'C:/Moved/forge-github-credential-v1'" });
+    f.options.isOwnedCredentialHelper = () => false;
+    f.options.isManagedCredentialHelper = value => value === "!'C:/Moved/forge-github-credential-v1'";
+    const result = await handler(['status'], {}, '/repo', f.options);
+    expect(result.status.credentialHelper).toBe('forge-stale');
+    expect(result).toMatchObject({ success: false, status: { state: 'router_error', code: 'GITHUB_CREDENTIAL_HELPER_UNAVAILABLE' } });
+    expect(f.calls.some(call => call.command === 'gh')).toBe(false);
+    expect(result.output).toContain('missing or unowned');
+    expect(result.output).not.toContain('HTTPS Git credentials use this clone');
+  });
+
+  test('status reports a custom helper that uses Forge\'s reserved basename as other', async () => {
+    const f = fixture({ account: 'Work', scopedHelper: "!'C:/Custom/forge-github-credential-v1'" });
+    f.options.isOwnedCredentialHelper = () => false;
+    f.options.isManagedCredentialHelper = () => false;
+    const result = await handler(['status'], {}, '/repo', f.options);
+    expect(result.status.credentialHelper).toBe('other');
+  });
+
+  test('status rejects a conflicting helper before the Forge helper', async () => {
+    const helper = "!'C:/Forge/forge-github-credential-v1'";
+    const f = fixture({ account: 'Work', automatic: true, automaticHelpers: ['', '!manager', helper],
+      scopedHelper: `!manager\n${helper}` });
+    f.options.isOwnedCredentialHelper = value => value === helper;
+
+    const result = await handler(['status'], {}, '/repo', f.options);
+
+    expect(result).toMatchObject({ success: false, status: {
+      state: 'router_error', code: 'GITHUB_CREDENTIAL_HELPER_UNAVAILABLE', credentialHelper: 'forge-conflict',
+    } });
+    expect(result.output).toContain('another helper conflicts');
+    expect(result.output).not.toContain('HTTPS Git credentials use this clone');
+    expect(f.calls.some(call => call.command === 'gh')).toBe(false);
+  });
+
+  test.each([
+    ['missing', 'GITHUB_ROUTER_UNAVAILABLE'],
+    ['shadowed', 'GITHUB_ROUTER_SHADOWED'],
+  ])('status rejects unavailable automatic gh routing: %s', async (routerState, code) => {
+    const f = fixture({ account: 'Work', automatic: true, routerState,
+      scopedHelper: "!'C:/Forge/forge-github-credential-v1'" });
+    f.options.isOwnedCredentialHelper = () => true;
+
+    const result = await handler(['status', '--json'], {}, '/repo', f.options);
+
+    expect(result).toMatchObject({ success: false, status: { state: 'router_error', code } });
+    expect(f.calls.some(call => call.command === 'gh')).toBe(false);
+  });
+
+  test('status reports an enabled clone missing from the machine registry', async () => {
+    const f = fixture({ account: 'Work', automatic: true });
+    f.options.assertRegistered = () => {
+      throw Object.assign(new Error(CANARY), { code: 'GITHUB_ROUTER_REGISTRY_INVALID' });
+    };
+
+    const result = await handler(['status', '--json'], {}, '/repo', f.options);
+
+    expect(result.status).toMatchObject({
+      state: 'router_error', account: 'Work', automatic: true, code: 'GITHUB_ROUTER_REGISTRY_INVALID',
+    });
+    expect(f.calls.some(call => call.command === 'gh')).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(CANARY);
+  });
+
+  test('router uninstall requires machine-wide confirmation and a disabled current clone', async () => {
+    let uninstalls = 0;
+    const unconfirmed = await handler(['router', '--uninstall'], {}, '/repo', {
+      uninstallRouter: () => { uninstalls += 1; return { removed: [] }; },
+    });
+    const enabled = await handler(['router', '--uninstall', '--force'], { force: true }, '/repo', {
+      readAuto: () => true,
+      uninstallRouter: () => { uninstalls += 1; return { removed: [] }; },
+    });
+    expect(unconfirmed).toMatchObject({ success: false, code: 'GITHUB_ROUTER_CONFIRMATION' });
+    expect(enabled).toMatchObject({ success: false, code: 'GITHUB_ROUTER_IN_USE' });
+    expect(uninstalls).toBe(0);
+
+    const result = await handler(['router', '--uninstall', '--force'], { force: true }, '/repo', {
+      readAuto: () => false,
+      uninstallRouter: () => ({ removed: ['gh', 'gh.cmd'], warning: 'Router cleanup needs attention.' }),
+    });
+    expect(result).toMatchObject({ success: true, removed: ['gh', 'gh.cmd'], warning: 'Router cleanup needs attention.' });
+    expect(result.output).toContain('Router cleanup needs attention.');
+  });
+
+  test('router lock contention is a retryable safe failure', async () => {
+    const result = await handler(['router', '--uninstall', '--force'], { force: true }, '/repo', {
+      readAuto: () => false,
+      uninstallRouter: () => { throw Object.assign(new Error(CANARY), { code: 'GITHUB_ROUTER_BUSY' }); },
+    });
+    expect(result).toMatchObject({ success: false, code: 'GITHUB_ROUTER_BUSY' });
+    expect(result.error).toMatch(/retry/i);
+    expect(JSON.stringify(result)).not.toContain(CANARY);
   });
 
   test.each([
@@ -107,12 +406,48 @@ describe('forge github lifecycle', () => {
     expect(result.output.includes(CANARY)).toBe(false);
   });
 
+  test('use and status honor a sole non-origin remote', async () => {
+    const f = fixture({ account: 'work', remoteName: 'upstream' });
+    expect((await handler(['use', 'work'], {}, '/repo', f.options)).success).toBe(true);
+    const report = await handler(['status', '--json'], {}, '/repo', f.options);
+    expect(report.status).toMatchObject({ state: 'ready', transport: 'https', repositoryAccess: true });
+    expect(f.calls.some(call => call.command === 'git' && call.args.join(' ') === 'remote get-url upstream')).toBe(true);
+  });
+
+  test('status fails when automatic routing has no clone account', async () => {
+    const f = fixture({ account: '', automatic: true });
+    const result = await handler(['status', '--json'], {}, '/repo', f.options);
+
+    expect(result).toMatchObject({ success: false, error: expect.any(String) });
+    expect(result.status).toMatchObject({ state: 'unauthenticated', account: null, automatic: true, code: 'GITHUB_ACCOUNT_REQUIRED' });
+    expect(f.calls.some(call => call.command === 'gh')).toBe(false);
+  });
+
   test('unset is idempotent and removes every local value', async () => {
     const f = fixture({ account: ['personal', 'work'] });
+    let unregistered = 0;
+    f.options.unregisterRouterClone = () => { unregistered += 1; };
     expect((await handler(['unset'], {}, '/repo', f.options)).success).toBe(true);
     expect((await handler(['unset'], {}, '/repo', f.options)).success).toBe(true);
     expect(f.account()).toBe('');
-    expect(f.calls.every(c => c.command === 'git' && c.args.join(' ') === 'config --local --unset-all github.account')).toBe(true);
+    expect(f.calls.filter(c => c.args.join(' ') === 'config --local --unset-all github.account')).toHaveLength(2);
+    expect(f.calls.every(c => c.command === 'git')).toBe(true);
+    expect(unregistered).toBe(2);
+  });
+
+  test('disable removes the clone from the machine registry after local routing is off', async () => {
+    const f = fixture({ automatic: true });
+    const events = [];
+    const runner = f.options.runner;
+    f.options.runner = (...args) => {
+      const result = runner(...args);
+      if (args[0] === 'git' && args[1].includes('--unset-all')) events.push('disabled');
+      return result;
+    };
+    f.options.unregisterRouterClone = () => events.push('unregistered');
+
+    expect(await handler(['auto', '--disable'], {}, '/repo', f.options)).toMatchObject({ success: true, automatic: false });
+    expect(events).toEqual(['disabled', 'unregistered']);
   });
 
   test('help, malformed commands, and missing launcher delimiter perform no context work', async () => {
@@ -144,6 +479,7 @@ describe('forge github lifecycle', () => {
   test.each([
     { remote: 'http://github.com/org/project.git' },
     { remote: 'git://github.com/org/project.git' },
+    { remote: 'https://github.com:8443/org/project.git' },
     { remote: 'https://gitlab.com/org/project.git' },
     { remote: 'https://github.com/org/project/extra' },
     { remote: `https://user:${CANARY}@github.com/org/project.git` },
@@ -165,11 +501,23 @@ describe('forge github lifecycle', () => {
     expect(JSON.stringify(report).includes(CANARY)).toBe(false);
   });
 
-  test.each(['bin/forge.js', 'lib/commands/github.js'])('targeted selection always includes the launcher for %s', file => {
-    expect(getTestCandidatesForChangedFile(file)).toContain('test/github-launcher.test.js');
-    if (file.startsWith('lib/')) expect(getTestCandidatesForChangedFile(file)).toContain('test/commands/github.test.js');
+  test('use accepts the default HTTPS port explicitly', async () => {
+    const f = fixture({ remote: 'https://github.com:443/org/project.git' });
+    expect((await handler(['use', 'work'], {}, '/repo', f.options)).success).toBe(true);
+  });
+
+  test.each([
+    ['bin/forge.js', 'test/github-launcher.test.js'],
+    ['bin/forge-gh-proxy.js', 'test/bin/forge-gh-proxy.test.js'],
+    ['bin/forge-github-credential.js', 'test/bin/forge-github-credential.test.js'],
+    ['lib/commands/github.js', 'test/commands/github.test.js'],
+    ['lib/github-credential.js', 'test/github-credential.test.js'],
+    ['lib/github-router.js', 'test/github-router.test.js'],
+    ['lib/gh-proxy.js', 'test/gh-proxy.test.js'],
+  ])('targeted selection covers %s', (file, expectedTest) => {
+    expect(getTestCandidatesForChangedFile(file)).toContain(expectedTest);
     const plan = classifyPushTests(path.resolve(__dirname, '../..'), (_command, args) => args[0] === 'diff' ? `${file}\n` : 'origin/feature');
     expect(plan.runFullSuite).toBe(false);
-    expect(plan.testTargets).toContain('test/github-launcher.test.js');
+    expect(plan.testTargets).toContain(expectedTest);
   });
 });

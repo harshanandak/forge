@@ -200,6 +200,8 @@ describe('comprehensive package distribution (npm pack --dry-run)', () => {
   describe('core distribution files', () => {
     const coreFiles = [
       'bin/forge.js',
+      'bin/forge-gh-proxy.js',
+      'bin/forge-github-credential.js',
       'bin/forge-preflight.js',
       'install.sh',
       'lefthook.yml',

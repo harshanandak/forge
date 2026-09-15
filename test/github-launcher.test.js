@@ -3,12 +3,12 @@
 
 const { afterAll, describe, test, expect } = require('bun:test');
 const { EventEmitter } = require('node:events');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { isDeepStrictEqual } = require('node:util');
 const { handler } = require('../lib/commands/github');
-const { createCliSandboxes, runForgeIn } = require('./helpers/cli-subprocess');
+const { FORGE_BIN, baseEnv, createCliSandboxes, runForgeIn } = require('./helpers/cli-subprocess');
 
 const sandboxes = createCliSandboxes('forge-github-launch-');
 afterAll(() => sandboxes.cleanup());
@@ -118,6 +118,32 @@ describe('forge github launcher', () => {
     });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(JSON.stringify(tail));
+  });
+
+  test('public CLI handles credential protocol commands before registry output', () => {
+    const root = sandboxes.makeSandbox();
+    const result = runForgeIn(root, ['github', 'credential', 'store'], {
+      env: { GH_TOKEN: '', GITHUB_TOKEN: '', GH_HOST: '', FORGE_SHEPHERD_DISABLE: '1' },
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('');
+  });
+
+  test('direct credential dispatch uses the process cwd instead of inherited INIT_CWD', () => {
+    const root = sandboxes.makeSandbox();
+    const unrelated = sandboxes.makeSandbox();
+    execFileSync('git', ['config', '--local', 'github.auto', 'true'], { cwd: unrelated, windowsHide: true });
+    const child = spawnSync(process.execPath, [FORGE_BIN, 'github', 'credential', 'get'], {
+      cwd: root,
+      env: { ...baseEnv(), INIT_CWD: unrelated, FORGE_SHEPHERD_DISABLE: '1' },
+      input: 'protocol=https\nhost=github.com\n\n',
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    expect(child.status).toBe(0);
+    expect(child.stdout).toBe('');
+    expect(child.stderr).toBe('');
   });
 
   test.skipIf(process.platform !== 'win32')('public launcher resolves Windows cmd shims with spaced and metacharacter arguments', () => {

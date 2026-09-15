@@ -3650,6 +3650,16 @@ async function handleExternalServices(skipExternal, selectedAgents) {
 
 async function main() {
   let command = args[0];
+  if (command === 'github' && args[1] === 'credential') {
+    const { runCredentialEntrypoint } = require('./forge-github-credential');
+    process.exitCode = runCredentialEntrypoint(args.slice(2), process.cwd());
+    return;
+  }
+  if (command === 'github' && args[1] === 'proxy' && args[2] === '--') {
+    const { runProxyEntrypoint } = require('./forge-gh-proxy');
+    process.exitCode = runProxyEntrypoint(args.slice(2), process.cwd());
+    return;
+  }
   const flags = parseFlags();
   const suppressJsonIntrospectionOutput = ['options', 'explain'].includes(command) && args.includes('--json');
   const suppressCommandJsonOutput = args.includes('--json');
