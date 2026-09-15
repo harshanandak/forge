@@ -179,7 +179,7 @@ describe('transparent gh proxy', () => {
     };
     expect(runGhProxy(['pr', 'list'], '/work', f.options)).toBe(0);
     expect(commands).toEqual([
-      ['git', 'config', '--local', '--get', 'github.account'],
+      ['git', 'config', '--local', '--get-all', 'github.account'],
       ['gh', 'auth', 'token', '--hostname', 'github.com', '--user', 'work-account'],
     ]);
     expect(f.calls[0].options.env).toEqual({

@@ -14,7 +14,7 @@ function fixture(overrides = {}) {
   const runner = (command, args, options) => {
     calls.push({ command, args, options });
     if (command === 'git') {
-      if (args.join(' ') === 'config --local --get github.account') return account;
+      if (args.join(' ') === 'config --local --get-all github.account') return account;
       if (args.join(' ') === 'config --local --get-all github.auto') {
         if (overrides.automaticValue !== undefined) return `${overrides.automaticValue}\n`;
         if (overrides.automatic) return 'true\n';
@@ -233,7 +233,7 @@ describe('forge github lifecycle', () => {
       if (command === 'git' && args.join(' ') === 'config --local --get-all credential.https://github.com.helper') {
         throw Object.assign(new Error('missing'), { status: 1 });
       }
-      if (command === 'git' && args.join(' ') === 'config --local --get github.account') {
+      if (command === 'git' && args.join(' ') === 'config --local --get-all github.account') {
         throw Object.assign(new Error('config failed'), { status: 2 });
       }
       throw new Error(`Unexpected fixture call: ${command} ${args.join(' ')}`);

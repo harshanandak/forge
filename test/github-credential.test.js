@@ -94,7 +94,7 @@ describe('Forge GitHub credential helper', () => {
         throw new Error('live identity lookup should not run');
       }
       if (args.includes('--get-all') && args.at(-1) === 'github.auto') return 'true\n';
-      if (args.includes('--get') && args.at(-1) === 'github.account') return 'work\n';
+      if (args.includes('--get-all') && args.at(-1) === 'github.account') return 'work\n';
       throw Object.assign(new Error('missing'), { status: 1 });
     };
 
@@ -139,7 +139,7 @@ describe('Forge GitHub credential helper', () => {
     const runner = (command, args) => {
       calls.push({ command, args });
       if (command === 'gh') return 'token-canary\n';
-      if (args.includes('--get') && args.at(-1) === 'github.account') return 'work\n';
+      if (args.includes('--get-all') && args.at(-1) === 'github.account') return 'work\n';
       throw Object.assign(new Error('missing'), { status: 1 });
     };
 

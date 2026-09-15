@@ -21,7 +21,7 @@ const { classifyAuthError } = require('../lib/adapters/pr-state-adapter');
 function fakeRunner(calls, { account = null, liveLogin = account, token = 'token-canary' } = {}) {
   return (command, args, options = {}) => {
     calls.push({ command, args: [...args], options: { ...options, env: options.env && { ...options.env } } });
-    if (command === 'git' && args[0] === 'config' && args.includes('--get')) {
+    if (command === 'git' && args[0] === 'config' && args.includes('--get-all')) {
       return account ? `${account}\n` : '';
     }
     if (command === 'git' && args[0] === 'config' && args.includes('--unset')) return '';
@@ -76,9 +76,26 @@ describe('github context', () => {
     writeGithubAccount('/repo', 'Work-Login', { runner });
     unsetGithubAccount('/repo', { runner });
 
-    expect(calls[0]).toMatchObject({ command: 'git', args: ['config', '--local', '--get', 'github.account'], options: { cwd: '/repo' } });
+    expect(calls[0]).toMatchObject({ command: 'git', args: ['config', '--local', '--get-all', 'github.account'], options: { cwd: '/repo' } });
     expect(calls[1]).toMatchObject({ command: 'git', args: ['config', '--local', '--replace-all', 'github.account', 'Work-Login'], options: { cwd: '/repo' } });
     expect(calls[2]).toMatchObject({ command: 'git', args: ['config', '--local', '--unset-all', 'github.account'], options: { cwd: '/repo' } });
+  });
+
+  test('rejects duplicate clone account bindings before token retrieval', () => {
+    const calls = [];
+    let failure;
+    try {
+      createGithubTokenContext('/repo', {
+        runner: (command, args) => {
+          calls.push({ command, args });
+          if (command === 'git') return 'personal\nwork\n';
+          throw new Error('token retrieval must not run');
+        },
+      });
+    } catch (error) { failure = error; }
+
+    expect(failure).toMatchObject({ code: 'INVALID_GITHUB_LOGIN' });
+    expect(calls).toEqual([{ command: 'git', args: ['config', '--local', '--get-all', 'github.account'] }]);
   });
 
   test('unbound preparation performs one local lookup and no gh or environment work', () => {
