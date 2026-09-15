@@ -7,7 +7,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const spawn = require('cross-spawn');
 const { assertGithubRouterCloneRegistered, findForgeBinDir, getGithubRouterStatus, helperPathFromValue,
-  installGithubRouter, isOwnedCredentialHelperValue, registerGithubRouterClone, unregisterGithubRouterClone,
+  installGithubRouter, isOwnedCredentialHelperValue, isUsableCredentialHelperValue, registerGithubRouterClone, unregisterGithubRouterClone,
   uninstallGithubRouter } = require('../lib/github-router');
 
 const roots = [];
@@ -144,6 +144,34 @@ describe('opt-in GitHub router installation', () => {
     const pathEnv = [ghDir, forgeDir].join(path.delimiter);
     expect(() => installGithubRouter({ platform: 'win32', pathEnv })).toThrow(/before Forge|PATH/i);
     expect(getGithubRouterStatus({ platform: 'win32', pathEnv })).toBe('shadowed');
+  });
+
+  test('requires executable POSIX router and credential-helper files for readiness', () => {
+    const unavailable = {
+      existsSync: () => true,
+      readFileSync: () => 'forge-gh-router-v1',
+      accessSync: () => { throw Object.assign(new Error('permission denied'), { code: 'EACCES' }); },
+    };
+    const available = { ...unavailable, accessSync: () => {} };
+    const helper = "!'/forge/forge-github-credential-v1'";
+
+    expect(getGithubRouterStatus({ platform: 'linux', pathEnv: '/forge', fs: unavailable })).toBe('unusable');
+    expect(isUsableCredentialHelperValue(helper, { platform: 'linux', fs: unavailable })).toBe(false);
+    expect(getGithubRouterStatus({ platform: 'linux', pathEnv: '/forge', fs: available })).toBe('ready');
+    expect(isUsableCredentialHelperValue(helper, { platform: 'linux', fs: available })).toBe(true);
+  });
+
+  test('ignores non-executable POSIX gh files before the executable router', () => {
+    const fileSystem = {
+      existsSync: () => true,
+      readFileSync: file => file.includes('forge') ? 'forge-gh-router-v1' : 'native',
+      accessSync: file => {
+        if (!file.includes('forge')) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      },
+    };
+    const pathEnv = ['/native', '/forge'].join(path.delimiter);
+
+    expect(getGithubRouterStatus({ platform: 'linux', pathEnv, fs: fileSystem })).toBe('ready');
   });
 
   test('rejects transient package-runner shims and accepts a stable Forge launcher', () => {

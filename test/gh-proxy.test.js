@@ -51,10 +51,10 @@ describe('transparent gh proxy', () => {
   });
 
   test.each([
-    [], ['--version'], ['--help'], ['-h'], ['version'], ['help'],
-    ['pr', 'create', '--help'], ['completion', '-s', 'bash'], ['config', 'get', 'git_protocol'], ['alias', 'list'],
+    [], ['--version'], ['--version=true'], ['--help'], ['--help=true'], ['-h'], ['version'], ['help'],
+    ['pr', 'create', '--help'], ['pr', 'list', '--help=true'], ['completion', '-s', 'bash'], ['config', 'get', 'git_protocol'], ['alias', 'list'],
     ['licenses'], ['preview'], ['skill', 'list'], ['skills', 'list'],
-    ['skill', 'install', './skills', '--from-local'], ['skills', 'add', './skills', '--from-local'],
+    ['skill', 'install', './skills', '--from-local'], ['skills', 'add', './skills', '--from-local=true'],
   ])('bypasses zero-argument and local-only calls before clone state lookup: %j', (...args) => {
     const f = fixture({ automatic: true });
     f.options.readAuto = () => { throw new Error('state lookup must not run'); };
@@ -83,6 +83,7 @@ describe('transparent gh proxy', () => {
 
   test.each([
     ['skill', 'install', './skills', '--dir', '--from-local'],
+    ['skill', 'install', './skills', '--from-local=false'],
     ['skill', 'install', './skills', '--from-local', '--upstream'],
     ['skill', 'install', './skills', '--', '--from-local'],
   ])('does not bypass non-local skill invocations: %j', (...args) => {
