@@ -4,7 +4,7 @@ Preserved 2026-09-15 from the local `forge-planning-review` research set. This c
 
 ## Status and scope
 
-This directory is historical planning evidence at rung 2: document and tracked-source inspection. It does not certify implementation, approve release scope, authorize implementation, or create a pull request. The original files are preserved byte-for-byte and may contain superseded proposals or unresolved decisions; their own status and provenance statements remain authoritative for interpreting them.
+This directory is historical planning evidence at rung 2: document and tracked-source inspection. It does not certify implementation, approve release scope, authorize implementation, or create a pull request. Eleven of the twelve source artifacts are preserved byte-for-byte. In `discussion-reconciliation.md`, two prose compounds were normalized from `discussion/research` and `issue/research` to `discussion and research` and `issue and research` so the archive complies with the repository's dropped-command documentation check; the meaning and decisions are unchanged. The files may contain superseded proposals or unresolved decisions; their own status and provenance statements remain authoritative for interpreting them.
 
 `delivery-environment-research-brief.md` is intentionally excluded because delivery-environment research is tracked separately.
 

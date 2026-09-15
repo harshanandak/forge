@@ -1,6 +1,6 @@
 # Forge 0.1.0: package, customization, composition, and cloud reconciliation
 
-The independent Astra review and main-agent recommendation are saved in [astra-architecture-guidance.md](astra-architecture-guidance.md). That shorter document is the proposed planning baseline; this file remains the longer discussion/research record.
+The independent Astra review and main-agent recommendation are saved in [astra-architecture-guidance.md](astra-architecture-guidance.md). That shorter document is the proposed planning baseline; this file remains the longer discussion and research record.
 
 Decisions needed: release scope remains provisional. This is a local discussion draft, not an approved implementation plan.
 
@@ -460,7 +460,7 @@ The focused cloud source audit found an existing design to build on, and specifi
 - `lib/kernel/broker.js:425` assembles local research artifacts; the storage design at line 104 describes portable hashes/pointers and optional object storage. Artifact transport is a concrete bridge to finish, not a reason to replace the authority store.
 - `lib/commands/team.js:43` filters credential-like environment variables, and `lib/mcp-config-renderer.js:11` uses variable references rather than literal secrets. Cloud credential delivery should preserve these boundaries.
 
-The storage-model document also retains older Beads export/projection language. That is documentation drift to reconcile with the user's importer-only correction, not permission to restore Beads operations in cloud mode. No exact standalone cloud-transport issue was identified by the bounded audit; broader existing issue/research mapping remains necessary before filing duplicates.
+The storage-model document also retains older Beads export/projection language. That is documentation drift to reconcile with the user's importer-only correction, not permission to restore Beads operations in cloud mode. No exact standalone cloud-transport issue was identified by the bounded audit; broader existing issue and research mapping remains necessary before filing duplicates.
 
 Recommended milestone distinction: prove at least one headless remote-worker journey before making a cloud-compatible claim. A managed multi-tenant service, billing, fleet scheduling, regional availability and a cloud dashboard require their own scoped plan. Their exclusion from 0.1.0 is not finalized by this draft.
 
