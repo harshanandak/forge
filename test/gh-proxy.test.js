@@ -53,6 +53,7 @@ describe('transparent gh proxy', () => {
   test.each([
     [], ['--version'], ['--version=true'], ['--help'], ['--help=true'], ['-h'], ['version'], ['help'],
     ['pr', 'create', '--help'], ['pr', 'list', '--help=true'], ['completion', '-s', 'bash'], ['config', 'get', 'git_protocol'], ['alias', 'list'],
+    ['copilot', '--help'], ['discussion', '--help'], ['extension', '--help'], ['skill', '--help'], ['skills', '--help'],
     ['licenses'], ['preview'], ['skill', 'list'], ['skills', 'list'],
     ['skill', 'install', './skills', '--from-local'], ['skills', 'add', './skills', '--from-local=true'],
   ])('bypasses zero-argument and local-only calls before clone state lookup: %j', (...args) => {
@@ -183,6 +184,9 @@ describe('transparent gh proxy', () => {
     ['issue', 'transfer', '1', 'enterprise.example/owner/destination'],
     ['gist', 'clone', 'https://enterprise.example/example/0123456789'],
     ['repo', 'clone', 'https://enterprise.example/owner/repo'],
+    ['repo', 'clone', 'git@enterprise.example:owner/repo.git'],
+    ['repo', 'clone', 'git@@enterprise.example:owner/repo.git'],
+    ['repo', 'clone', 'C:owner/repo.git'],
     ['repo', 'view', 'enterprise.example/owner/repo'],
     ['label', 'clone', 'enterprise.example/owner/source', '--repo', 'github.com/owner/destination'],
     ['repo', 'create', 'new', '--template', 'enterprise.example/owner/template'],
@@ -199,10 +203,10 @@ describe('transparent gh proxy', () => {
     expect(f.calls).toEqual([]);
   });
 
-  test('treats a positional owner/repository as an explicit GitHub.com destination', () => {
+  test.each(['owner/repository', 'git@github.com:owner/repository.git'])('treats positional %s as an explicit GitHub.com destination', repository => {
     const f = fixture({ automatic: true });
     f.options.resolveLocalTarget = () => { throw new Error('local remote must not be inspected'); };
-    expect(runGhProxy(['repo', 'clone', 'owner/repository'], '/work', f.options)).toBe(0);
+    expect(runGhProxy(['repo', 'clone', repository], '/work', f.options)).toBe(0);
     expect(f.calls.find(call => call.type === 'selected')).toBeDefined();
   });
 
@@ -296,6 +300,20 @@ describe('transparent gh proxy', () => {
     f.options.baseEnv[name] = value;
     expect(runGhProxy(['pr', 'list'], '/work', f.options)).toBe(0);
     expect(f.calls.find(call => call.type === 'selected')).toBeDefined();
+  });
+
+  test('sets canonical GH_REPO when public GH_HOST accompanies an SSH-alias remote', () => {
+    const f = fixture({ automatic: true });
+    f.options.baseEnv.GH_HOST = 'github.com';
+    delete f.options.createContext;
+    f.options.runner = (command, args) => {
+      if (command === 'git') return 'work-account\n';
+      if (command === 'gh' && args[0] === 'auth' && args[1] === 'token') return 'selected-token\n';
+      throw new Error('unexpected account lookup');
+    };
+
+    expect(runGhProxy(['pr', 'list'], '/work', f.options)).toBe(0);
+    expect(f.calls[0].options.env.GH_REPO).toBe('github.com/org/project');
   });
 
   test('fails closed for an unknown explicit repository destination', () => {
