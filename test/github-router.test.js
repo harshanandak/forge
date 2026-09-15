@@ -7,7 +7,8 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const spawn = require('cross-spawn');
 const { assertGithubRouterCloneRegistered, findForgeBinDir, getGithubRouterStatus, helperPathFromValue,
-  installGithubRouter, isOwnedCredentialHelperValue, isUsableCredentialHelperValue, registerGithubRouterClone, unregisterGithubRouterClone,
+  installGithubRouter, isManagedCredentialHelperValue, isOwnedCredentialHelperValue, isUsableCredentialHelperValue,
+  registerGithubRouterClone, unregisterGithubRouterClone,
   uninstallGithubRouter } = require('../lib/github-router');
 
 const roots = [];
@@ -96,6 +97,20 @@ describe('opt-in GitHub router installation', () => {
     expect(helperPathFromValue("!'C:\\Forge\\forge-github-credential-v1'")).toBe('C:\\Forge\\forge-github-credential-v1');
     expect(helperPathFromValue("!'relative/forge-github-credential-v1'")).toBeNull();
     expect(helperPathFromValue("!'C:/Forge/other-helper'")).toBeNull();
+  });
+
+  test('manages only owned helpers or a missing helper at the active Forge path', () => {
+    const binDir = tempRoot();
+    const helperPath = path.join(binDir, 'forge-github-credential-v1');
+    const helper = `!'${helperPath}'`;
+    fs.writeFileSync(helperPath, 'custom helper');
+    expect(isManagedCredentialHelperValue(helper, { binDir })).toBe(false);
+    fs.unlinkSync(helperPath);
+    expect(isManagedCredentialHelperValue(helper, { binDir })).toBe(true);
+    const denied = { readFileSync: () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); },
+      statSync: () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); } };
+    expect(isManagedCredentialHelperValue(helper, { binDir, fs: denied })).toBe(false);
+    expect(isManagedCredentialHelperValue(`!'${path.join(tempRoot(), 'forge-github-credential-v1')}'`, { binDir })).toBe(false);
   });
 
   test('refuses to overwrite a non-Forge gh launcher without partial writes', () => {

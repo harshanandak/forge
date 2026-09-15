@@ -292,12 +292,21 @@ describe('forge github lifecycle', () => {
     const f = fixture({ account: 'Work', login: 'work', automatic: true,
       scopedHelper: "!'C:/Moved/forge-github-credential-v1'" });
     f.options.isOwnedCredentialHelper = () => false;
+    f.options.isManagedCredentialHelper = value => value === "!'C:/Moved/forge-github-credential-v1'";
     const result = await handler(['status'], {}, '/repo', f.options);
     expect(result.status.credentialHelper).toBe('forge-stale');
     expect(result).toMatchObject({ success: false, status: { state: 'router_error', code: 'GITHUB_CREDENTIAL_HELPER_UNAVAILABLE' } });
     expect(f.calls.some(call => call.command === 'gh')).toBe(false);
     expect(result.output).toContain('missing or unowned');
     expect(result.output).not.toContain('HTTPS Git credentials use this clone');
+  });
+
+  test('status reports a custom helper that uses Forge\'s reserved basename as other', async () => {
+    const f = fixture({ account: 'Work', scopedHelper: "!'C:/Custom/forge-github-credential-v1'" });
+    f.options.isOwnedCredentialHelper = () => false;
+    f.options.isManagedCredentialHelper = () => false;
+    const result = await handler(['status'], {}, '/repo', f.options);
+    expect(result.status.credentialHelper).toBe('other');
   });
 
   test('status rejects a conflicting helper before the Forge helper', async () => {

@@ -173,7 +173,8 @@ describe('github context', () => {
     const credentialHelperValue = "!'C:/Forge/forge-github-credential-v1'";
 
     let markerPresent = true;
-    const options = { runner, credentialHelperValue, isOwnedCredentialHelper: () => markerPresent };
+    const options = { runner, credentialHelperValue, isOwnedCredentialHelper: () => markerPresent,
+      isManagedCredentialHelper: value => value === credentialHelperValue };
     expect(() => enableGithubAuto('/repo', options)).toThrow(/enable|config/i);
     expect(config.size).toBe(0);
     enableGithubAuto('/repo', options);
@@ -199,6 +200,12 @@ describe('github context', () => {
     expect(() => assertGithubAutoAvailable('/repo', options)).toThrow(/credential helper/i);
     disableGithubAuto('/repo', options);
     expect(config.get('credential.https://github.com.helper')).toEqual(['', "!'C:/Custom/helper'"]);
+
+    const reservedCustom = "!'C:/Custom/forge-github-credential-v1'";
+    config.set('credential.https://github.com.helper', ['', reservedCustom]);
+    expect(() => assertGithubAutoAvailable('/repo', options)).toThrow(/credential helper/i);
+    disableGithubAuto('/repo', options);
+    expect(config.get('credential.https://github.com.helper')).toEqual(['', reservedCustom]);
   });
 
   test('prepares a supplied account without reading or writing Git config', () => {
