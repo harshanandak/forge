@@ -51,7 +51,7 @@ describe('transparent gh proxy', () => {
   });
 
   test.each([
-    [], ['--version'], ['--version=true'], ['--help'], ['--help=true'], ['-h'], ['version'], ['help'],
+    [], ['--version'], ['--version=true'], ['--help'], ['--help=true'], ['-h'], ['--help', 'pr'], ['version'], ['help'],
     ['pr', 'create', '--help'], ['pr', 'list', '--help=true'], ['completion', '-s', 'bash'], ['config', 'get', 'git_protocol'], ['alias', 'list'],
     ['copilot', '--help'], ['discussion', '--help'], ['extension', '--help'], ['skill', '--help'], ['skills', '--help'],
     ['licenses'], ['preview'], ['skill', 'list'], ['skills', 'list'],
@@ -68,6 +68,7 @@ describe('transparent gh proxy', () => {
   test.each([
     ['pr', 'list', '-R', 'github.com/owner/repo', '--help'],
     ['pr', 'list', '--repo=github.com/owner/repo', '-h'],
+    ['pr', '--help', '-R', 'github.com/owner/repo'],
   ])('bypasses local help with an inherited repository option: %j', (...args) => {
     const f = fixture({ automatic: true });
     f.options.readAuto = () => { throw new Error('state lookup must not run'); };
@@ -76,9 +77,11 @@ describe('transparent gh proxy', () => {
     expect(f.calls[0]).toMatchObject({ type: 'spawn', args });
   });
 
-  test('does not bypass help-shaped option data', () => {
+  test.each([
+    ['pr', 'comment', '1', '--body', '--help'],
+    ['pr', '--', '--help'],
+  ])('does not bypass help-shaped option data: %j', (...args) => {
     const f = fixture({ automatic: true });
-    const args = ['pr', 'comment', '1', '--body', '--help'];
     expect(runGhProxy(args, '/work', f.options)).toBe(0);
     expect(f.calls.find(call => call.type === 'selected')).toMatchObject({ args });
   });
@@ -262,6 +265,13 @@ describe('transparent gh proxy', () => {
     const f = fixture({ automatic: true });
     f.options.readCommandHelp = () => '';
     expect(runGhProxy(['pr', 'view', 'https://enterprise.example/org/repo/pull/1'], '/work', f.options)).toBe(1);
+    expect(f.calls).toEqual([]);
+  });
+
+  test('refuses an enterprise URL passed through the built-in checkout alias', () => {
+    const f = fixture({ automatic: true });
+    f.options.readCommandHelp = () => 'Usage: gh pr checkout [<number> | <url> | <branch>] [flags]\n';
+    expect(runGhProxy(['co', 'https://enterprise.example/org/repo/pull/1'], '/work', f.options)).toBe(1);
     expect(f.calls).toEqual([]);
   });
 
