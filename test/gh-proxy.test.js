@@ -56,6 +56,7 @@ describe('transparent gh proxy', () => {
     ['copilot', '--help'], ['discussion', '--help'], ['extension', '--help'], ['skill', '--help'], ['skills', '--help'],
     ['licenses'], ['preview'], ['skill', 'list'], ['skills', 'list'],
     ['skill', 'install', './skills', '--from-local'], ['skills', 'add', './skills', '--from-local=true'],
+    ['extension', 'install', '.'], ['extension', 'install', '--force', '.'], ['extension', 'install', '.', '--pin=v1'],
   ])('bypasses zero-argument and local-only calls before clone state lookup: %j', (...args) => {
     const f = fixture({ automatic: true });
     f.options.readAuto = () => { throw new Error('state lookup must not run'); };
