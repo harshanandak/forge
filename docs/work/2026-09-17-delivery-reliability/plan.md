@@ -13,6 +13,8 @@ The immediate benefit is fewer failed or repeated delivery attempts. Sustainable
 
 This document applies the plan critics/synthesis sub-skills to existing research. It is not a completed full plan-to-dev transition: implementation approval, worktree baselines and runtime acceptance remain pending. The review packet is [review-input.md](review-input.md); task details are [tasks.md](tasks.md); review attribution and corrections are [review.md](review.md).
 
+The user-requested conversation audit and future-model evaluation are integrated in [conversation-learning.md](conversation-learning.md). The pasted earlier delivery recommendation is retained through this consolidated plan, with four reviewed corrections: the CI lane has a writer prerequisite, the stale push patch needs selective recovery, delayed branch refresh needs an explicit policy decision, and Graft stays off the first wave's critical path. These are substantive corrections, not independent alternative plans.
+
 ## Evidence already available
 
 The preserved delivery analysis is on `docs/architecture-research-checkpoint`, head `d5438badcb8c71e946fe87018173bf1ad76d3f31`, at `docs/work/2026-09-15-delivery-environment/delivery-environment-analysis.md`. The architecture research archive remains separate and is not superseded by this operational plan.
@@ -89,6 +91,14 @@ After runner routing converges, expose the supported worker/resource budget thro
 Start with one broad local validation at a time and bounded focused tests elsewhere. Measure tool executable paths/versions, available memory, concurrent child cost, wall time and owned-process cleanup on a quiet and representative loaded host. Reuse current runner artifacts and benchmark scripts; no monitoring service is needed.
 
 A native Linux pilot is optional after Windows behavior is understood: its own checkout in Linux filesystem, Linux-native pinned Git/Node/Bun, and separate dependencies. A checkout under `/mnt/c` with Windows Bun is not a Linux baseline. Keep Windows-specific coverage. Do not disable antivirus, delete worktrees or terminate unidentified processes as performance tuning.
+
+## Learn from delivery incidents without delaying the repairs
+
+Alongside the first two preparation lanes, one bounded evaluation owner can prepare synthetic incident cases using existing corpus/evidence infrastructure. It owns evaluation fixtures and research artifacts only, not push, CI, package, validator or protected-authority source. Every runtime fix still carries its own meaningful negative and legitimate tests. Coordinate shared schemas through the integrator; do not require a new monitoring platform before fixing known defects.
+
+The conversation audit adds scope/publication errors, stale monitoring claims, speculative review expansion and expensive validation before cheap preflight to the existing reliability cases. Enforce only established deterministic authority and evidence facts at supported boundaries. Start new progress/repetition heuristics as advisory observations with valid counterexamples. Preserve API/harness enforcement limits and local conversation privacy.
+
+After terminal evidence is reliable, use matched model-by-workflow trials to measure verified outcomes, false blocks, correction effort and cost. Do not infer model intelligence from conversation anecdotes or merge latency. Keep the authority contract stable while versioned routing and workflow policies can improve with future models. Details, source anchors, sampling limits and the controlled trial design are in conversation-learning.md.
 
 ## Evidence reuse and CI consolidation later
 

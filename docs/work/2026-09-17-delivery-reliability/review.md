@@ -68,3 +68,14 @@ Useful diagnostic anchors: shared synchronous npm helper `test/integration/stand
 No source code, workflows, installed tools, machine settings, branch protection or implementation-issue acceptance was changed. No full source test suite or Graft benchmark was run as part of prose planning. Documentation checks and commit/push results are recorded by the lead's final handoff. The next stage must obtain fresh baseline evidence and run the meaningful negative regressions in tasks.md.
 
 The root-cause fix for the package failure is intentionally unspecified until measured. Sustainable throughput, broader evidence reuse and selected-candidate scheduling remain proposed behavior. Broader policy changes and Graft adoption require their stated acceptance; this plan is not proof they already exist.
+
+## September 17 conversation-learning extension
+
+User requested that Codex conversation history, model capability effects and the earlier delivery recommendation be reconciled into this same plan. [conversation-learning.md](conversation-learning.md) records the sample, incident anchors, known limits, minimal detectors and controlled comparison design.
+
+- Sol (`gpt-5.6-sol`, high) structurally scanned 78,662 records across two selected histories and reviewed bounded Forge-delivery neighborhoods. Five incidents and successful recovery controls were returned; this is neither a complete semantic audit nor a failure-rate estimate.
+- The lead sampled the current planning thread's public user/assistant/tool events. It verified the publication-scope correction and retained progress, requirement-drift and transport/result incidents, excluding private reasoning and unrelated content.
+- Luna (`gpt-5.6-luna`, high) checked tracked source and live issues. Existing immutable corpus, replay evidence and a zero-tool model-by-workflow evaluator already exist; the concrete gap is action/outcome/receipt linkage plus suitable incident fixtures. The current runtime cannot certify actual tool effects.
+- Astra (`gpt-6-astra`, high) accepted the bounded addition with sampling, privacy, frozen-intervention, false-block and missing-data corrections. Those are incorporated; it did not rank models or certify unrun detectors.
+
+The earlier pasted recommendation is superseded only where review established a conflict: CI writer prerequisite, selective stale-patch recovery, explicit freshness-policy decision, and deferred Graft pilot. The first reliability wave remains the priority. Scope remains planning and research preservation, with no implementation PR or model trial authorized by the document itself.
