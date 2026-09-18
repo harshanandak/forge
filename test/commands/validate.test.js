@@ -52,6 +52,39 @@ describe('Validate Command - Validation Orchestration', () => {
 			expect(invocations).toBe(1);
 			expect(result).toMatchObject({ success: false, errors: 2, warnings: 0 });
 		});
+
+		test.skipIf(process.platform !== 'win32')('default executor runs a local Windows ESLint cmd shim under Node', () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-eslint-shim-'));
+			const binDir = path.join(rootDir, 'node_modules', '.bin');
+			const nodeExecutable = process.env.FORGE_TEST_NODE_EXECUTABLE || globalThis.Bun?.which?.('node') || 'node';
+			try {
+				fs.mkdirSync(binDir, { recursive: true });
+				fs.writeFileSync(path.join(binDir, 'eslint.cmd'), '@echo off\r\nexit /b 0\r\n');
+				const script = [
+					`const { runLint } = require(${JSON.stringify(path.resolve(__dirname, '..', '..', 'lib', 'commands', 'validate.js'))});`,
+					"runLint().then((result) => process.stdout.write(JSON.stringify(result)));",
+				].join('\n');
+				const output = execFileSync(nodeExecutable, ['-e', script], {
+					cwd: rootDir,
+					encoding: 'utf8',
+					env: { ...process.env, PATH: binDir },
+				});
+				const result = JSON.parse(output);
+				expect(result).toMatchObject({ success: true, errors: 0, warnings: 0 });
+				expect(result.skipped).not.toBe(true);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
+		test('preserves the missing ESLint consumer fallback', async () => {
+			const result = await runLint(() => {
+				throw Object.assign(new Error('spawnSync eslint ENOENT'), { code: 'ENOENT' });
+			});
+
+			expect(result).toMatchObject({ success: true, skipped: true });
+			expect(result.message).toMatch(/ESLint not found/);
+		});
 	});
 
 	describe('Security scanning', () => {
