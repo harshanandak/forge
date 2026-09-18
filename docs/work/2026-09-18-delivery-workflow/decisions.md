@@ -28,3 +28,13 @@
 **Choice made**: Reuse the authority object-ID predicate in the shared workflow gate, preserve exact Git-entry matching with `String.raw`, extract immutable preflight comparison from the writer, and document the writer, authority, batch, and staged-validation contracts and their failure boundaries. Keep completion distinct from later commit-hook consumption. Address useful contract documentation rather than adding boilerplate to test callbacks for the review bot's aggregate coverage percentage.
 **Evidence**: A real SHA-256 Git repository failed before the fix and then generated through production authorization and completion functions with an injected event store. The five focused caller suites passed 101 tests with 800 assertions, covering SHA-1/SHA-256, invalid/stale HEADs, and recovery without changing generated workflow bytes. Strict lint and independent source review passed; remote analysis remains a separate post-push check.
 **Status**: RESOLVED
+
+## Decision 4
+**Date**: 2026-09-19
+**Task**: Post-merge workflow placeholder correction
+**Gap**: The renderer exported its template marker as a `TOKEN` constant, which matched the shipped-library credential scanner's assignment pattern on every CI platform.
+**Score**: 1/14
+**Route**: PROCEED
+**Choice made**: Use placeholder terminology throughout canonical renderer code and tests while retaining the existing deep-import name as an identifier alias. Keep the scanner and the literal `__BUN_VERSION__` unchanged so credential detection and generated workflow bytes remain intact.
+**Evidence**: The existing crypto-security suite reproduced one library match at the merge commit; the focused correction removes that match without adding an allowlist, ignore, or scanner exception.
+**Status**: RESOLVED
