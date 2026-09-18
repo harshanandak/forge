@@ -10,9 +10,28 @@ const { spawnSync } = require("node:child_process");
 
 const ROOT = path.resolve(__dirname, "../..");
 const created = [];
+const OUTPUT_LIMIT = 2000;
 
-function npm(args, cwd, invocation) {
-  return spawnSync(invocation.command, [...invocation.prefix, ...args], {
+function runOperation(label, command, args, options) {
+  console.error(`[standalone-package] ${label}: start`);
+  const started = Date.now();
+  const result = spawnSync(command, args, options);
+  const diagnostic = {
+    label,
+    elapsedMs: Date.now() - started,
+    status: result.status,
+    signal: result.signal,
+    error: result.error ? { code: result.error.code, message: result.error.message } : null,
+    stdout: String(result.stdout || "").slice(-OUTPUT_LIMIT),
+    stderr: String(result.stderr || "").slice(-OUTPUT_LIMIT),
+  };
+  result.diagnostic = diagnostic;
+  console.error(`[standalone-package] ${JSON.stringify(diagnostic)}`);
+  return result;
+}
+
+function npm(args, cwd, invocation, label) {
+  return runOperation(label, invocation.command, [...invocation.prefix, ...args], {
     cwd,
     encoding: "utf8",
     env: { ...process.env, npm_config_audit: "false", npm_config_fund: "false" },
@@ -26,7 +45,8 @@ function parsePackOutput(output) {
 }
 
 function pack(packageDirectory, destination, invocation) {
-  const result = npm(["pack", "--json", "--ignore-scripts", "--pack-destination", destination], packageDirectory, invocation);
+  const packageName = path.basename(packageDirectory) || "root";
+  const result = npm(["pack", "--json", "--ignore-scripts", "--pack-destination", destination], packageDirectory, invocation, `pack:${packageName}`);
   expect(result.status, result.stderr).toBe(0);
   return path.join(destination, parsePackOutput(result.stdout)[0].filename);
 }
@@ -80,11 +100,11 @@ function isolatedEnvironment(root, platformNode) {
   return env;
 }
 
-function runInstalledForge(packageRoot, args, cwd, platformNode, env) {
+function runInstalledForge(packageRoot, args, cwd, platformNode, env, label) {
   const shim = path.join(packageRoot, "node_modules", ".bin", process.platform === "win32" ? "forge.cmd" : "forge");
-  if (process.platform !== "win32") return spawnSync(shim, args, { cwd, encoding: "utf8", env });
+  if (process.platform !== "win32") return runOperation(label, shim, args, { cwd, encoding: "utf8", env });
   const command = `""${shim}" ${args.join(" ")}"`;
-  return spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], {
+  return runOperation(label, process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], {
     cwd,
     encoding: "utf8",
     env,
@@ -97,8 +117,59 @@ afterEach(() => {
 });
 
 describe("standalone product packages", () => {
+  test("bounds child operations before the test deadline and preserves diagnostics", () => {
+    const timedOut = runOperation("test:timeout", process.execPath, ["-e", "setTimeout(() => {}, 250)"], {
+      encoding: "utf8",
+      timeout: 50,
+    });
+    expect(timedOut.status).toBeNull();
+    expect(timedOut.error?.code).toBe("ETIMEDOUT");
+    expect(timedOut.diagnostic.stdout.length).toBeLessThanOrEqual(OUTPUT_LIMIT);
+
+    const nonzero = runOperation("test:nonzero", process.execPath, ["-e", `process.stdout.write("x".repeat(${OUTPUT_LIMIT + 100})); process.stderr.write("failed"); process.exit(7)`], {
+      encoding: "utf8",
+      timeout: 2000,
+    });
+    expect(nonzero.status).toBe(7);
+    expect(nonzero.diagnostic.stdout).toHaveLength(OUTPUT_LIMIT);
+    expect(nonzero.diagnostic.stderr).toBe("failed");
+  }, 3000);
+
   test("parses npm 10 JSON after package lifecycle output", () => {
     expect(parsePackOutput('sync hooks: ok\n[{"filename":"forge.tgz"}]\n')[0].filename).toBe("forge.tgz");
+  });
+
+  test("root prepare skips package packing and retains development hook setup", () => {
+    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge prepare-"));
+    created.push(temporary);
+    const sentinel = path.join(temporary, "lefthook-called");
+    const mock = path.join(temporary, process.platform === "win32" ? "lefthook.cmd" : "lefthook");
+    fs.writeFileSync(mock, process.platform === "win32"
+      ? '@echo off\r\n>"%FORGE_PREPARE_SENTINEL%" echo called\r\n'
+      : '#!/bin/sh\nprintf called > "$FORGE_PREPARE_SENTINEL"\n');
+    if (process.platform !== "win32") fs.chmodSync(mock, 0o755);
+    const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+    const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") || "PATH";
+    const runPrepare = (npmCommand) => spawnSync(manifest.scripts.prepare, {
+      cwd: ROOT,
+      encoding: "utf8",
+      shell: true,
+      env: {
+        ...process.env,
+        [pathKey]: [temporary, process.env[pathKey]].filter(Boolean).join(path.delimiter),
+        FORGE_PREPARE_SENTINEL: sentinel,
+        npm_command: npmCommand,
+      },
+    });
+
+    const development = runPrepare("install");
+    expect(development.status, development.stderr).toBe(0);
+    expect(fs.existsSync(sentinel)).toBeTrue();
+    fs.rmSync(sentinel);
+
+    const packing = runPrepare("pack");
+    expect(packing.status, packing.stderr).toBe(0);
+    expect(fs.existsSync(sentinel)).toBeFalse();
   });
 
   test("packs and installs the root CLI with its runtime workspaces", () => {
@@ -110,10 +181,10 @@ describe("standalone product packages", () => {
     const env = isolatedEnvironment(path.join(temporary, "home"), platformNode);
     const rootTarball = pack(ROOT, temporary, npmInvocation);
 
-    const install = npm(["install", "--ignore-scripts", rootTarball], temporary, npmInvocation);
+    const install = npm(["install", "--ignore-scripts", rootTarball], temporary, npmInvocation, "install:root");
     expect(install.status, install.stderr).toBe(0);
 
-    const version = runInstalledForge(temporary, ["--version"], temporary, platformNode, env);
+    const version = runInstalledForge(temporary, ["--version"], temporary, platformNode, env, "cli:version");
     expect(version.status, version.stderr).toBe(0);
     expect(version.stdout).toContain("Forge v");
 
@@ -121,7 +192,7 @@ describe("standalone product packages", () => {
     fs.mkdirSync(project);
     const init = spawnSync("git", ["init", "-q"], { cwd: project, encoding: "utf8" });
     expect(init.status, init.stderr).toBe(0);
-    const setup = runInstalledForge(temporary, ["setup", "--quick", "--yes"], project, platformNode, env);
+    const setup = runInstalledForge(temporary, ["setup", "--quick", "--yes"], project, platformNode, env, "cli:setup");
     expect(setup.status, `${setup.stdout}\n${setup.stderr}`).toBe(0);
   }, 60000);
 
@@ -135,7 +206,7 @@ describe("standalone product packages", () => {
     const memoryTarball = pack(path.join(ROOT, "packages", "memory"), temporary, npmInvocation);
     const flowTarball = pack(path.join(ROOT, "packages", "flow"), temporary, npmInvocation);
 
-    const install = npm(["install", "--ignore-scripts", contractsTarball, memoryTarball, flowTarball], temporary, npmInvocation);
+    const install = npm(["install", "--ignore-scripts", contractsTarball, memoryTarball, flowTarball], temporary, npmInvocation, "install:products");
     expect(install.status, install.stderr).toBe(0);
 
     for (const [packageName, directory] of [["contracts", "packages/contracts"], ["memory", "packages/memory"], ["flow", "packages/flow"]]) {
