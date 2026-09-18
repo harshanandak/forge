@@ -62,6 +62,8 @@ const KNOWN_TARGETABLE_FILES = new Set([
   'lib/kernel/schema.js',
   'lib/kernel/migrations.js',
   'lib/kernel/sqlite-driver.js',
+  'lib/test-workflow.js',
+  'lib/workflow-templates/test.yml',
   'lib/commands/shepherd.js',
   'lib/commands/github.js',
   'bin/forge-gh-proxy.js',

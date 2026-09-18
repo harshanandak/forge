@@ -1,0 +1,311 @@
+// forge-test-resource: exclusive
+'use strict';
+
+const { describe, expect, test } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const { hashProtectedContent } = require('../lib/protected-state-surfaces');
+const protectedStateAuthority = require('../lib/protected-state-authority');
+const {
+	BUN_VERSION_TOKEN,
+	TEST_WORKFLOW_PATH,
+	TEST_WORKFLOW_TEMPLATE_PATH,
+	generateTestWorkflow,
+	renderTestWorkflow,
+	resolveTestWorkflowUpdate,
+} = require('../lib/test-workflow');
+
+const repoRoot = path.resolve(__dirname, '..');
+const TEST_HEAD = 'a'.repeat(40);
+
+function git(root, args) {
+	return spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+}
+
+function write(root, filePath, content) {
+	const fullPath = path.join(root, filePath);
+	fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+	fs.writeFileSync(fullPath, content);
+}
+
+function createFixture({ canonicalTarget = true } = {}) {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-test-workflow-'));
+	const template = fs.readFileSync(path.join(repoRoot, TEST_WORKFLOW_TEMPLATE_PATH));
+	expect(git(root, ['init']).status).toBe(0);
+	expect(git(root, ['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+	expect(git(root, ['config', 'user.name', 'Forge Test']).status).toBe(0);
+	write(root, 'package.json', '{"packageManager":"bun@1.3.12"}\n');
+	write(root, TEST_WORKFLOW_TEMPLATE_PATH, template);
+	write(root, TEST_WORKFLOW_PATH, canonicalTarget ? renderTestWorkflow(template, '1.3.12') : 'name: drifted\n');
+	expect(git(root, ['add', '.']).status).toBe(0);
+	expect(git(root, ['commit', '-m', 'base']).status).toBe(0);
+	const head = git(root, ['rev-parse', 'HEAD']).stdout.trim();
+	write(root, 'package.json', '{"packageManager":"bun@1.4.2"}\n');
+	expect(git(root, ['add', 'package.json']).status).toBe(0);
+	return { root, head, template };
+}
+
+function writer(projectRoot, filePath, content, options) {
+	const fullPath = path.join(projectRoot, filePath);
+	const current = fs.readFileSync(fullPath);
+	if (!current.equals(Buffer.from(options.expectedContent))) {
+		return { allowed: false, reason: 'compare-and-swap mismatch' };
+	}
+	fs.writeFileSync(fullPath, content);
+	return { allowed: true, contentHash: hashProtectedContent(content) };
+}
+
+function remover(projectRoot, filePath, options) {
+	const fullPath = path.join(projectRoot, filePath);
+	if (!fs.readFileSync(fullPath).equals(Buffer.from(options.expectedContent))) {
+		return { allowed: false, reason: 'compare-and-swap mismatch' };
+	}
+	fs.rmSync(fullPath);
+	return { allowed: true };
+}
+
+function successOptions(overrides = {}) {
+	return {
+		actor: 'test-workflow-writer',
+		issueAuthorization: async (_root, _params, options) => ({
+			success: true,
+			capabilityId: options.capabilityId,
+		}),
+		completeAuthorization: async () => ({ success: true }),
+		writeProtectedFile: writer,
+		removeProtectedFile: remover,
+		recordProtectedStateAuditEvent: () => ({ success: true }),
+		createCapabilityId: () => 'test-workflow-capability',
+		...overrides,
+	};
+}
+
+describe('canonical test workflow renderer', () => {
+	test('renders the checked-in workflow byte-for-byte from the canonical template', () => {
+		const template = fs.readFileSync(path.join(repoRoot, TEST_WORKFLOW_TEMPLATE_PATH));
+		const current = fs.readFileSync(path.join(repoRoot, TEST_WORKFLOW_PATH));
+		const version = /^bun@(\d+\.\d+\.\d+)$/.exec(require('../package.json').packageManager)[1];
+
+		expect(template.toString('utf8').split(BUN_VERSION_TOKEN)).toHaveLength(9);
+		expect(renderTestWorkflow(template, version)).toEqual(current);
+	});
+
+	test('rejects invalid versions and templates with the wrong token count', () => {
+		expect(() => renderTestWorkflow(`bun-version: ${BUN_VERSION_TOKEN}\n`, 'latest')).toThrow('exact stable');
+		expect(() => renderTestWorkflow('name: no-token\n', '1.4.2')).toThrow('exactly 8');
+		expect(() => renderTestWorkflow(BUN_VERSION_TOKEN.repeat(9), '1.4.2')).toThrow('exactly 8');
+	});
+});
+
+describe('Forge-owned test workflow writer', () => {
+	test.each([
+		{ label: 'missing', expectedHead: undefined, resolvedHead: TEST_HEAD, error: '--expect-head is required' },
+		{ label: 'abbreviated', expectedHead: TEST_HEAD.slice(0, 12), resolvedHead: TEST_HEAD, error: 'full 40-character lowercase commit SHA' },
+		{ label: 'mismatched', expectedHead: TEST_HEAD, resolvedHead: 'b'.repeat(40), error: 'does not match current HEAD' },
+	])('fails closed before reading or writing for $label expected HEAD', async ({ expectedHead, resolvedHead, error }) => {
+		let authorityCalls = 0;
+		const result = await generateTestWorkflow('C:/repo', {
+			expectedHead,
+			resolveHead: () => resolvedHead,
+			issueAuthorization: async () => { authorityCalls += 1; return { success: true }; },
+		});
+
+		expect(result).toMatchObject({ success: false });
+		expect(result.error).toContain(error);
+		expect(authorityCalls).toBe(0);
+	});
+
+	test('authorizes an intended staged template edit and writes only its exact staged manifest render', async () => {
+		const { root, head } = createFixture();
+		let issued;
+		let completed;
+		try {
+			fs.appendFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH), '# intended workflow edit\n');
+			expect(git(root, ['add', TEST_WORKFLOW_TEMPLATE_PATH]).status).toBe(0);
+			const result = await generateTestWorkflow(root, {
+				...successOptions({
+					issueAuthorization: async (_root, params, options) => {
+						issued = { params, capabilityId: options.capabilityId };
+						return { success: true, capabilityId: options.capabilityId };
+					},
+					completeAuthorization: async (_root, params) => { completed = params; return { success: true }; },
+				}),
+				expectedHead: head,
+			});
+
+			const expected = renderTestWorkflow(fs.readFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH)), '1.4.2');
+			expect(result).toMatchObject({ success: true, sourceHead: head, bunVersion: '1.4.2' });
+			expect(fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH))).toEqual(expected);
+			expect(issued.params).toMatchObject({ actor: 'test-workflow-writer', sourceHead: head, targetBunVersion: '1.4.2' });
+			expect(completed).toMatchObject({ capabilityId: 'test-workflow-capability', sourceHead: head });
+			expect(result.contentHash).toBe(hashProtectedContent(expected));
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('carries an intended template edit through the real exact authority lifecycle', async () => {
+		const { root, head } = createFixture();
+		const rows = [];
+		const kernelDeps = {
+			kernelBroker: { config: {} },
+			kernelDriver: {
+				listKernelEvents: async () => rows,
+				insertKernelEvent: async event => {
+					rows.push(event);
+					return event;
+				},
+			},
+		};
+		try {
+			fs.appendFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH), '# authorized CI edit\n');
+			expect(git(root, ['add', TEST_WORKFLOW_TEMPLATE_PATH]).status).toBe(0);
+			const generated = await generateTestWorkflow(root, {
+				actor: 'real-authority-test',
+				expectedHead: head,
+				kernelDeps,
+				createCapabilityId: () => 'real-test-workflow-capability',
+				writeProtectedFile: writer,
+				removeProtectedFile: remover,
+				recordProtectedStateAuditEvent: () => ({ success: true }),
+			});
+			expect(generated).toMatchObject({ success: true });
+			expect(git(root, ['add', TEST_WORKFLOW_PATH]).status).toBe(0);
+			const content = fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH));
+			const committed = await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(root, [{
+				actor: 'real-authority-test',
+				path: TEST_WORKFLOW_PATH,
+				surface: 'workflows',
+				content,
+				sourceHead: head,
+			}], {
+				deps: kernelDeps,
+				validateCompleteBunPinBatch: () => ({ success: true }),
+			});
+			expect(committed).toMatchObject({
+				success: true,
+				decisions: [{ allowed: true, capabilityId: 'real-test-workflow-capability' }],
+			});
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 15_000);
+
+	test('rejects source drift, staged template drift, and unrelated staged target bytes before authority', async () => {
+		const scenarios = [
+			{ name: 'source', setup: fixture => fixture },
+			{
+				name: 'working template',
+				setup: fixture => fs.appendFileSync(path.join(fixture.root, TEST_WORKFLOW_TEMPLATE_PATH), '# unstaged\n'),
+			},
+			{
+				name: 'staged target',
+				setup: fixture => {
+					write(fixture.root, TEST_WORKFLOW_PATH, 'name: unrelated staged target\n');
+					expect(git(fixture.root, ['add', TEST_WORKFLOW_PATH]).status).toBe(0);
+				},
+			},
+		];
+
+		for (const scenario of scenarios) {
+			const fixture = createFixture({ canonicalTarget: scenario.name !== 'source' });
+			let authorityCalls = 0;
+			try {
+				scenario.setup(fixture);
+				const result = await generateTestWorkflow(fixture.root, {
+					...successOptions({
+						issueAuthorization: async () => { authorityCalls += 1; return { success: true }; },
+					}),
+					expectedHead: fixture.head,
+				});
+				expect(result.success, scenario.name).toBe(false);
+				expect(authorityCalls, scenario.name).toBe(0);
+			} finally {
+				fs.rmSync(fixture.root, { recursive: true, force: true });
+			}
+		}
+	}, 15_000);
+
+	test('rejects a stale batch snapshot without issuing authority', async () => {
+		const { root, head } = createFixture();
+		let authorityCalls = 0;
+		try {
+			const prepared = resolveTestWorkflowUpdate(root, head);
+			write(root, TEST_WORKFLOW_PATH, 'name: concurrent edit\n');
+			const result = await generateTestWorkflow(root, {
+				...successOptions({ issueAuthorization: async () => { authorityCalls += 1; return { success: true }; } }),
+				expectedHead: head,
+				expectedSnapshot: prepared.snapshot,
+			});
+			expect(result).toMatchObject({ success: false });
+			expect(result.error).toContain('changed after Bun pin batch preflight');
+			expect(authorityCalls).toBe(0);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test.each(['audit', 'completion'])('restores the prior workflow when %s fails after the atomic write', async failure => {
+		const { root, head } = createFixture();
+		const baseline = fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH));
+		try {
+			const result = await generateTestWorkflow(root, {
+				...successOptions({
+					recordProtectedStateAuditEvent: () => failure === 'audit'
+						? { success: false, error: 'injected audit failure' }
+						: { success: true },
+					completeAuthorization: async () => failure === 'completion'
+						? { success: false, error: 'injected completion failure' }
+						: { success: true },
+				}),
+				expectedHead: head,
+			});
+			expect(result).toMatchObject({ success: false, recovery: { allowed: true } });
+			expect(fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH))).toEqual(baseline);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('leaves the prior workflow intact when the atomic commit is interrupted', async () => {
+		const { root, head } = createFixture();
+		const baseline = fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH));
+		try {
+			const result = await generateTestWorkflow(root, {
+				...successOptions({ writeProtectedFile: undefined }),
+				expectedHead: head,
+				beforeAtomicCommit: () => { throw new Error('injected atomic commit interruption'); },
+			});
+			expect(result).toMatchObject({ success: false });
+			expect(result.error).toContain('injected atomic commit interruption');
+			expect(fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH))).toEqual(baseline);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('reports a recovery failure without hiding the original authorization failure', async () => {
+		const { root, head } = createFixture();
+		try {
+			const result = await generateTestWorkflow(root, {
+				...successOptions({
+					recordProtectedStateAuditEvent: () => ({ success: false, error: 'injected audit failure' }),
+					writeProtectedFile: (...args) => {
+						if (args[3].operation === 'recover_test_workflow') throw new Error('injected recovery failure');
+						return writer(...args);
+					},
+				}),
+				expectedHead: head,
+			});
+			expect(result).toMatchObject({
+				success: false,
+				recovery: { allowed: false, reason: 'injected recovery failure' },
+			});
+			expect(result.error).toContain('injected audit failure');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+});

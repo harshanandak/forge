@@ -23,6 +23,11 @@ const {
 	renderBunWorkflowPin,
 	updateBunWorkflowPins,
 } = require('../lib/bun-workflow-pins');
+const {
+	TEST_WORKFLOW_PATH,
+	TEST_WORKFLOW_TEMPLATE_PATH,
+	renderTestWorkflow,
+} = require('../lib/test-workflow');
 
 const TEST_HEAD = 'a'.repeat(40);
 const repoRoot = path.resolve(__dirname, '..');
@@ -47,6 +52,10 @@ function createFixture() {
 	const npmPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
 	fs.mkdirSync(path.dirname(npmPath), { recursive: true });
 	fs.writeFileSync(npmPath, renderNpmPublishWorkflow('1.3.12'));
+	const testTemplate = fs.readFileSync(path.join(repoRoot, TEST_WORKFLOW_TEMPLATE_PATH));
+	fs.mkdirSync(path.dirname(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH)), { recursive: true });
+	fs.writeFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH), testTemplate);
+	fs.writeFileSync(path.join(root, TEST_WORKFLOW_PATH), renderTestWorkflow(testTemplate, '1.3.12'));
 	return root;
 }
 
@@ -55,6 +64,22 @@ function batchFixtureOptions() {
 		readSourcePackageManifest: () => Buffer.from('{"packageManager":"bun@1.3.12"}'),
 		readSourceNpmPublishWorkflow: () => Buffer.from(renderNpmPublishWorkflow('1.3.12')),
 		readIndexedNpmPublishWorkflow: () => Buffer.from(renderNpmPublishWorkflow('1.3.12')),
+		resolveTestWorkflowUpdate: projectRoot => {
+			const template = fs.readFileSync(path.join(projectRoot, TEST_WORKFLOW_TEMPLATE_PATH));
+			return {
+				path: TEST_WORKFLOW_PATH,
+				version: '1.4.2',
+				baseline: renderTestWorkflow(template, '1.3.12'),
+				content: renderTestWorkflow(template, '1.4.2'),
+				indexedWorkflow: renderTestWorkflow(template, '1.4.2'),
+				snapshot: { existed: true, content: fs.readFileSync(path.join(projectRoot, TEST_WORKFLOW_PATH)) },
+			};
+		},
+		generateTestWorkflow: async projectRoot => {
+			const update = batchFixtureOptions().resolveTestWorkflowUpdate(projectRoot);
+			fs.writeFileSync(path.join(projectRoot, TEST_WORKFLOW_PATH), update.content);
+			return { success: true, path: TEST_WORKFLOW_PATH };
+		},
 	};
 }
 
@@ -62,9 +87,10 @@ describe('Forge-owned Bun workflow pins', () => {
 	test('derives one exact stable Bun version and rewrites only allowlisted pin fields', () => {
 		expect(readPinnedBunVersion('{"packageManager":"bun@1.4.2"}')).toBe('1.4.2');
 		expect(() => readPinnedBunVersion('{"packageManager":"bun@latest"}')).toThrow('exact stable');
-		expect(BUN_WORKFLOW_SPECS).toHaveLength(8);
+		expect(BUN_WORKFLOW_SPECS).toHaveLength(7);
 		expect(BUN_WORKFLOW_SPECS.every(Object.isFrozen)).toBe(true);
 		expect(BUN_WORKFLOW_SPECS.some(spec => spec.path.endsWith('npm-publish.yml'))).toBe(false);
+		expect(BUN_WORKFLOW_SPECS.some(spec => spec.path.endsWith('test.yml'))).toBe(false);
 
 		for (const spec of BUN_WORKFLOW_SPECS) {
 			const source = fixtureContent(spec);
@@ -177,11 +203,12 @@ describe('Forge-owned Bun workflow pins', () => {
 		expect(result.invalidManifestReads).toBe(1);
 	});
 
-	test('updates all owned workflow pins and delegates npm-publish to its existing generator', async () => {
+	test('updates pin-only workflows and delegates both full workflow renderers', async () => {
 		const root = createFixture();
 		const issued = [];
 		const completed = [];
 		let npmCalls = 0;
+		let testCalls = 0;
 		try {
 			const result = await updateBunWorkflowPins(root, {
 				...batchFixtureOptions(),
@@ -215,15 +242,24 @@ describe('Forge-owned Bun workflow pins', () => {
 					expect(options.expectedHead).toBe(TEST_HEAD);
 					return { success: true, path: '.github/workflows/npm-publish.yml' };
 				},
+				generateTestWorkflow: async (projectRoot, options) => {
+					testCalls += 1;
+					expect(options.expectedHead).toBe(TEST_HEAD);
+					const update = batchFixtureOptions().resolveTestWorkflowUpdate(projectRoot);
+					fs.writeFileSync(path.join(projectRoot, TEST_WORKFLOW_PATH), update.content);
+					return { success: true, path: TEST_WORKFLOW_PATH };
+				},
 			});
 
 			expect(result.success).toBe(true);
 			expect(issued).toEqual(BUN_WORKFLOW_SPECS.map(spec => spec.path));
 			expect(completed).toEqual(issued);
 			expect(npmCalls).toBe(1);
+			expect(testCalls).toBe(1);
 			for (const spec of BUN_WORKFLOW_SPECS) {
 				expect(fs.readFileSync(path.join(root, spec.path), 'utf8')).toContain('1.4.2');
 			}
+			expect(fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH), 'utf8')).toContain('1.4.2');
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -369,6 +405,8 @@ describe('Forge-owned Bun workflow pins', () => {
 			'completion throw',
 			'npm failure',
 			'npm throw',
+			'test workflow failure',
+			'test workflow throw',
 		];
 
 		for (const scenario of scenarios) {
@@ -436,6 +474,13 @@ describe('Forge-owned Bun workflow pins', () => {
 						if (scenario === 'npm failure') return { success: false, error: 'npm failure' };
 						return { success: true, path: NPM_PUBLISH_WORKFLOW_PATH };
 					},
+					generateTestWorkflow: async projectRoot => {
+						const update = batchFixtureOptions().resolveTestWorkflowUpdate(projectRoot);
+						fs.writeFileSync(path.join(projectRoot, TEST_WORKFLOW_PATH), update.content);
+						if (scenario === 'test workflow throw') throw new Error('test workflow throw');
+						if (scenario === 'test workflow failure') return { success: false, error: 'test workflow failure' };
+						return { success: true, path: TEST_WORKFLOW_PATH };
+					},
 				});
 
 				expect(result.success, scenario).toBe(false);
@@ -443,6 +488,10 @@ describe('Forge-owned Bun workflow pins', () => {
 				for (const spec of BUN_WORKFLOW_SPECS) {
 					expect(fs.readFileSync(path.join(root, spec.path), 'utf8'), scenario).toBe(fixtureContent(spec));
 				}
+				expect(fs.readFileSync(path.join(root, NPM_PUBLISH_WORKFLOW_PATH), 'utf8'), scenario)
+					.toBe(renderNpmPublishWorkflow('1.3.12'));
+				expect(fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH), 'utf8'), scenario)
+					.toBe(renderTestWorkflow(fs.readFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH)), '1.3.12').toString());
 			} finally {
 				fs.rmSync(root, { recursive: true, force: true });
 			}
@@ -709,6 +758,10 @@ describe('Forge-owned Bun workflow pins', () => {
 			}
 			const npmPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
 			fs.writeFileSync(npmPath, renderNpmPublishWorkflow('1.3.12'));
+			const template = fs.readFileSync(path.join(repoRoot, TEST_WORKFLOW_TEMPLATE_PATH));
+			fs.mkdirSync(path.dirname(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH)), { recursive: true });
+			fs.writeFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH), template);
+			fs.writeFileSync(path.join(root, TEST_WORKFLOW_PATH), renderTestWorkflow(template, '1.3.12'));
 			expect(run(['add', '.']).status).toBe(0);
 			expect(run(['commit', '-m', 'base']).status).toBe(0);
 			const sourceHead = run(['rev-parse', 'HEAD']).stdout.trim();
@@ -750,6 +803,11 @@ describe('Forge-owned Bun workflow pins', () => {
 
 			fs.writeFileSync(npmPath, renderNpmPublishWorkflow('1.4.2'));
 			expect(run(['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
+			const withoutTest = await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(root, []);
+			expect(withoutTest).toMatchObject({ success: false });
+			expect(withoutTest.batchDecision.reason).toContain(TEST_WORKFLOW_PATH);
+			fs.writeFileSync(path.join(root, TEST_WORKFLOW_PATH), renderTestWorkflow(template, '1.4.2'));
+			expect(run(['add', TEST_WORKFLOW_PATH]).status).toBe(0);
 			expect(await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(root, []))
 				.toEqual({ success: true, decisions: [] });
 
