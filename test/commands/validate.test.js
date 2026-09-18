@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {
+	handler: validateHandler,
+	parseResourceBudget,
 	runTypeCheck,
 	runLint,
 	runSecurityScan,
@@ -18,6 +20,74 @@ const { resolveReceiptPath } = require('../../lib/validation-receipt.js');
 setDefaultTimeout(30000);
 
 describe('Validate Command - Validation Orchestration', () => {
+	describe('Resource budget', () => {
+		test.each(['0', '-1', '1.5', '2x', undefined])(
+			'rejects invalid --shards value %s',
+			(value) => {
+				const args = value === undefined ? ['--shards'] : ['--shards', value];
+				expect(() => parseResourceBudget(args)).toThrow('--shards must be a positive integer resource budget');
+			},
+		);
+
+		test('accepts a positive integer unchanged and preserves the absent default', () => {
+			expect(parseResourceBudget(['--shards', '2'])).toBe(2);
+			expect(parseResourceBudget([])).toBeNull();
+		});
+
+		test('threads a validated budget through the command handler', async () => {
+			const calls = [];
+			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {
+				executeValidate: async (options) => {
+					calls.push(options);
+					return { success: true, summary: 'validated' };
+				},
+			});
+
+			expect(calls).toEqual([{ rootDir: 'C:/repo', resourceBudget: 2 }]);
+			expect(result.output).toBe('validated');
+		});
+
+		test('rejects an invalid handler budget before validation starts', async () => {
+			let called = false;
+			const result = await validateHandler(['--shards'], {}, 'C:/repo', {
+				executeValidate: async () => {
+					called = true;
+					return { success: true, summary: 'unexpected' };
+				},
+			});
+
+			expect(result).toEqual({
+				success: false,
+				error: '--shards must be a positive integer resource budget',
+			});
+			expect(called).toBe(false);
+		});
+
+		test('threads the budget through executeValidate without minting a targeted receipt', async () => {
+			const calls = [];
+			const result = await executeValidate({
+				rootDir: path.resolve(__dirname, '..', '..'),
+				resourceBudget: 2,
+				skip: ['conflictMarkers', 'typeCheck', 'lint', 'security'],
+				runAllTests: async (...args) => {
+					calls.push(args);
+					return { success: true, testsFound: true, passed: 1, failed: 0, total: 1 };
+				},
+				validationReceipt: {
+					beginValidation: () => ({ head: 'unused-targeted-snapshot' }),
+					completeValidation: (_rootDir, snapshot) => {
+						expect(snapshot).toBeNull();
+						return false;
+					},
+				},
+			});
+
+			expect(calls).toHaveLength(1);
+			expect(calls[0][1]).toBe(path.resolve(__dirname, '..', '..'));
+			expect(calls[0][2]).toBe(2);
+			expect(result.validationReceipt).toBe(false);
+		});
+	});
 	describe('Type checking', () => {
 		test.skip('should run type check successfully', async () => {
 			const result = await runTypeCheck();
@@ -783,6 +853,50 @@ describe('Validate Command - Validation Orchestration', () => {
 			expect(calls[0][1]).toEqual(['scripts/test-full-suite.js']);
 			expect(calls[0][2].cwd).toBe(rootDir);
 			expect(result).toMatchObject({ success: true, passed: 6, failed: 0, skipped: 1, total: 7 });
+		});
+
+		test('forwards and records the selected full-suite resource budget', async () => {
+			const rootDir = path.resolve(__dirname, '..', '..');
+			const calls = [];
+			const result = await runAllTests((...args) => {
+				calls.push(args);
+				return [
+					'Full suite resource budget: requested=2 effective=2',
+					'Full suite aggregate: status=PASS tests=7 assertions=9 passed=7 failed=0 errors=0 skipped=0',
+				].join('\n');
+			}, rootDir, 2);
+
+			expect(calls[0][1]).toEqual(['scripts/test-full-suite.js', '--shards', '2']);
+			expect(result.resourceBudget).toEqual({ requested: 2, effective: 2 });
+
+			const defaultResult = await runAllTests(
+				() => [
+					'Full suite resource budget: requested=default effective=4',
+					'Full suite aggregate: status=PASS tests=7 assertions=9 passed=7 failed=0 errors=0 skipped=0',
+				].join('\n'),
+				rootDir,
+			);
+			expect(defaultResult.resourceBudget).toEqual({ requested: null, effective: 4 });
+		});
+
+		test('rejects an explicit budget before running a non-Forge consumer command', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-budget-consumer-'));
+			let called = false;
+			try {
+				const result = await runAllTests(() => {
+					called = true;
+					return '1 pass\n0 fail\nRan 1 tests across 1 file.';
+				}, rootDir, 2);
+
+				expect(result).toMatchObject({
+					success: false,
+					fullSuite: false,
+					message: '--shards requires the canonical Forge full-suite runner',
+				});
+				expect(called).toBe(false);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
 		});
 
 		test('falls back to raw Bun outside Forge even when the script path exists', async () => {

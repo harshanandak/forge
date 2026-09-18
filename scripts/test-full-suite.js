@@ -64,11 +64,22 @@ function parseArgs(argv) {
     const next = argv[index + 1];
 
     if (current === '--label-prefix') args.labelPrefix = next;
-    if (current === '--shards') args.shards = Number.parseInt(next, 10);
+    if (current === '--shards') args.shards = parseResourceBudget(next);
     if (current === '--timeout') args.timeoutMs = parseTimeoutMs(next);
   }
 
   return args;
+}
+
+function parseResourceBudget(value) {
+  if (!/^[1-9]\d*$/.test(String(value ?? ''))) {
+    throw new Error('--shards must be a positive integer resource budget');
+  }
+  const budget = Number(value);
+  if (!Number.isSafeInteger(budget)) {
+    throw new Error('--shards must be a positive integer resource budget');
+  }
+  return budget;
 }
 
 function parseTimeoutMs(value) {
@@ -515,6 +526,18 @@ function computeLaneGrants(lanes, options = {}) {
     }
     return grants;
   }
+  const requiredLanes = lanes.filter((lane) => lane.shards.length > 0);
+  const minimumBudget = requiredLanes.reduce(
+    (minimum, lane) => Math.max(minimum, laneWorkerCost(lane.name, platform)),
+    0,
+  );
+  if (workerBudget < minimumBudget) {
+    throw new Error(`Full suite minimum resource budget is ${minimumBudget} for the required lanes`);
+  }
+  for (const lane of lanes.filter((candidate) => candidate.name === 'exclusive')) {
+    const entry = grants.get(lane);
+    entry.granted = Math.min(lane.concurrency, Math.floor(workerBudget / entry.cost));
+  }
   // An explicit shard count is an operator-imposed cap on total concurrent
   // children; reserve the budget for heavier subprocess workers first and
   // defer leftover lanes until capacity frees instead of exceeding it.
@@ -596,7 +619,7 @@ async function runLaneSchedule(lanes, execute, cancel = () => {}, options = {}) 
   if (deferredFailure) throw deferredFailure.reason;
 
   for (const lane of lanes.filter((candidate) => candidate.name === 'exclusive')) {
-    resultsByLane.set(lane, await runLane(lane));
+    resultsByLane.set(lane, await runLane(lane, grants.get(lane).granted));
   }
   return lanes.flatMap((lane) => {
     const laneResults = resultsByLane.get(lane);
@@ -929,10 +952,11 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
 
   try {
     const allTests = deps.allTests || listAllFullSuiteTests();
-    const shardTotal = Number.isInteger(args.shards) && args.shards > 0
-      ? args.shards
-      : getDefaultShardCount(deps.cpuCount);
-    const subprocessShardTotal = Number.isInteger(args.shards) && args.shards > 0
+    const requestedResourceBudget = args.shards === null || args.shards === undefined
+      ? null
+      : parseResourceBudget(args.shards);
+    const shardTotal = requestedResourceBudget ?? getDefaultShardCount(deps.cpuCount);
+    const subprocessShardTotal = requestedResourceBudget !== null
       ? shardTotal
       : Math.max(6, shardTotal);
     const profile = deps.profile || readNewestProfile(reportDir);
@@ -949,6 +973,9 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
       subprocessShardTotal,
     });
     const shardSpecs = lanePlan.flatMap((lane) => lane.shards);
+    const laneGrants = computeLaneGrants(lanePlan, { platform, workerBudget: shardTotal });
+
+    console.log(`Full suite resource budget: requested=${requestedResourceBudget ?? 'default'} effective=${shardTotal}`);
 
     if (shardSpecs.length === 0) {
       const exitCode = signal ? signalExitCode(signal) : 1;
@@ -962,7 +989,6 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const runReportDir = fs.mkdtempSync(path.join(reportDir, 'full-suite-'));
 
     console.log(`Running local full suite in ${shardSpecs.length} shard(s)`);
-    const laneGrants = computeLaneGrants(lanePlan, { platform, workerBudget: shardTotal });
     for (const lane of lanePlan) {
       const grant = laneGrants.get(lane);
       const granted = grant.deferred ? grant.deferredConcurrency : grant.granted;

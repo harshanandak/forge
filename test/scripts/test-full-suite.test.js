@@ -15,6 +15,7 @@ const {
   buildShardSpecs,
   classifyShardFailure,
   classifyTestResource,
+  computeLaneGrants,
   extractFailedTestCases,
   getDefaultShardCount,
   listAllFullSuiteTests,
@@ -116,6 +117,14 @@ describe('scripts/test-full-suite.js', () => {
     expect(() => parseArgs(['--timeout', '0'])).toThrow('--timeout must be a positive integer');
     expect(() => parseArgs(['--timeout', 'not-a-number'])).toThrow('--timeout must be a positive integer');
   });
+
+  test.each(['0', '-1', '1.5', '2x', undefined])(
+    'parseArgs rejects invalid resource budget %s',
+    (value) => {
+      const argv = value === undefined ? ['--shards'] : ['--shards', value];
+      expect(() => parseArgs(argv)).toThrow('--shards must be a positive integer resource budget');
+    },
+  );
 
   test('buildShardTestArgs preserves an explicit shard timeout', () => {
     const args = buildShardTestArgs({
@@ -404,6 +413,67 @@ describe('scripts/test-full-suite.js', () => {
     ]));
   });
 
+  test('rejects an explicit Windows budget below a required heavy lane before scheduling', async () => {
+    const lanes = [{
+      name: 'subprocess',
+      concurrency: 1,
+      shards: [{ id: 's0' }],
+    }];
+    let executions = 0;
+
+    expect(() => computeLaneGrants(lanes, { platform: 'win32', workerBudget: 1 }))
+      .toThrow('minimum resource budget is 2');
+    await expect(runLaneSchedule(lanes, async () => { executions += 1; }, () => {}, {
+      platform: 'win32',
+      workerBudget: 1,
+    })).rejects.toThrow('minimum resource budget is 2');
+    expect(executions).toBe(0);
+  });
+
+  test('admits one Windows heavy worker at budget two and affordable unit work at budget one', () => {
+    const subprocessLane = { name: 'subprocess', concurrency: 3, shards: [{ id: 's0' }] };
+    const subprocessGrant = computeLaneGrants([subprocessLane], {
+      platform: 'win32',
+      workerBudget: 2,
+    }).get(subprocessLane);
+    expect(subprocessGrant).toMatchObject({ cost: 2, granted: 1, deferred: false });
+
+    const unitLane = { name: 'unit', concurrency: 3, shards: [{ id: 'u0' }] };
+    const unitGrant = computeLaneGrants([unitLane], {
+      platform: 'win32',
+      workerBudget: 1,
+    }).get(unitLane);
+    expect(unitGrant).toMatchObject({ cost: 1, granted: 1, deferred: false });
+  });
+
+  test('keeps every immediate, deferred, and exclusive grant within the explicit budget', () => {
+    const lanes = [
+      { name: 'unit', concurrency: 4, shards: [{ id: 'u0' }] },
+      { name: 'subprocess', concurrency: 3, shards: [{ id: 's0' }] },
+      { name: 'exclusive', concurrency: 1, shards: [{ id: 'e0' }] },
+    ];
+    const workerBudget = 2;
+    const grants = computeLaneGrants(lanes, { platform: 'win32', workerBudget });
+
+    for (const lane of lanes) {
+      const grant = grants.get(lane);
+      expect(grant.granted * grant.cost).toBeLessThanOrEqual(workerBudget);
+      if (grant.deferred) {
+        expect(grant.deferredConcurrency * grant.cost).toBeLessThanOrEqual(workerBudget);
+      }
+    }
+  });
+
+  test('rejects a Windows budget below a required exclusive lane', () => {
+    const exclusiveLane = {
+      name: 'exclusive',
+      concurrency: 1,
+      shards: [{ id: 'e0' }],
+    };
+    expect(() => computeLaneGrants([exclusiveLane], { platform: 'win32', workerBudget: 1 }))
+      .toThrow('minimum resource budget is 2');
+  });
+
   test('runLaneSchedule settles in-flight shared work before propagating a failure', async () => {
     const probe = executionProbe();
     const scheduled = runLaneSchedule([
@@ -653,6 +723,7 @@ describe('scripts/test-full-suite.js', () => {
       classify: (file) => (file.indexOf('spawn') !== -1 ? 'subprocess' : 'unit'),
       durationMap: new Map(),
       cpuCount: 8,
+      platform: 'linux',
       processTree: fakeProcessTree(),
       spawn,
     });
@@ -803,7 +874,7 @@ describe('scripts/test-full-suite.js', () => {
       return { code: 0, resource: lane.name };
     };
 
-    await expect(runLaneSchedule(lanes, execute, () => {}, { workerBudget: 1 }))
+    await expect(runLaneSchedule(lanes, execute, () => {}, { platform: 'linux', workerBudget: 1 }))
       .rejects.toThrow('deferred boom');
     expect(executedLanes).not.toContain('exclusive');
 
@@ -817,7 +888,7 @@ describe('scripts/test-full-suite.js', () => {
       if (lane.name === 'unit') throw new Error('deferred boom two');
       return { code: 0, resource: lane.name };
     };
-    await expect(runLaneSchedule(exclusiveLanes, spawnProbe, () => {}, { workerBudget: 1 }))
+    await expect(runLaneSchedule(exclusiveLanes, spawnProbe, () => {}, { platform: 'linux', workerBudget: 1 }))
       .rejects.toThrow('deferred boom two');
     expect(exclusiveSpawned).toBe(false);
   });
