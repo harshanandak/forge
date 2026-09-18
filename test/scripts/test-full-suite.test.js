@@ -548,6 +548,7 @@ describe('scripts/test-full-suite.js', () => {
       'test/scripts/process-tree.test.js',
       'test/sync-agent-skills-authority.test.js',
       'test/test-dashboard.test.js',
+      'test/test-workflow.test.js',
     ];
     const exclusiveLane = lanes.find((lane) => lane.name === 'exclusive');
     expect(exclusiveLane.shards.flatMap((shard) => shard.files)).toEqual(exclusiveFiles);
