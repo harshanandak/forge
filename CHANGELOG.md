@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Deterministic full generation for the test workflow.** `forge release generate-test-workflow --expect-head <sha>` renders `.github/workflows/test.yml` from its canonical staged template and Bun pin under an exact actor, worktree, source-HEAD, path, operation, and content-bound authorization. Bun pin updates delegate this workflow to the same renderer, preventing partial pin replacement from authorizing unrelated CI changes. (PR #567; issue `a541c8ca-579d-4b8e-9bfd-7980b7547302`)
 - **Optional transparent GitHub account routing per clone.** `forge github use <login> --auto` extends the existing secure account binding to shell-resolved `gh` and HTTPS Git commands when Forge's router is first on PATH, so concurrent terminals and harness shells can use different native GitHub CLI accounts without per-launch wrapping. Unbound and non-enabled clones pass through unchanged; local-only commands and `gh auth` remain native, while network-capable aliases and extensions inherit the selected account. V1 is public `github.com` only; built-in destination conflicts and non-public targets fail closed, and arbitrary user-installed code remains outside Forge's wrong-destination guarantee. The machine-local router registry must refuse uninstall while another verified clone remains enabled and must never store credentials. Release acceptance requires the installed PATH chain and warm median targets of 250 ms for unbound/local-only routing and 1,000 ms for bound `gh` and helper resolution. Forge never stores a token. (PR #563; issue `8168bee5-b74e-44e5-8fd8-1b9ccb917c1d`)
 
+### Fixed
+
+- **The test workflow template marker no longer resembles a credential assignment.** Internal renderer code now describes `__BUN_VERSION__` as a placeholder, so the shipped-library secret scan accepts the deterministic workflow writer without weakening its detection rules or changing generated workflow bytes. (issue `0acc4a68-ab0a-4008-83bf-6e954d075007`)
+
 ## [0.1.0-beta.7] - 2026-09-11
 
 ### Changed

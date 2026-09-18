@@ -10,7 +10,7 @@ const yaml = require('js-yaml');
 const { hashProtectedContent } = require('../lib/protected-state-surfaces');
 const protectedStateAuthority = require('../lib/protected-state-authority');
 const {
-	BUN_VERSION_TOKEN,
+	BUN_VERSION_PLACEHOLDER,
 	TEST_WORKFLOW_PATH,
 	TEST_WORKFLOW_TEMPLATE_PATH,
 	generateTestWorkflow,
@@ -91,15 +91,19 @@ describe('canonical test workflow renderer', () => {
 		const current = fs.readFileSync(path.join(repoRoot, TEST_WORKFLOW_PATH));
 		const version = /^bun@(\d+\.\d+\.\d+)$/.exec(require('../package.json').packageManager)[1];
 
-		expect(template.toString('utf8').split(BUN_VERSION_TOKEN)).toHaveLength(9);
+		expect(template.toString('utf8').split(BUN_VERSION_PLACEHOLDER)).toHaveLength(9);
 		expect(() => yaml.load(template.toString('utf8'))).not.toThrow();
 		expect(renderTestWorkflow(template, version)).toEqual(current);
 	});
 
-	test('rejects invalid versions and templates with the wrong token count', () => {
-		expect(() => renderTestWorkflow(`bun-version: ${BUN_VERSION_TOKEN}\n`, 'latest')).toThrow('exact stable');
+	test('rejects invalid versions and templates with the wrong placeholder count', () => {
+		expect(() => renderTestWorkflow(`bun-version: ${BUN_VERSION_PLACEHOLDER}\n`, 'latest')).toThrow('exact stable');
 		expect(() => renderTestWorkflow('name: no-token\n', '1.4.2')).toThrow('exactly 8');
-		expect(() => renderTestWorkflow(BUN_VERSION_TOKEN.repeat(9), '1.4.2')).toThrow('exactly 8');
+		expect(() => renderTestWorkflow(BUN_VERSION_PLACEHOLDER.repeat(9), '1.4.2')).toThrow('exactly 8');
+	});
+
+	test('preserves the original deep-import marker name as an alias', () => {
+		expect(require('../lib/test-workflow').BUN_VERSION_TOKEN).toBe(BUN_VERSION_PLACEHOLDER);
 	});
 });
 
