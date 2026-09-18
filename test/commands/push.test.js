@@ -19,6 +19,21 @@ const {
 	resolveFullSuiteTimeoutMs,
 } = require('../../scripts/test.js');
 
+const FORGE_MANIFEST = JSON.stringify({
+	name: 'forge-workflow',
+	bin: { forge: 'bin/forge.js' },
+	scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+});
+
+function isForgeFullRunnerCall(cmd, args) {
+	return cmd === 'node' && args[0] === 'scripts/test-full-suite.js';
+}
+
+function isTestRunCall(cmd, args) {
+	return isForgeFullRunnerCall(cmd, args)
+		|| (args.includes('run') && args.includes('test'));
+}
+
 describe('Forge Push Command', () => {
 	describe('Module exports', () => {
 		test('should export correct command shape', () => {
@@ -120,9 +135,7 @@ describe('Forge Push Command', () => {
 
 			const result = await pushModule.handler([], { '--quick': true }, '/fake/project', deps);
 
-			const testCall = spawnCalls.find(
-				c => c.args.includes('run') && c.args.includes('test'),
-			);
+			const testCall = spawnCalls.find(call => isTestRunCall(call.cmd, call.args));
 			expect(testCall).toBeFalsy(); // tests should NOT be called
 			expect(result.quickMode).toBe(true);
 			expect(result.success).toBe(true);
@@ -165,6 +178,65 @@ describe('Forge Push Command', () => {
 	});
 
 	describe('Full mode (no --quick)', () => {
+		test('routes a Forge checkout without a receipt through the supervised full runner', async () => {
+			const spawnCalls = [];
+			const deps = makeDeps({
+				spawnSync: (cmd, args, opts) => {
+					spawnCalls.push({ cmd, args: [...args], opts });
+					return { status: 0 };
+				},
+			});
+
+			await pushModule.handler([], {}, '/fake/project', deps);
+
+			const runnerCall = spawnCalls.find(call => isForgeFullRunnerCall(call.cmd, call.args));
+			expect(runnerCall).toEqual({
+				cmd: 'node',
+				args: ['scripts/test-full-suite.js'],
+				opts: expect.objectContaining({ cwd: '/fake/project' }),
+			});
+			expect(runnerCall.opts.env).toBeUndefined();
+			expect(spawnCalls.some(call => call.args.includes('run') && call.args.includes('test'))).toBe(false);
+		});
+
+		test('blocks git push when the Forge full runner fails', async () => {
+			const execCalls = [];
+			const deps = makeDeps({
+				execFileSync: (cmd, args) => {
+					execCalls.push({ cmd, args: [...args] });
+					return '';
+				},
+				spawnSync: (cmd, args) => isForgeFullRunnerCall(cmd, args)
+					? { status: 1 }
+					: { status: 0 },
+			});
+
+			const result = await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(result).toMatchObject({ success: false, testsPassed: false, pushed: false });
+			expect(execCalls.some(call => call.cmd === 'git' && call.args[0] === 'push')).toBe(false);
+		});
+
+		test('keeps a consumer-owned scripts/test.js on its configured package command', async () => {
+			const spawnCalls = [];
+			const deps = makeDeps({
+				existsSync: file => /pnpm-lock\.yaml$/.test(file) || /scripts[\\/]test\.js$/.test(file),
+				readFileSync: () => JSON.stringify({
+					name: 'consumer-app',
+					scripts: { test: 'node scripts/test.js' },
+				}),
+				spawnSync: (cmd, args) => {
+					spawnCalls.push({ cmd, args: [...args] });
+					return { status: 0 };
+				},
+			});
+
+			await pushModule.handler([], {}, '/consumer/project', deps);
+
+			expect(spawnCalls.some(call => isForgeFullRunnerCall(call.cmd, call.args))).toBe(false);
+			expect(spawnCalls).toContainEqual({ cmd: 'pnpm', args: ['run', 'test'] });
+		});
+
 		test('reuses exact-head validation only for tests while keeping branch protection and lint', async () => {
 			const spawnCalls = [];
 			const execCalls = [];
@@ -184,7 +256,7 @@ describe('Forge Push Command', () => {
 			const result = await pushModule.handler([], {}, 'C:/wrong/init-cwd', deps);
 
 			expect(spawnCalls.some(call => call.args.includes('lint'))).toBe(true);
-			expect(spawnCalls.some(call => call.args.includes('test'))).toBe(false);
+			expect(spawnCalls.some(call => isTestRunCall(call.cmd, call.args))).toBe(false);
 			expect(execCalls.some(call => call.args.some(arg => arg.includes('branch-protection.js')))).toBe(true);
 			expect(execCalls.some(call => call.args[0] === 'push')).toBe(true);
 			expect(result).toMatchObject({ success: true, testsPassed: true, validationReused: true });
@@ -202,7 +274,7 @@ describe('Forge Push Command', () => {
 
 			const result = await pushModule.handler([], {}, '/fake/project', deps);
 
-			expect(spawnCalls.some(call => call.args.includes('test'))).toBe(true);
+			expect(spawnCalls.some(call => isForgeFullRunnerCall(call.cmd, call.args))).toBe(true);
 			expect(result.validationReused).toBe(false);
 		});
 
@@ -220,9 +292,7 @@ describe('Forge Push Command', () => {
 			const lintCall = spawnCalls.find(
 				c => c.args.includes('run') && c.args.includes('lint'),
 			);
-			const testCall = spawnCalls.find(
-				c => c.args.includes('run') && c.args.includes('test'),
-			);
+			const testCall = spawnCalls.find(call => isForgeFullRunnerCall(call.cmd, call.args));
 			expect(lintCall).toBeTruthy();
 			expect(testCall).toBeTruthy();
 			expect(result.quickMode).toBe(false);
@@ -232,7 +302,7 @@ describe('Forge Push Command', () => {
 		test('should block push if tests fail in full mode', async () => {
 			const deps = makeDeps({
 				spawnSync: (cmd, args, _opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall(cmd, args)) {
 						return { status: 1 };
 					}
 					return { status: 0 };
@@ -249,7 +319,7 @@ describe('Forge Push Command', () => {
 			let testOpts = null;
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						testOpts = opts;
 					}
 					return { status: 0 };
@@ -266,7 +336,7 @@ describe('Forge Push Command', () => {
 			let testOpts = null;
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						testOpts = opts;
 					}
 					return { status: 0 };
@@ -283,7 +353,7 @@ describe('Forge Push Command', () => {
 			let testOpts = null;
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						testOpts = opts;
 					}
 					return { status: 0 };
@@ -301,7 +371,7 @@ describe('Forge Push Command', () => {
 			let testOpts = null;
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						testOpts = opts;
 					}
 					return { status: 0 };
@@ -322,7 +392,7 @@ describe('Forge Push Command', () => {
 			const logs = [];
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, _opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						return { status: null, signal: 'SIGKILL' };
 					}
 					return { status: 0 };
@@ -349,7 +419,7 @@ describe('Forge Push Command', () => {
 			const logs = [];
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, _opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						return {
 							status: null,
 							signal: 'SIGKILL',
@@ -377,7 +447,7 @@ describe('Forge Push Command', () => {
 			const logs = [];
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, _opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						return { status: null, signalCode: 'SIGKILL', exitedDueToTimeout: true };
 					}
 					return { status: 0 };
@@ -400,7 +470,7 @@ describe('Forge Push Command', () => {
 			const logs = [];
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, _opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						return { status: null, signal: 'SIGTERM' };
 					}
 					return { status: 0 };
@@ -421,7 +491,7 @@ describe('Forge Push Command', () => {
 			const logs = [];
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, _opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						return {
 							status: null,
 							signal: null,
@@ -445,7 +515,7 @@ describe('Forge Push Command', () => {
 			const logs = [];
 			const deps = makeDeps({
 				spawnSync: (_cmd, args, _opts) => {
-					if (args.includes('test')) {
+					if (isForgeFullRunnerCall('node', args)) {
 						return { status: null, signal: null, error: new Error('spawn ENOENT') };
 					}
 					return { status: 0 };
@@ -461,7 +531,7 @@ describe('Forge Push Command', () => {
 	});
 
 	describe('Git push with passthrough args', () => {
-		test('should call git push with passthrough args on success', async () => {
+		test('forwards real Git arguments when no Forge delimiter is present', async () => {
 			const execCalls = [];
 			const deps = makeDeps({
 				execFileSync: (cmd, args, _opts) => {
@@ -480,10 +550,48 @@ describe('Forge Push Command', () => {
 			const pushCall = execCalls.find(
 				c => c.cmd === 'git' && c.args[0] === 'push',
 			);
-			expect(pushCall).toBeTruthy();
-			expect(pushCall.args).toContain('-u');
-			expect(pushCall.args).toContain('origin');
-			expect(pushCall.args).toContain('feat/slug');
+			expect(pushCall.args).toEqual(['push', '-u', 'origin', 'feat/slug']);
+		});
+
+		test('consumes the first Forge passthrough delimiter', async () => {
+			const execCalls = [];
+			const deps = makeDeps({
+				execFileSync: (cmd, args) => {
+					execCalls.push({ cmd, args: [...args] });
+					return '';
+				},
+			});
+
+			await pushModule.handler(
+				['--', '--force-with-lease', '-u', 'origin', 'feat/slug'],
+				{},
+				'/fake/project',
+				deps,
+			);
+
+			const pushCall = execCalls.find(call => call.cmd === 'git' && call.args[0] === 'push');
+			expect(pushCall.args).toEqual([
+				'push',
+				'--force-with-lease',
+				'-u',
+				'origin',
+				'feat/slug',
+			]);
+		});
+
+		test('preserves a later Git delimiter after consuming the Forge delimiter', async () => {
+			const execCalls = [];
+			const deps = makeDeps({
+				execFileSync: (cmd, args) => {
+					execCalls.push({ cmd, args: [...args] });
+					return '';
+				},
+			});
+
+			await pushModule.handler(['--', '--', 'origin', 'feat/slug'], {}, '/fake/project', deps);
+
+			const pushCall = execCalls.find(call => call.cmd === 'git' && call.args[0] === 'push');
+			expect(pushCall.args).toEqual(['push', '--', 'origin', 'feat/slug']);
 		});
 
 		test('should declare the quick lane on the spawned git push env in quick mode', async () => {
@@ -734,6 +842,7 @@ function makeDeps(overrides = {}) {
 		execFileSync: overrides.execFileSync || noop,
 		spawnSync: overrides.spawnSync || ((_cmd, _args, _opts) => ({ status: 0 })),
 		existsSync: overrides.existsSync || (() => true), // bun.lock exists by default
+		readFileSync: overrides.readFileSync || (() => FORGE_MANIFEST),
 		log: overrides.log || (() => {}),
 		writeForgeToken: overrides.writeForgeToken || (() => {}),
 		verifyValidationReceipt: overrides.verifyValidationReceipt || (() => ({ valid: false, reason: 'missing' })),
