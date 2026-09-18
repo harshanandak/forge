@@ -25,6 +25,8 @@ npm pack --dry-run
 
 The trusted npm workflow is generated through `forge release generate-npm-workflow --expect-head "$(git rev-parse HEAD)"`; the full expected SHA must match the current checkout, and direct workflow edits remain blocked. The generated authorization is bound to that SHA, actor, worktree, path, and exact content, so moving HEAD before staging also fails closed. On a release event, the workflow resolves the tag once, runs the complete supported repository suite on that immutable commit, and allows publication only when the attributable suite receipt, verification checkout, and publish checkout all name the same SHA.
 
+Generate the canonical test workflow through `forge release generate-test-workflow --expect-head "$(git rev-parse HEAD)"`. The command renders the staged `lib/workflow-templates/test.yml` with the staged manifest's exact Bun version, rejects unrelated target bytes, and binds the protected write to the expected HEAD and exact generated content. For a Bun version change, use `forge release update-bun-pins --expect-head "$(git rev-parse HEAD)"`; it delegates `test.yml` to the same full renderer while preserving the pin-only updates for the other workflows.
+
 For docs-heavy changes, also run a Markdown link check if available. If no docs checker exists and adding one would broaden the PR, create a follow-up issue instead.
 
 ## Packaging Check
