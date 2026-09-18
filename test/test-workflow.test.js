@@ -148,6 +148,47 @@ describe('Forge-owned test workflow writer', () => {
 		}
 	});
 
+	test('selects the same actor precedence used by the protected-state hook', async () => {
+		const { root, head } = createFixture();
+		const cases = [
+			{
+				label: 'explicit actor',
+				actor: 'explicit-writer',
+				env: { FORGE_PROTECTED_STATE_ACTOR: 'protected-writer', FORGE_ACTOR: 'forge-writer' },
+				expected: 'explicit-writer',
+			},
+			{
+				label: 'protected actor',
+				env: { FORGE_PROTECTED_STATE_ACTOR: 'protected-writer', FORGE_ACTOR: 'forge-writer' },
+				expected: 'protected-writer',
+			},
+			{ label: 'Forge actor', env: { FORGE_ACTOR: 'forge-writer', USER: 'user-writer' }, expected: 'forge-writer' },
+			{ label: 'user', env: { USER: 'user-writer', USERNAME: 'username-writer' }, expected: 'user-writer' },
+			{ label: 'username', env: { USERNAME: 'username-writer' }, expected: 'username-writer' },
+			{ label: 'sanitized environment', env: {}, expected: 'unknown' },
+		];
+		try {
+			for (const scenario of cases) {
+				let issuedActor;
+				const result = await generateTestWorkflow(root, {
+					...successOptions({
+						actor: scenario.actor,
+						issueAuthorization: async (_projectRoot, params, options) => {
+							issuedActor = params.actor;
+							return { success: true, capabilityId: options.capabilityId };
+						},
+					}),
+					env: scenario.env,
+					expectedHead: head,
+				});
+				expect(result.success, scenario.label).toBe(true);
+				expect(issuedActor, scenario.label).toBe(scenario.expected);
+			}
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 20_000);
+
 	test('carries an intended template edit through the real exact authority lifecycle', async () => {
 		const { root, head } = createFixture();
 		const rows = [];
@@ -165,7 +206,7 @@ describe('Forge-owned test workflow writer', () => {
 			fs.appendFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH), '# authorized CI edit\n');
 			expect(git(root, ['add', TEST_WORKFLOW_TEMPLATE_PATH]).status).toBe(0);
 			const generated = await generateTestWorkflow(root, {
-				actor: 'real-authority-test',
+				env: {},
 				expectedHead: head,
 				kernelDeps,
 				createCapabilityId: () => 'real-test-workflow-capability',
@@ -177,7 +218,7 @@ describe('Forge-owned test workflow writer', () => {
 			expect(git(root, ['add', TEST_WORKFLOW_PATH]).status).toBe(0);
 			const content = fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH));
 			const committed = await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(root, [{
-				actor: 'real-authority-test',
+				actor: 'unknown',
 				path: TEST_WORKFLOW_PATH,
 				surface: 'workflows',
 				content,
@@ -244,6 +285,49 @@ describe('Forge-owned test workflow writer', () => {
 			expect(result).toMatchObject({ success: false });
 			expect(result.error).toContain('changed after Bun pin batch preflight');
 			expect(authorityCalls).toBe(0);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test.each(['package', 'template'])('rejects a stale preflight %s binding before authority', async changedPath => {
+		const { root, head } = createFixture();
+		let authorityCalls = 0;
+		try {
+			const prepared = resolveTestWorkflowUpdate(root, head);
+			if (changedPath === 'package') {
+				write(root, 'package.json', '{"packageManager":"bun@1.4.3"}\n');
+				expect(git(root, ['add', 'package.json']).status).toBe(0);
+			} else {
+				fs.appendFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH), '# changed after preflight\n');
+				expect(git(root, ['add', TEST_WORKFLOW_TEMPLATE_PATH]).status).toBe(0);
+			}
+			const result = await generateTestWorkflow(root, {
+				...successOptions({ issueAuthorization: async () => { authorityCalls += 1; return { success: true }; } }),
+				expectedHead: head,
+				expectedSnapshot: prepared.snapshot,
+				expectedUpdate: { version: prepared.version, content: prepared.content },
+			});
+			expect(result).toMatchObject({ success: false });
+			expect(result.error).toContain('changed after Bun pin batch preflight');
+			expect(authorityCalls).toBe(0);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 15_000);
+
+	test('accepts an exact immutable preflight update binding', async () => {
+		const { root, head } = createFixture();
+		try {
+			const prepared = resolveTestWorkflowUpdate(root, head);
+			const result = await generateTestWorkflow(root, {
+				...successOptions(),
+				expectedHead: head,
+				expectedSnapshot: prepared.snapshot,
+				expectedUpdate: { version: prepared.version, content: prepared.content },
+			});
+			expect(result).toMatchObject({ success: true, bunVersion: prepared.version });
+			expect(fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH))).toEqual(prepared.content);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
