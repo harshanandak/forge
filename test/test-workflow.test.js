@@ -20,6 +20,7 @@ const {
 
 const repoRoot = path.resolve(__dirname, '..');
 const TEST_HEAD = 'a'.repeat(40);
+const SHA256_TEST_HEAD = 'a'.repeat(64);
 
 function git(root, args) {
 	return spawnSync('git', args, { cwd: root, encoding: 'utf8' });
@@ -31,10 +32,11 @@ function write(root, filePath, content) {
 	fs.writeFileSync(fullPath, content);
 }
 
-function createFixture({ canonicalTarget = true } = {}) {
+function createFixture({ canonicalTarget = true, objectFormat = 'sha1' } = {}) {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-test-workflow-'));
 	const template = fs.readFileSync(path.join(repoRoot, TEST_WORKFLOW_TEMPLATE_PATH));
-	expect(git(root, ['init']).status).toBe(0);
+	const initArgs = objectFormat === 'sha256' ? ['init', '--object-format=sha256'] : ['init'];
+	expect(git(root, initArgs).status).toBe(0);
 	expect(git(root, ['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
 	expect(git(root, ['config', 'user.name', 'Forge Test']).status).toBe(0);
 	write(root, 'package.json', '{"packageManager":"bun@1.3.12"}\n');
@@ -104,8 +106,11 @@ describe('canonical test workflow renderer', () => {
 describe('Forge-owned test workflow writer', () => {
 	test.each([
 		{ label: 'missing', expectedHead: undefined, resolvedHead: TEST_HEAD, error: '--expect-head is required' },
-		{ label: 'abbreviated', expectedHead: TEST_HEAD.slice(0, 12), resolvedHead: TEST_HEAD, error: 'full 40-character lowercase commit SHA' },
+		{ label: 'abbreviated', expectedHead: TEST_HEAD.slice(0, 12), resolvedHead: TEST_HEAD, error: 'full 40- or 64-character lowercase commit SHA' },
+		{ label: 'invalid length', expectedHead: 'a'.repeat(63), resolvedHead: SHA256_TEST_HEAD, error: 'full 40- or 64-character lowercase commit SHA' },
+		{ label: 'invalid current HEAD', expectedHead: SHA256_TEST_HEAD, resolvedHead: 'b'.repeat(63), error: 'Current HEAD did not resolve' },
 		{ label: 'mismatched', expectedHead: TEST_HEAD, resolvedHead: 'b'.repeat(40), error: 'does not match current HEAD' },
+		{ label: 'mismatched SHA-256', expectedHead: SHA256_TEST_HEAD, resolvedHead: 'b'.repeat(64), error: 'does not match current HEAD' },
 	])('fails closed before reading or writing for $label expected HEAD', async ({ expectedHead, resolvedHead, error }) => {
 		let authorityCalls = 0;
 		const result = await generateTestWorkflow('C:/repo', {
@@ -147,6 +152,49 @@ describe('Forge-owned test workflow writer', () => {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	test('generates from a real SHA-256 repository HEAD', async () => {
+		const { root, head } = createFixture({ objectFormat: 'sha256' });
+		const rows = [];
+		const kernelDeps = {
+			kernelBroker: { config: {} },
+			kernelDriver: {
+				listKernelEvents: async () => rows,
+				insertKernelEvent: async event => {
+					rows.push(event);
+					return event;
+				},
+			},
+		};
+		try {
+			expect(head).toMatch(/^[0-9a-f]{64}$/);
+			const result = await generateTestWorkflow(root, {
+				actor: 'sha256-workflow-writer',
+				expectedHead: head,
+				kernelDeps,
+				createCapabilityId: () => 'sha256-test-workflow-capability',
+				writeProtectedFile: writer,
+				removeProtectedFile: remover,
+				recordProtectedStateAuditEvent: () => ({ success: true }),
+			});
+
+			expect(result).toMatchObject({ success: true, sourceHead: head, bunVersion: '1.4.2' });
+			expect(result.authorization).toMatchObject({
+				success: true,
+				capabilityId: 'sha256-test-workflow-capability',
+				event: { sourceHead: head },
+			});
+			expect(result.completion).toMatchObject({
+				success: true,
+				capabilityId: 'sha256-test-workflow-capability',
+				event: { sourceHead: head },
+			});
+			expect(fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH)))
+				.toEqual(renderTestWorkflow(fs.readFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH)), '1.4.2'));
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 15_000);
 
 	test('selects the same actor precedence used by the protected-state hook', async () => {
 		const { root, head } = createFixture();
