@@ -551,6 +551,21 @@ describe('forge test command', () => {
 			]);
 		});
 
+		test('maps a source-only test workflow writer edit to its focused suite', async () => {
+			const spawnSpy = makeSpawnSync();
+			await testCommand.handler([], { affected: true }, '/fake/root', {
+				fs: makeFsStub({
+					existingPaths: ['/fake/root/test/test-workflow.test.js'],
+				}),
+				execFileSync: makeExecFileSync({
+					gitDiffOutput: 'lib/test-workflow.js\n',
+				}),
+				spawnSync: spawnSpy,
+			});
+
+			expect(spawnSpy.calls[0].args).toEqual(['run', 'test', 'test/test-workflow.test.js']);
+		});
+
 		test('unmapped .claude/commands/ edits fall back to full suite (A0d: commands surface removed)', async () => {
 			const spawnSpy = makeSpawnSync();
 			await testCommand.handler([], { affected: true }, '/fake/root', {

@@ -13,6 +13,7 @@ const {
 } = require('../lib/protected-state-authority');
 
 const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
+const TEST_WORKFLOW_SOURCE_COMMAND = 'forge release generate-test-workflow';
 const SKILL_MIRROR_SOURCE_COMMAND = 'scripts/sync-agent-skills.js';
 const CLAUDE_SETUP_SOURCE_COMMAND = 'forge setup';
 const PROTECTED_STATE_WRITE_COMPLETED = 'protected_state.write.completed';
@@ -63,9 +64,9 @@ function eventRow(eventType, capabilityId, overrides = {}) {
 				: '1.4.2',
 			worktreeScope: overrides.worktreeScope || target.worktreeScope,
 			writeIntent: overrides.writeIntent || 'update',
-			operation: eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
+			operation: overrides.operation || (eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
 				? 'generate_npm_workflow'
-				: (eventType === PROTECTED_STATE_WRITE_COMPLETED ? 'generate_npm_workflow_completed' : 'staged_edit'),
+				: (eventType === PROTECTED_STATE_WRITE_COMPLETED ? 'generate_npm_workflow_completed' : 'staged_edit')),
 			viaForgeApi: overrides.viaForgeApi !== false,
 			sourceHead: Object.prototype.hasOwnProperty.call(overrides, 'sourceHead')
 				? overrides.sourceHead
@@ -135,6 +136,38 @@ describe('protected-state Kernel authority', () => {
 			requiredSurface: target.surface,
 			capabilityId: 'capability-1',
 		});
+	});
+
+	test('accepts only full-renderer authority for test.yml', () => {
+		const workflowTarget = {
+			...target,
+			path: '.github/workflows/test.yml',
+			content: 'name: fully rendered test workflow\n',
+		};
+		const fullRendererEvent = (eventType, operation, overrides = {}) => eventRow(eventType, 'test-workflow-capability', {
+			...workflowTarget,
+			...overrides,
+			sourceCommand: overrides.sourceCommand || TEST_WORKFLOW_SOURCE_COMMAND,
+			operation,
+		});
+		const rows = [
+			fullRendererEvent(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'generate_test_workflow'),
+			fullRendererEvent(PROTECTED_STATE_WRITE_COMPLETED, 'generate_test_workflow_completed'),
+		];
+
+		expect(evaluateAuthorization(workflowTarget, rows)).toMatchObject({
+			allowed: true,
+			capabilityId: 'test-workflow-capability',
+		});
+		expect(evaluateAuthorization({ ...workflowTarget, content: 'name: direct edit\n' }, rows).allowed).toBe(false);
+		expect(evaluateAuthorization(workflowTarget, [
+			fullRendererEvent(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'update_bun_workflow_pin', {
+				sourceCommand: 'forge release update-bun-pins',
+			}),
+			fullRendererEvent(PROTECTED_STATE_WRITE_COMPLETED, 'update_bun_workflow_pin_completed', {
+				sourceCommand: 'forge release update-bun-pins',
+			}),
+		]).allowed).toBe(false);
 	});
 
 	test('accepts only an exact command-owned canonical skill mirror capability', () => {
