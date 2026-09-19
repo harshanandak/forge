@@ -92,3 +92,17 @@
 **Canonical RED**: `node bin/forge.js validate` exited 1 after 771,201 ms. The retained root-attribute aggregate contains 31 reports, 8,774 tests, 8,740 passes, 1 failure, 0 errors, and 33 skips. The only failure was `automatic singleton trigger wiring > successful push triggers once` in `local-full-shard-5.xml`: expected `true`, received `false`, in 1.0756 seconds. The run used the changed-files-only JUnit retainer; elapsed time remains observational because the host workload and instrumentation differ from prior runs.
 
 **Focused GREEN**: `bun test --timeout 15000 test/commands/push.test.js test/embedded-assets-drift.test.js test/validation-receipt.test.js test/check-forge-token.test.js test/scripts/test-runner.test.js test/pr-monitor/auto-trigger-wiring.test.js test/commands/github-indirect-routes.test.js test/push-backing-issue.test.js` passed 187 tests with 1,062 expectations and 0 failures in 15.54 seconds. The corrected `successful push triggers once` case passed in 0.60 ms through the asynchronous spawn seam.
+
+## Decision 8
+
+**Date**: 2026-09-20
+**Task**: Make signed push authorization portable across the issuer and hook runtimes
+**Gap**: Push proofs reused the validation receipt's runtime-strict state comparison. A proof issued by Forge under Bun therefore failed the unchanged Node hook checker even when its repository state, test-runtime identity, runner, gates, owner, and signature still matched.
+**Score**: 0 / 14
+**Route**: PROCEED within the existing signed-proof issue
+**Choice made**: Exclude only the issuing runtime from push-proof state. Keep validation receipts runtime-strict, and keep push proofs bound to a clean worktree, exact HEAD, resolved Bun and Node test runtimes, runner identity, symbolic branch, gate set, live owner, and HMAC signature.
+**Status**: RESOLVED IN SOURCE; CANONICAL RECHECK PENDING
+
+**RED**: The real Bun issuer wrote a signed full proof without a runtime-identity seam, then the unchanged Node `scripts/check-forge-token.js` exited 1 for that proof (0 passed, 1 failed in 2.08 seconds).
+**GREEN**: The same named regression passed after the push-only state correction (1 passed in 3.38 seconds). The three-file focused run passed 78 tests with 206 expectations and 0 failures in 18.18 seconds; it retained strict validation-receipt runtime rejection and push-proof rejection for changed HEAD, test runtime, runner, tracked or untracked state, branch, worktree, gates, signature, and owner identity.
+**Compiled boundary**: An independent disposable compiled issuer captured a real clean Git state, wrote the proof, and invoked the unchanged Node checker while its owner process remained live. Compilation exited 0 in 586 ms; execution exited 0 in 2.393 seconds with Node status 0 and no spawn error, then consumed the proof. The reviewer made no repository edits.

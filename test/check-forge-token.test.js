@@ -1,6 +1,6 @@
 'use strict';
 
-const { spawn } = require('node:child_process');
+const { execFileSync, spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -56,6 +56,16 @@ function tokenEnv(token, extra = {}) {
   return { [NONCE_ENV]: token.nonce, ...extra };
 }
 
+function initializeRepo(root) {
+  fs.writeFileSync(path.join(root, 'tracked.txt'), 'initial\n');
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd: root });
+  execFileSync('git', ['config', 'user.email', 'push-proof@example.test'], { cwd: root });
+  execFileSync('git', ['config', 'user.name', 'Push Proof Test'], { cwd: root });
+  execFileSync('git', ['add', 'tracked.txt'], { cwd: root });
+  execFileSync('git', ['commit', '-qm', 'initial'], { cwd: root });
+}
+
 describe('check-forge-token', () => {
   let root;
 
@@ -76,6 +86,37 @@ describe('check-forge-token', () => {
       now: () => now + 31_000,
       env: tokenEnv(token),
     })).toBe(true);
+  });
+
+  test('accepts a Bun-issued proof in the real Node hook checker', () => {
+    initializeRepo(root);
+    const homeDir = path.join(root, '.git', 'forge-test-home');
+    fs.mkdirSync(homeDir);
+    const snapshot = _pushProof.begin(root, { homeDir });
+    expect(snapshot).toBeTruthy();
+    const token = forgeToken.write(root, {
+      homeDir,
+      snapshot,
+      mode: 'full',
+      gates: FULL_GATES,
+      receiptIdentity: 'fresh-tests',
+    });
+    const nodeExecutable = process.env.FORGE_TEST_NODE_EXECUTABLE || globalThis.Bun?.which?.('node') || 'node';
+    const result = spawnSync(nodeExecutable, [path.resolve(__dirname, '../scripts/check-forge-token.js')], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HOME: homeDir,
+        USERPROFILE: homeDir,
+        [NONCE_ENV]: token.nonce,
+      },
+      timeout: 10_000,
+      windowsHide: true,
+    });
+
+    expect({ status: result.status, errorCode: result.error?.code || null })
+      .toEqual({ status: 0, errorCode: null });
   });
 
   test('accepts quick only with its exact gate set and explicit quick child lane', () => {
@@ -138,12 +179,12 @@ describe('check-forge-token', () => {
     })).toThrow();
   });
 
-  test('rejects changed HEAD, runtime, test runtime, tracked content, and untracked content', () => {
+  test('rejects changed HEAD, test runtime, runner, tracked content, and untracked content', () => {
     const issued = issue(root);
     for (const changed of [
       { head: 'b'.repeat(40) },
-      { runtime: 'other-runtime' },
       { testRuntime: 'other-test-runtime' },
+      { runner: 'other-runner' },
       { clean: false },
     ]) {
       expect(forgeToken.isValid(root, {
