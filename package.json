@@ -89,6 +89,8 @@
   "files": [
     "bin/",
     "lib/",
+    "!lib/embedded-assets.generated.mjs",
+    "!lib/embedded-assets.generated-assets/",
     "rules/",
     "skills/",
     ".claude/rules/",
