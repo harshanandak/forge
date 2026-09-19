@@ -1,6 +1,12 @@
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { describe, test, expect } = require('bun:test');
+
+const bashExecutable = process.platform === 'win32'
+  ? path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe')
+  : 'bash';
 
 describe('CI Workflow Configuration', () => {
   const workflowPath = path.join(__dirname, '..', '.github', 'workflows', 'test.yml');
@@ -64,6 +70,64 @@ describe('CI Workflow Configuration', () => {
       expect(workflowContent.includes('name: Run affected e2e tests')).toBe(true);
       expect(workflowContent.includes('name: Run affected edge-case tests')).toBe(true);
     });
+
+    test('affected edge-case failures reach the required CI Gate', () => {
+      const lines = workflowContent.split('\n');
+      const stepIndex = lines.findIndex((line) => line.includes('name: Run affected edge-case tests'));
+      const nextStepIndex = lines.findIndex((line, index) => index > stepIndex && line.includes('name: Build followup profile'));
+      expect(stepIndex).toBeGreaterThan(-1);
+      expect(nextStepIndex).toBeGreaterThan(stepIndex);
+      const stepBody = lines.slice(stepIndex, nextStepIndex).map((line) => line.trim());
+
+      expect(stepBody).toContain("if: steps.affected.outputs.run_test_env == 'true'");
+      const runLine = stepBody.find((line) => line.startsWith('run: '));
+      expect(runLine).toBe('run: bun test --timeout 15000 test-env/');
+      const [executable, ...args] = runLine.slice('run: '.length).split(' ');
+      expect(executable).toBe('bun');
+
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ci-edge-failure-'));
+      try {
+        const testEnv = path.join(root, 'test-env');
+        fs.mkdirSync(testEnv);
+        fs.writeFileSync(path.join(testEnv, 'failing.test.js'), [
+          "const { expect, test } = require('bun:test');",
+          "test('deliberate CI failure', () => expect('failure').toBe('success'));",
+          '',
+        ].join('\n'));
+        const child = spawnSync(process.execPath, args, {
+          cwd: root,
+          encoding: 'utf8',
+          timeout: 10_000,
+        });
+
+        expect(child.error).toBeUndefined();
+        expect(child.signal).toBeNull();
+        expect(child.status).toBe(1);
+        expect(`${child.stdout}${child.stderr}`).toContain('deliberate CI failure');
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+
+      const aggregateIndex = lines.findIndex((line) => line.includes('name: Aggregate lane results'));
+      const runIndex = lines.findIndex((line, index) => index > aggregateIndex && line.trim() === 'run: |');
+      expect(aggregateIndex).toBeGreaterThan(-1);
+      expect(runIndex).toBeGreaterThan(aggregateIndex);
+      let scriptEnd = runIndex + 1;
+      while (scriptEnd < lines.length && (lines[scriptEnd].startsWith('          ') || lines[scriptEnd] === '')) {
+        scriptEnd += 1;
+      }
+      const aggregateScript = lines.slice(runIndex + 1, scriptEnd)
+        .map((line) => line.slice(10))
+        .join('\n');
+      const gate = spawnSync(bashExecutable, ['-c', aggregateScript], {
+        encoding: 'utf8',
+        env: { ...process.env, RESULTS: 'followup-tests=failure\n' },
+      });
+
+      expect(gate.error).toBeUndefined();
+      expect(gate.status).toBe(1);
+      expect(`${gate.stdout}${gate.stderr}`).toContain("Lane 'followup-tests' finished as 'failure'");
+    }, 15_000);
   });
 
   describe('Fast PR Lane', () => {
