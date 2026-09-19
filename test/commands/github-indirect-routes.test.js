@@ -158,6 +158,7 @@ describe('indirect GitHub account boundaries', () => {
   test('push and session-start hand workers project metadata, never private context', async () => {
     const triggers = [];
     const result = await push.handler([], { quick: true }, ROOT, {
+      env: { PATH: 'C:/synthetic-tools' },
       execFileSync: (cmd, args, opts) => { clean(opts || {}); return args[0] === 'branch' ? 'test' : ROOT; },
       spawnSync: (_cmd, _args, opts) => { clean(opts); return { status: 0 }; },
       existsSync: () => false, writeForgeToken: () => {}, log: () => {},

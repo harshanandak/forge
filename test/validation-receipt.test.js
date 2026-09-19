@@ -10,6 +10,7 @@ const {
 	completeValidation,
 	resolveReceiptPath,
 	verifyValidationReceipt,
+	_pushProof,
 } = require('../lib/validation-receipt');
 
 function createRepo() {
@@ -71,7 +72,10 @@ describe('validation receipt', () => {
 			const snapshot = beginValidation(root, deps);
 			expect(snapshot).toBeTruthy();
 			expect(completeValidation(root, snapshot, fullPass(), deps)).toBe(true);
-			expect(verifyValidationReceipt(root, deps)).toMatchObject({ valid: true });
+			expect(verifyValidationReceipt(root, deps)).toMatchObject({
+				valid: true,
+				identity: expect.stringMatching(/^[a-f0-9]{64}$/),
+			});
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -129,6 +133,73 @@ describe('validation receipt', () => {
 			expect(completeValidation(repo.root, beginValidation(repo.root, deps), missingTypeScript, deps)).toBe(false);
 		} finally {
 			fs.rmSync(repo.root, { recursive: true, force: true });
+		}
+	});
+
+	test('push proof binds exact clean state and symbolic branch without changing receipt semantics', () => {
+		const { root, homeDir } = createRepo();
+		const deps = { homeDir, runtimeIdentity: 'forge-runtime', testRuntimeIdentity: 'bun-a' };
+		try {
+			execFileSync('git', ['switch', '-q', '-c', 'feature'], { cwd: root });
+			const snapshot = _pushProof.begin(root, deps);
+			const proof = _pushProof.create(root, snapshot, {
+				nonce: '00000000-0000-4000-8000-000000000000',
+				mode: 'full',
+				gates: ['branch-protection', 'lint', 'tests'],
+				owner: { pid: 42, identity: 'process-start-a' },
+				receiptIdentity: 'fresh-tests',
+			}, deps);
+			expect(_pushProof.verify(root, proof, {
+				nonce: proof.payload.nonce,
+				env: {},
+			}, deps)).toMatchObject({ valid: true });
+
+			execFileSync('git', ['switch', '-q', '-c', 'main'], { cwd: root });
+			expect(_pushProof.verify(root, proof, {
+				nonce: proof.payload.nonce,
+				env: {},
+			}, deps)).toMatchObject({ valid: false, reason: 'state' });
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('push proof refuses to bless mutations made after the pre-gate snapshot', () => {
+		const { root, homeDir } = createRepo();
+		const deps = { homeDir, runtimeIdentity: 'forge-runtime', testRuntimeIdentity: 'bun-a' };
+		try {
+			const snapshot = _pushProof.begin(root, deps);
+			fs.writeFileSync(path.join(root, 'tracked.txt'), 'mutated by gate\n');
+			expect(() => _pushProof.create(root, snapshot, {
+				nonce: '00000000-0000-4000-8000-000000000000',
+				mode: 'full',
+				gates: ['branch-protection', 'lint', 'tests'],
+				owner: { pid: 42, identity: 'process-start-a' },
+				receiptIdentity: 'fresh-tests',
+			}, deps)).toThrow('state changed');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('never accepts a signed push proof as a full validation receipt', () => {
+		const { root, homeDir } = createRepo();
+		const deps = { homeDir, runtimeIdentity: 'forge-runtime', testRuntimeIdentity: 'bun-a' };
+		try {
+			const snapshot = _pushProof.begin(root, deps);
+			const proof = _pushProof.create(root, snapshot, {
+				nonce: '00000000-0000-4000-8000-000000000000',
+				mode: 'full',
+				gates: ['branch-protection', 'lint', 'tests'],
+				owner: { pid: 42, identity: 'process-start-a' },
+				receiptIdentity: 'fresh-tests',
+			}, deps);
+			fs.mkdirSync(path.dirname(resolveReceiptPath(root, deps)), { recursive: true });
+			fs.writeFileSync(resolveReceiptPath(root, deps), JSON.stringify(proof));
+
+			expect(verifyValidationReceipt(root, deps)).toMatchObject({ valid: false });
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
 });
