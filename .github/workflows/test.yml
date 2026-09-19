@@ -395,7 +395,7 @@ jobs:
         run: bun test --timeout 15000 test/e2e/ --reporter=junit --reporter-outfile test-results/followup-e2e.xml
       - name: Run affected edge-case tests
         if: steps.affected.outputs.run_test_env == 'true'
-        run: node --test test-env/**/*.test.js || true
+        run: bun test --timeout 15000 test-env/
       - name: Build followup profile
         run: node scripts/test-profile.js --input-dir test-results --output test-results/followup-${{ matrix.label }}.profile.json --label followup-${{ matrix.label }} --integration-skipped true
       - name: Publish followup summary
