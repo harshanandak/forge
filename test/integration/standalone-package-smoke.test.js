@@ -172,6 +172,31 @@ describe("standalone product packages", () => {
     expect(fs.existsSync(sentinel)).toBeFalse();
   });
 
+  test("exact version aliases exit before loading the command graph", () => {
+    const platformNode = resolvePlatformNode();
+    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge version-"));
+    created.push(temporary);
+    const guard = path.join(temporary, "reject-lib-load.cjs");
+    fs.writeFileSync(guard, `
+const Module = require("node:module");
+const load = Module._load;
+Module._load = function (request, parent, isMain) {
+  if (String(request).startsWith("../lib/")) throw new Error("version loaded " + request);
+  return load.call(this, request, parent, isMain);
+};
+`);
+    const expected = `Forge v${JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version}\n`;
+
+    for (const alias of ["--version", "-V"]) {
+      const result = spawnSync(platformNode.executable, ["--require", guard, path.join(ROOT, "bin", "forge.js"), alias], {
+        cwd: ROOT,
+        encoding: "utf8",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe(expected);
+    }
+  });
+
   test("packs and installs the root CLI with its runtime workspaces", () => {
     const platformNode = resolvePlatformNode();
     const npmInvocation = resolveNpmInvocation(platformNode);

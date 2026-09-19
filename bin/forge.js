@@ -46,6 +46,11 @@ const { execSync } = require('node:child_process');
 const packageDir = path.dirname(__dirname);
 const packageJson = require('../package.json');
 const VERSION = packageJson.version;
+const args = process.argv.slice(2);
+
+if (require.main === module && args.length === 1 && ['--version', '-V'].includes(args[0])) {
+  console.log(`Forge v${VERSION}`);
+} else {
 
 // Load PluginManager for discoverable agent architecture
 const PluginManager = require('../lib/plugin-manager');
@@ -104,7 +109,6 @@ const { detectHusky, migrateHusky } = require('../lib/husky-migration');
 
 // Get the project root (let allows reassignment after --path flag handling)
 let projectRoot = process.env.INIT_CWD || process.cwd();
-const args = process.argv.slice(2);
 
 // Incremental setup state (set during main() from parsed flags)
 let FORCE_MODE = false;
@@ -4530,3 +4534,4 @@ module.exports = {
   validateDirectoryPathInput,
   validateUserInput,
 };
+}
