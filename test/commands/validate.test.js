@@ -296,7 +296,9 @@ describe('Validate Command - Validation Orchestration', () => {
 				fs.mkdirSync(path.dirname(receiptPath), { recursive: true });
 				fs.writeFileSync(receiptPath, 'stale receipt');
 
-				const result = await executeValidate({ rootDir });
+				const result = await executeValidate({
+					rootDir, skip: ['conflictMarkers', 'typeCheck', 'lint', 'security'],
+				});
 
 				expect(result.success).toBe(false);
 				expect(result.checks.tests.skipped).not.toBe(true);

@@ -857,10 +857,14 @@ describe('Forge-owned Bun workflow pins', () => {
 	});
 
 	test('the commit hook rejects a same-version template change without its exact generated workflow', async () => {
-		const { root, run } = createSameVersionProjectionFixture();
+		const { root, run, template } = createSameVersionProjectionFixture();
 		try {
 			fs.appendFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH), '# staged template change\n');
 			expect(run(['add', TEST_WORKFLOW_TEMPLATE_PATH]).status).toBe(0);
+			const sourceHead = run(['rev-parse', 'HEAD']).stdout.trim();
+			const packageManifest = fs.readFileSync(path.join(root, 'package.json'));
+			const indexedTemplate = fs.readFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH));
+			const indexedWorkflow = fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH));
 			const hook = spawnSync(process.execPath, [path.join(repoRoot, 'scripts', 'protected-state-check.js')], {
 				cwd: root,
 				encoding: 'utf8',
@@ -871,13 +875,27 @@ describe('Forge-owned Bun workflow pins', () => {
 			expect(`${hook.stdout}${hook.stderr}`).toContain(TEST_WORKFLOW_PATH);
 			let kernelReads = 0;
 			let kernelWrites = 0;
-			const rejected = protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(root, [{
+			let projectionReads = 0;
+			const rejected = await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(root, [{
 				actor: 'test-workflow-template-batch',
 				path: TEST_WORKFLOW_PATH,
 				surface: 'workflows',
-				content: fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH)),
-				sourceHead: run(['rev-parse', 'HEAD']).stdout.trim(),
+				content: indexedWorkflow,
+				sourceHead,
 			}], {
+				sourceHead,
+				readSourcePackageManifest: () => packageManifest,
+				readIndexedPackageManifest: () => packageManifest,
+				readTestWorkflowProjection: () => {
+					projectionReads += 1;
+					return {
+						sourcePackage: packageManifest,
+						indexedPackage: packageManifest,
+						sourceTemplate: template,
+						indexedTemplate,
+						indexedWorkflow,
+					};
+				},
 				deps: {
 					kernelBroker: { config: {} },
 					kernelDriver: {
@@ -886,7 +904,13 @@ describe('Forge-owned Bun workflow pins', () => {
 					},
 				},
 			});
-			expect(await rejected).toMatchObject({ success: false });
+			expect(rejected).toMatchObject({
+				success: false,
+				batchDecision: {
+					reason: `${TEST_WORKFLOW_PATH} does not match the staged canonical template for Bun 1.4.2.`,
+				},
+			});
+			expect(projectionReads).toBe(1);
 			expect(kernelReads).toBe(0);
 			expect(kernelWrites).toBe(0);
 		} finally {
