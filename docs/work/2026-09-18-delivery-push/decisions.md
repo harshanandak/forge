@@ -106,3 +106,16 @@
 **RED**: The real Bun issuer wrote a signed full proof without a runtime-identity seam, then the unchanged Node `scripts/check-forge-token.js` exited 1 for that proof (0 passed, 1 failed in 2.08 seconds).
 **GREEN**: The same named regression passed after the push-only state correction (1 passed in 3.38 seconds). The three-file focused run passed 78 tests with 206 expectations and 0 failures in 18.18 seconds; it retained strict validation-receipt runtime rejection and push-proof rejection for changed HEAD, test runtime, runner, tracked or untracked state, branch, worktree, gates, signature, and owner identity.
 **Compiled boundary**: An independent disposable compiled issuer captured a real clean Git state, wrote the proof, and invoked the unchanged Node checker while its owner process remained live. Compilation exited 0 in 586 ms; execution exited 0 in 2.393 seconds with Node status 0 and no spawn error, then consumed the proof. The reviewer made no repository edits.
+
+## Decision 9
+
+**Date**: 2026-09-20
+**Task**: Fail closed when push test supervision cannot publish its manifest
+**Gap**: The isolated process tree deliberately degrades to inert ownership methods when its initial manifest cannot be written, but push still spawned the test supervisor. A timeout could then kill only that supervisor and leave detached shards alive; installed signal handlers could also suppress default termination while waiting for an unsupervised child.
+**Score**: 0 / 14
+**Route**: PROCEED within the existing push-runner issue
+**Choice made**: Resolve the isolated child environment before installing signal handlers or spawning. Require a nonempty string process-tree marker, and abort with cleanup if environment publication fails or throws. Pass the captured environment unchanged to the existing supervised runner. This decision covers initial manifest publication; it does not claim that later manifest persistence failures are solved here.
+**Status**: RESOLVED IN SOURCE; CANONICAL RECHECK PENDING
+
+**RED**: With the old path, a missing marker completed the push and an `envFor` exception installed the signal handler before failing (0 passed, 2 failed). A truthy non-string marker was then shown to pass the first guard incorrectly (2 passed, 1 failed). The external full-mode auto-trigger fixture also failed its success assertion because its synthetic tree did not publish a marker.
+**GREEN**: Missing, non-string, and throwing marker cases all abort before handler installation, spawn, proof writing, or Git push (3 passed, 18 expectations). The corrected auto-trigger fixture passed its named full-mode case. The eight-file affected set passed 191 tests with 1,082 expectations and 0 failures in 19.59 seconds, including the real detached-descendant timeout, cancellation, proof, receipt, runner-selection, backing-issue, GitHub-route, and singleton-trigger coverage.

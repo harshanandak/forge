@@ -8,6 +8,7 @@ const { describe, test, expect } = require('bun:test');
 const hooks = require('../../lib/commands/hooks');
 const push = require('../../lib/commands/push');
 const { executeShip, maybeTriggerShepherdAfterShip } = require('../../lib/commands/ship');
+const { MANIFEST_ENV } = require('../../scripts/process-tree');
 
 function successfulPushDeps(fireAndForget) {
 	const spawn = () => {
@@ -19,7 +20,7 @@ function successfulPushDeps(fireAndForget) {
 	};
 	const processTree = {
 		cleanup: () => ({ killed: [] }),
-		envFor: env => env,
+		envFor: env => ({ ...env, [MANIFEST_ENV]: 'auto-trigger-process-tree.json' }),
 		installSignalHandlers: () => () => {},
 		registerChild: () => true,
 		reserveChild: () => ({ id: 'auto-trigger-fixture' }),

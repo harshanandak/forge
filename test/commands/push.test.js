@@ -25,7 +25,7 @@ const {
 	OBSERVED_FULL_SUITE_RUNTIME_MS,
 	resolveFullSuiteTimeoutMs,
 } = require('../../scripts/test.js');
-const { createProcessTree } = require('../../scripts/process-tree');
+const { MANIFEST_ENV, createProcessTree } = require('../../scripts/process-tree');
 
 const FORGE_MANIFEST = JSON.stringify({
 	name: 'forge-workflow',
@@ -56,7 +56,7 @@ async function waitForProcessExit(pid, timeoutMs = 5000) {
 function fakeProcessTree() {
 	return {
 		cleanup: () => ({ killed: [] }),
-		envFor: env => env,
+		envFor: env => ({ ...env, [MANIFEST_ENV]: 'injected-process-tree.json' }),
 		installSignalHandlers: () => () => {},
 		registerChild: () => true,
 		reserveChild: () => ({ id: 'injected-test' }),
@@ -243,6 +243,50 @@ describe('Forge Push Command', () => {
 	});
 
 	describe('Full mode (no --quick)', () => {
+		test.each([
+			['omits the manifest marker', env => env],
+			['returns a non-string manifest marker', env => ({ ...env, [MANIFEST_ENV]: true })],
+			['throws while exposing the manifest', () => { throw new Error('manifest unavailable'); }],
+		])('fails before spawn or authorization when supervision %s', async (_case, envFor) => {
+			const execCalls = [];
+			const logs = [];
+			let signalHandlerInstalls = 0;
+			let spawnCalls = 0;
+			let tokenWrites = 0;
+			const deps = makeDeps({
+				execFileSync: (cmd, args) => {
+					execCalls.push({ cmd, args: [...args] });
+					return '';
+				},
+				createProcessTree: () => ({
+					...fakeProcessTree(),
+					envFor,
+					installSignalHandlers: () => {
+						signalHandlerInstalls += 1;
+						return () => {};
+					},
+				}),
+				spawn: () => {
+					spawnCalls += 1;
+					const child = new EventEmitter();
+					child.pid = 12345;
+					process.nextTick(() => child.emit('close', 0, null));
+					return child;
+				},
+				writeForgeToken: () => { tokenWrites += 1; },
+				log: message => logs.push(String(message)),
+			});
+
+			const result = await pushModule.handler([], {}, '/fake/project', deps);
+
+			expect(result).toMatchObject({ success: false, testsPassed: false, pushed: false });
+			expect(signalHandlerInstalls).toBe(0);
+			expect(spawnCalls).toBe(0);
+			expect(tokenWrites).toBe(0);
+			expect(execCalls.some(call => call.cmd === 'git' && call.args[0] === 'push')).toBe(false);
+			expect(logs.join('\n')).toContain('supervision unavailable');
+		});
+
 		test('reaps a timed-out runner and its detached descendant without touching an inherited outer tree', async () => {
 			const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-push-timeout-'));
 			const pidFile = path.join(tempDir, 'fixture-pids.json');
@@ -371,7 +415,7 @@ describe('Forge Push Command', () => {
 			const spawnCalls = [];
 			const processTree = {
 				cleanup: () => ({ killed: [] }),
-				envFor: env => env,
+				envFor: env => ({ ...env, [MANIFEST_ENV]: 'consumer-process-tree.json' }),
 				installSignalHandlers: () => () => {},
 				registerChild: () => true,
 				reserveChild: () => ({ id: 'consumer-test' }),
@@ -416,7 +460,7 @@ describe('Forge Push Command', () => {
 					}
 					return { killed: [] };
 				},
-				envFor: env => env,
+				envFor: env => ({ ...env, [MANIFEST_ENV]: 'cancelled-process-tree.json' }),
 				installSignalHandlers: handler => {
 					cancellationHandler = handler;
 					return () => { signalHandlersRemoved = true; };
