@@ -77,7 +77,7 @@ describe('validation receipt', () => {
 		}
 	});
 
-	test('rejects changed state, tampering, expiry, and incomplete validation', () => {
+	test('rejects changed state, tampering, expiry, failed full-suite, and incomplete validation', () => {
 	const repo = createRepo();
 		const deps = { homeDir: repo.homeDir, runtimeIdentity: 'forge-runtime', testRuntimeIdentity: 'bun-a' };
 		const mint = () => completeValidation(repo.root, beginValidation(repo.root, deps), fullPass(), deps);
@@ -107,8 +107,15 @@ describe('validation receipt', () => {
 			expect(verifyValidationReceipt(repo.root, deps).valid, 'tampered').toBe(false);
 
 			expect(mint()).toBe(true);
-			beginValidation(repo.root, deps);
-			expect(verifyValidationReceipt(repo.root, deps).valid, 'later partial validation').toBe(false);
+			const failedSnapshot = beginValidation(repo.root, deps);
+			expect(verifyValidationReceipt(repo.root, deps).valid, 'failed validation cannot reuse prior receipt').toBe(false);
+			const failedFullSuite = fullPass();
+			failedFullSuite.success = false;
+			failedFullSuite.checks.tests.success = false;
+			failedFullSuite.checks.tests.failed = 1;
+			expect(failedSnapshot).not.toBeNull();
+			expect(completeValidation(repo.root, failedSnapshot, failedFullSuite, deps)).toBe(false);
+			expect(fs.existsSync(resolveReceiptPath(repo.root, deps)), 'failed validation cannot mint a receipt').toBe(false);
 
 			const snapshot = beginValidation(repo.root, deps);
 			const incomplete = fullPass();
