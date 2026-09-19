@@ -78,3 +78,17 @@
 **Source evidence**: Generation produced 186 staged assets and 186 staged imports. All 186 staged files matched their source bytes, and the manifest contained zero raw imports from original source paths. `npm pack --dry-run --json --ignore-scripts` listed 665 package files with zero staged assets and zero generated-manifest entries.
 
 **Compiled evidence**: The compiled module/raw-asset coexistence smoke generated and compiled successfully with 186 staged files/imports and zero original-path raw imports. Its executable returned true for raw-asset presence and byte identity; callable proof write/verify/consume, timeout, runner, and process-tree APIs; a valid signed proof before consumption; and proof removal plus invalidity after consumption. The actual compiled CLI listed `push`, emitted no static-manifest fallback, did not skip the command, and wrote zero stderr bytes. `bun scripts/parity-check.mjs` passed in 14.152 seconds with all 356 npm files byte-identical to all 356 binary files. This smoke used injected state and local proof files; it did not perform a remote push.
+
+## Decision 7
+
+**Date**: 2026-09-20
+**Task**: Restore external push-handler fixture parity after async execution unification
+**Gap**: The canonical run at `266f8e47518d6060522e0e10b35b3c681160fcb9` exposed one stale full-mode fixture. `test/pr-monitor/auto-trigger-wiring.test.js` injected only the former synchronous spawn seam, so the handler used its real asynchronous child boundary and the synthetic checkout failed before the successful-push trigger assertion. The earlier six-file refresh included this test before the async correction; the final five-file correction check omitted it.
+**Score**: 0 / 14
+**Route**: PROCEED within the existing delivery-push review correction
+**Choice made**: Keep the single asynchronous production path. Update the external fixture to provide a successful EventEmitter child and isolated process-tree seam, while retaining full-mode execution, no receipt reuse, and the exact success and singleton-trigger assertions. Explicit proof-state fakes keep the fixture independent of native Git metadata. The other direct external handler callers use quick mode and do not enter the asynchronous test boundary, but remain in the expanded focused regression set.
+**Status**: RESOLVED IN FIXTURE; CANONICAL RECHECK PENDING
+
+**Canonical RED**: `node bin/forge.js validate` exited 1 after 771,201 ms. The retained root-attribute aggregate contains 31 reports, 8,774 tests, 8,740 passes, 1 failure, 0 errors, and 33 skips. The only failure was `automatic singleton trigger wiring > successful push triggers once` in `local-full-shard-5.xml`: expected `true`, received `false`, in 1.0756 seconds. The run used the changed-files-only JUnit retainer; elapsed time remains observational because the host workload and instrumentation differ from prior runs.
+
+**Focused GREEN**: `bun test --timeout 15000 test/commands/push.test.js test/embedded-assets-drift.test.js test/validation-receipt.test.js test/check-forge-token.test.js test/scripts/test-runner.test.js test/pr-monitor/auto-trigger-wiring.test.js test/commands/github-indirect-routes.test.js test/push-backing-issue.test.js` passed 187 tests with 1,062 expectations and 0 failures in 15.54 seconds. The corrected `successful push triggers once` case passed in 0.60 ms through the asynchronous spawn seam.

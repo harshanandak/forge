@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { EventEmitter } = require('node:events');
 const { describe, test, expect } = require('bun:test');
 
 const hooks = require('../../lib/commands/hooks');
@@ -9,13 +10,38 @@ const push = require('../../lib/commands/push');
 const { executeShip, maybeTriggerShepherdAfterShip } = require('../../lib/commands/ship');
 
 function successfulPushDeps(fireAndForget) {
+	const spawn = () => {
+		const child = new EventEmitter();
+		child.pid = 12345;
+		child.kill = () => true;
+		process.nextTick(() => child.emit('close', 0, null));
+		return child;
+	};
+	const processTree = {
+		cleanup: () => ({ killed: [] }),
+		envFor: env => env,
+		installSignalHandlers: () => () => {},
+		registerChild: () => true,
+		reserveChild: () => ({ id: 'auto-trigger-fixture' }),
+		unregisterChild: () => true,
+	};
 	return {
 		env: { PATH: 'C:/synthetic-tools' },
 		execFileSync: () => '',
 		spawnSync: () => ({ status: 0 }),
+		spawn,
+		createProcessTree: () => processTree,
 		existsSync: () => true,
+		readFileSync: () => JSON.stringify({
+			name: 'forge-workflow',
+			bin: { forge: 'bin/forge.js' },
+			scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+		}),
 		log: () => {},
+		beginPushProof: () => ({ clean: true }),
+		verifyValidationReceipt: () => ({ valid: false, reason: 'missing' }),
 		writeForgeToken: () => {},
+		consumeForgeToken: () => true,
 		fireAndForget,
 	};
 }
