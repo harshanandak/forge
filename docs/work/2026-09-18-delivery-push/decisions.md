@@ -9,3 +9,23 @@
 **Route**: PROCEED
 **Choice made**: Reuse the existing `node scripts/test-full-suite.js` supervised full-runner route already used by `validate`. It inherits the checkout cwd/environment, returns nonzero for FAIL or INCOMPLETE aggregates, and leaves full-receipt creation exclusively with `validate`.
 **Status**: RESOLVED
+
+## Decision 2
+
+**Date**: 2026-09-19
+**Task**: Invocation proof lifetime and revocation
+**Gap**: A shared marker cannot compare-and-delete atomically if another push replaces it between the read and unlink operations.
+**Score**: 5 / 14
+**Route**: BLOCKED — resolved by the spec owner
+**Choice made**: Store one signed proof per nonce under worktree-private Git metadata. The Git child receives only its nonce, each push deletes only its own file, and exact process identity invalidates crash residue without a lock or registry.
+**Status**: RESOLVED
+
+## Decision 3
+
+**Date**: 2026-09-19
+**Task**: Existing unparameterized hook predicates
+**Gap**: `lefthook.yml` is protected and has no sanctioned active-root-config writer in scope.
+**Score**: 2 / 14
+**Route**: PROCEED after spec-owner review
+**Choice made**: Leave all three hook calls unchanged. A full proof signs exactly branch protection, lint, and tests; a quick proof signs exactly branch protection and lint and also requires the existing quick child lane. Any other shape runs ordinary hooks.
+**Status**: RESOLVED

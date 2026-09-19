@@ -10,6 +10,7 @@ const { executeShip, maybeTriggerShepherdAfterShip } = require('../../lib/comman
 
 function successfulPushDeps(fireAndForget) {
 	return {
+		env: { PATH: 'C:/synthetic-tools' },
 		execFileSync: () => '',
 		spawnSync: () => ({ status: 0 }),
 		existsSync: () => true,
