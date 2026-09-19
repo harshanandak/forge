@@ -30,6 +30,19 @@
 **Choice made**: Leave all three hook calls unchanged. A full proof signs exactly branch protection, lint, and tests; a quick proof signs exactly branch protection and lint and also requires the existing quick child lane. Any other shape runs ordinary hooks.
 **Status**: RESOLVED
 
+## Decision 4
+
+**Date**: 2026-09-20
+**Task**: Preserve Git argument ownership across the push delimiter
+**Gap**: The refreshed handler removed every argument before the first `--`, and the global flag parser still reported a literal `--quick` after that delimiter as a Forge flag.
+**Score**: 0 / 14
+**Route**: PROCEED after root quality review
+**Choice made**: Consume only the first delimiter in place. Preserve the relative order of arguments on both sides, recognize and remove Forge's `--quick` or `-q` only before the boundary, and leave every post-boundary argument Git-owned. Calls without a delimiter retain the existing parsed-flag behavior.
+**Status**: RESOLVED
+
+**RED**: The two injected handler cases failed as expected: `origin` disappeared from `['origin', '--', 'feat/slug']`, and post-boundary `--quick` incorrectly produced `quickMode: true` (0 passed, 2 failed, 606 ms).
+**GREEN**: `bun test --timeout 15000 test/commands/push.test.js` passed 55 tests, failed 0, with 125 expectations in 736 ms.
+
 ## Refresh and focused validation evidence
 
 **Date**: 2026-09-20

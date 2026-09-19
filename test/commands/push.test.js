@@ -582,6 +582,43 @@ describe('Forge Push Command', () => {
 			]);
 		});
 
+		test('preserves Git-owned arguments on both sides of the first Forge delimiter', async () => {
+			const execCalls = [];
+			const deps = makeDeps({
+				execFileSync: (cmd, args) => {
+					execCalls.push({ cmd, args: [...args] });
+					return '';
+				},
+			});
+
+			await pushModule.handler(['origin', '--', 'feat/slug'], {}, '/fake/project', deps);
+
+			const pushCall = execCalls.find(call => call.cmd === 'git' && call.args[0] === 'push');
+			expect(pushCall.args).toEqual(['push', 'origin', 'feat/slug']);
+		});
+
+		test('keeps --quick after the delimiter Git-owned', async () => {
+			const execCalls = [];
+			const deps = makeDeps({
+				execFileSync: (cmd, args, opts) => {
+					execCalls.push({ cmd, args: [...args], opts });
+					return '';
+				},
+			});
+
+			const result = await pushModule.handler(
+				['origin', '--', '--quick', 'feat/slug'],
+				{ quick: true },
+				'/fake/project',
+				deps,
+			);
+
+			const pushCall = execCalls.find(call => call.cmd === 'git' && call.args[0] === 'push');
+			expect(result.quickMode).toBe(false);
+			expect(pushCall.args).toEqual(['push', 'origin', '--quick', 'feat/slug']);
+			expect(pushCall.opts.env[QUICK_LANE_ENV_VAR]).toBeUndefined();
+		});
+
 		test('preserves a later Git delimiter after consuming the Forge delimiter', async () => {
 			const execCalls = [];
 			const deps = makeDeps({
