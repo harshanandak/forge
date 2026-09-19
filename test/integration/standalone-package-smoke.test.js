@@ -48,7 +48,15 @@ function pack(packageDirectory, destination, invocation) {
   const packageName = path.basename(packageDirectory) || "root";
   const result = npm(["pack", "--json", "--ignore-scripts", "--pack-destination", destination], packageDirectory, invocation, `pack:${packageName}`);
   expect(result.status, result.stderr).toBe(0);
-  return path.join(destination, parsePackOutput(result.stdout)[0].filename);
+  const packed = parsePackOutput(result.stdout)[0];
+  const declared = JSON.parse(fs.readFileSync(path.join(packageDirectory, "package.json"), "utf8"));
+  expect({ name: packed.name, version: packed.version }).toEqual({ name: declared.name, version: declared.version });
+  const tarball = path.join(destination, packed.filename);
+  return {
+    name: packed.name,
+    version: packed.version,
+    installSpec: `${packed.name}@file:${tarball}`,
+  };
 }
 
 function resolvePlatformNode() {
@@ -204,10 +212,16 @@ Module._load = function (request, parent, isMain) {
     created.push(temporary);
     fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ private: true }));
     const env = isolatedEnvironment(path.join(temporary, "home"), platformNode);
-    const rootTarball = pack(ROOT, temporary, npmInvocation);
+    const declaredManifest = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+    const rootPackage = pack(ROOT, temporary, npmInvocation);
 
-    const install = npm(["install", "--ignore-scripts", rootTarball], temporary, npmInvocation, "install:root");
+    const install = npm(["install", "--ignore-scripts", rootPackage.installSpec], temporary, npmInvocation, "install:root");
     expect(install.status, install.stderr).toBe(0);
+    const installedManifest = JSON.parse(fs.readFileSync(path.join(temporary, "node_modules", rootPackage.name, "package.json"), "utf8"));
+    expect({ name: installedManifest.name, version: installedManifest.version }).toEqual({
+      name: declaredManifest.name,
+      version: declaredManifest.version,
+    });
 
     const version = runInstalledForge(temporary, ["--version"], temporary, platformNode, env, "cli:version");
     expect(version.status, version.stderr).toBe(0);
@@ -227,11 +241,11 @@ Module._load = function (request, parent, isMain) {
     const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge products-"));
     created.push(temporary);
     fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ private: true }));
-    const contractsTarball = pack(path.join(ROOT, "packages", "contracts"), temporary, npmInvocation);
-    const memoryTarball = pack(path.join(ROOT, "packages", "memory"), temporary, npmInvocation);
-    const flowTarball = pack(path.join(ROOT, "packages", "flow"), temporary, npmInvocation);
+    const contractsPackage = pack(path.join(ROOT, "packages", "contracts"), temporary, npmInvocation);
+    const memoryPackage = pack(path.join(ROOT, "packages", "memory"), temporary, npmInvocation);
+    const flowPackage = pack(path.join(ROOT, "packages", "flow"), temporary, npmInvocation);
 
-    const install = npm(["install", "--ignore-scripts", contractsTarball, memoryTarball, flowTarball], temporary, npmInvocation, "install:products");
+    const install = npm(["install", "--ignore-scripts", contractsPackage.installSpec, memoryPackage.installSpec, flowPackage.installSpec], temporary, npmInvocation, "install:products");
     expect(install.status, install.stderr).toBe(0);
 
     for (const [packageName, directory] of [["contracts", "packages/contracts"], ["memory", "packages/memory"], ["flow", "packages/flow"]]) {
