@@ -997,19 +997,38 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
-		test('keeps a non-zero full-suite exit failed when the aggregate reports zero failures', async () => {
+		test('retains rejected budget evidence without synthesizing test failures', async () => {
 			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-full-suite-exit-'));
 			try {
 				fs.mkdirSync(path.join(rootDir, 'scripts'));
 				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'forge-workflow',
+					bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
+				const output = 'Full suite resource budget: requested=1 minimum=2 outcome=rejected';
+				expect(parseTestCounts(output).resourceBudget).toEqual({
+					requested: 1,
+					minimum: 2,
+					outcome: 'rejected',
+				});
 				const exec = () => {
 					const error = new Error('full suite exited 1');
-					error.stdout = 'Full suite aggregate: status=FAIL tests=10 assertions=12 passed=10 failed=0 errors=0 skipped=0';
+					error.stdout = output;
 					throw error;
 				};
 
-				const result = await runAllTests(exec, rootDir);
-				expect(result).toMatchObject({ success: false, testsFound: true, passed: 10, failed: 1, total: 10 });
+				const result = await runAllTests(exec, rootDir, 1);
+				expect(result).toMatchObject({
+					success: false,
+					testsFound: false,
+					passed: 0,
+					failed: 0,
+					total: 0,
+					resourceBudget: { requested: 1, minimum: 2, outcome: 'rejected' },
+					message: 'Full suite resource budget rejected: requested=1 minimum=2',
+				});
 			} finally {
 				fs.rmSync(rootDir, { recursive: true, force: true });
 			}

@@ -490,7 +490,7 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
 // A subprocess-lane worker owns two OS processes on Windows: the shard's own bun
 // runtime plus the bun.exe grandchild its tests spawn. Counting such a worker as
 // one budget unit oversubscribes small runners (3 workers is ~6 processes on 4
-// vCPU), so weight the grant by real process cost instead of by worker count.
+// vCPU), so weight the grant by the declared worker cost instead of worker count.
 function laneWorkerCost(laneName, platform = process.platform) {
   if (platform !== 'win32') return 1;
   return laneName === 'unit' ? 1 : 2;
@@ -545,8 +545,8 @@ function computeLaneGrants(lanes, options = {}) {
     const entry = grants.get(lane);
     entry.granted = Math.min(lane.concurrency, Math.floor(workerBudget / entry.cost));
   }
-  // An explicit shard count is an operator-imposed cap on total concurrent
-  // children; reserve the budget for heavier subprocess workers first and
+  // An explicit shard count is an operator-imposed weighted worker budget;
+  // reserve it for heavier subprocess workers first and
   // defer leftover lanes until capacity frees instead of exceeding it.
   const ordered = [...sharedLanes].sort(
     (left, right) => (left.name === 'subprocess' ? 0 : 1) - (right.name === 'subprocess' ? 0 : 1),
