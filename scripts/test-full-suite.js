@@ -496,6 +496,15 @@ function laneWorkerCost(laneName, platform = process.platform) {
   return laneName === 'unit' ? 1 : 2;
 }
 
+function minimumResourceBudget(lanes, platform = process.platform) {
+  return lanes
+    .filter((lane) => lane.shards.length > 0)
+    .reduce(
+      (minimum, lane) => Math.max(minimum, laneWorkerCost(lane.name, platform)),
+      0,
+    );
+}
+
 function computeLaneGrants(lanes, options = {}) {
   const platform = options.platform || process.platform;
   const workerBudget = Number.isInteger(options.workerBudget) && options.workerBudget > 0
@@ -526,13 +535,11 @@ function computeLaneGrants(lanes, options = {}) {
     }
     return grants;
   }
-  const requiredLanes = lanes.filter((lane) => lane.shards.length > 0);
-  const minimumBudget = requiredLanes.reduce(
-    (minimum, lane) => Math.max(minimum, laneWorkerCost(lane.name, platform)),
-    0,
-  );
+  const minimumBudget = minimumResourceBudget(lanes, platform);
   if (workerBudget < minimumBudget) {
-    throw new Error(`Full suite minimum resource budget is ${minimumBudget} for the required lanes`);
+    throw new Error(
+      `Full suite resource budget: requested=${workerBudget} minimum=${minimumBudget} outcome=rejected`,
+    );
   }
   for (const lane of lanes.filter((candidate) => candidate.name === 'exclusive')) {
     const entry = grants.get(lane);
@@ -973,9 +980,21 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
       subprocessShardTotal,
     });
     const shardSpecs = lanePlan.flatMap((lane) => lane.shards);
-    const laneGrants = computeLaneGrants(lanePlan, { platform, workerBudget: shardTotal });
+    const minimumBudget = minimumResourceBudget(lanePlan, platform);
+    const effectiveResourceBudget = requestedResourceBudget === null
+      ? Math.max(shardTotal, minimumBudget)
+      : shardTotal;
+    if (requestedResourceBudget !== null && requestedResourceBudget < minimumBudget) {
+      console.log(
+        `Full suite resource budget: requested=${requestedResourceBudget} minimum=${minimumBudget} outcome=rejected`,
+      );
+    }
+    const laneGrants = computeLaneGrants(lanePlan, {
+      platform,
+      workerBudget: effectiveResourceBudget,
+    });
 
-    console.log(`Full suite resource budget: requested=${requestedResourceBudget ?? 'default'} effective=${shardTotal}`);
+    console.log(`Full suite resource budget: requested=${requestedResourceBudget ?? 'default'} effective=${effectiveResourceBudget}`);
 
     if (shardSpecs.length === 0) {
       const exitCode = signal ? signalExitCode(signal) : 1;
@@ -993,7 +1012,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
       const grant = laneGrants.get(lane);
       const granted = grant.deferred ? grant.deferredConcurrency : grant.granted;
       const files = lane.shards.reduce((total, shard) => total + shard.files.length, 0);
-      console.log(`Resource lane ${lane.name}: files=${files} shards=${lane.shards.length} concurrency=${granted} (nominal=${lane.concurrency} cost=${grant.cost} budget=${shardTotal}${grant.deferred ? ' deferred' : ''})`);
+      console.log(`Resource lane ${lane.name}: files=${files} shards=${lane.shards.length} concurrency=${granted} (nominal=${lane.concurrency} cost=${grant.cost} budget=${effectiveResourceBudget}${grant.deferred ? ' deferred' : ''})`);
     }
     const childEnv = stripFullSuiteChildEnv(
       typeof processTree.envFor === 'function' ? processTree.envFor(env) : env,
@@ -1027,7 +1046,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
       }, {
         grants: laneGrants,
         platform,
-        workerBudget: shardTotal,
+        workerBudget: effectiveResourceBudget,
       });
     } catch (error) {
       console.error('Full suite shard execution failed:', error);

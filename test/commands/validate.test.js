@@ -34,6 +34,12 @@ describe('Validate Command - Validation Orchestration', () => {
 			expect(parseResourceBudget([])).toBeNull();
 		});
 
+		test('validates every repeated budget and keeps the last valid value', () => {
+			expect(() => parseResourceBudget(['--shards', '2', '--shards', '0']))
+				.toThrow('--shards must be a positive integer resource budget');
+			expect(parseResourceBudget(['--shards', '2', '--shards', '3'])).toBe(3);
+		});
+
 		test('threads a validated budget through the command handler', async () => {
 			const calls = [];
 			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {

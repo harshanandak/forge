@@ -126,6 +126,12 @@ describe('scripts/test-full-suite.js', () => {
     },
   );
 
+  test('parseArgs validates every repeated resource budget and keeps the last valid value', () => {
+    expect(() => parseArgs(['--shards', '2', '--shards', '0']))
+      .toThrow('--shards must be a positive integer resource budget');
+    expect(parseArgs(['--shards', '2', '--shards', '3']).shards).toBe(3);
+  });
+
   test('buildShardTestArgs preserves an explicit shard timeout', () => {
     const args = buildShardTestArgs({
       files: ['test/example.test.js'],
@@ -422,11 +428,11 @@ describe('scripts/test-full-suite.js', () => {
     let executions = 0;
 
     expect(() => computeLaneGrants(lanes, { platform: 'win32', workerBudget: 1 }))
-      .toThrow('minimum resource budget is 2');
+      .toThrow('requested=1 minimum=2 outcome=rejected');
     await expect(runLaneSchedule(lanes, async () => { executions += 1; }, () => {}, {
       platform: 'win32',
       workerBudget: 1,
-    })).rejects.toThrow('minimum resource budget is 2');
+    })).rejects.toThrow('requested=1 minimum=2 outcome=rejected');
     expect(executions).toBe(0);
   });
 
@@ -471,7 +477,7 @@ describe('scripts/test-full-suite.js', () => {
       shards: [{ id: 'e0' }],
     };
     expect(() => computeLaneGrants([exclusiveLane], { platform: 'win32', workerBudget: 1 }))
-      .toThrow('minimum resource budget is 2');
+      .toThrow('requested=1 minimum=2 outcome=rejected');
   });
 
   test('runLaneSchedule settles in-flight shared work before propagating a failure', async () => {
@@ -827,6 +833,63 @@ describe('scripts/test-full-suite.js', () => {
     expect(maxSubprocessActive).toBe(1);
     expect(lanesOverlapped).toBe(false);
     expect(maxWeightedCost).toBeLessThanOrEqual(3);
+  });
+
+  test.each(['subprocess', 'exclusive'])(
+    'normalizes a one-CPU Windows default for the required %s lane',
+    async (resource) => {
+      const logged = [];
+      let spawned = 0;
+      const logSpy = spyOn(console, 'log').mockImplementation((...parts) => {
+        logged.push(parts.join(' '));
+      });
+      try {
+        const status = await runFullSuiteInParallel({}, {
+          allTests: [`test/${resource}.test.js`],
+          classify: () => resource,
+          cpuCount: 1,
+          durationMap: new Map(),
+          platform: 'win32',
+          processTree: fakeProcessTree(),
+          spawn: (_command, args) => {
+            spawned += 1;
+            return fakeShardChild(0, 9850 + spawned, args);
+          },
+        });
+        expect(status).toBe(0);
+      } finally {
+        logSpy.mockRestore();
+      }
+
+      expect(spawned).toBe(1);
+      expect(logged).toContain('Full suite resource budget: requested=default effective=2');
+    },
+  );
+
+  test('reports an explicitly rejected Windows budget before spawning', async () => {
+    const logged = [];
+    let spawned = 0;
+    const logSpy = spyOn(console, 'log').mockImplementation((...parts) => {
+      logged.push(parts.join(' '));
+    });
+    try {
+      await expect(runFullSuiteInParallel({ shards: 1 }, {
+        allTests: ['test/spawn.test.js'],
+        classify: () => 'subprocess',
+        durationMap: new Map(),
+        platform: 'win32',
+        processTree: fakeProcessTree(),
+        spawn: () => {
+          spawned += 1;
+          throw new Error('spawn must not run');
+        },
+      })).rejects.toThrow('requested=1 minimum=2 outcome=rejected');
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    expect(spawned).toBe(0);
+    expect(logged).toContain('Full suite resource budget: requested=1 minimum=2 outcome=rejected');
   });
 
   test('resource lane plan output reports granted concurrency and budget', async () => {
@@ -1477,6 +1540,7 @@ describe('scripts/test-full-suite.js', () => {
     try {
       expect(await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix }, {
         allTests: [],
+        cpuCount: 5,
         durationMap: new Map(),
         processTree: fakeProcessTree(),
       })).toBe(1);
@@ -1486,6 +1550,7 @@ describe('scripts/test-full-suite.js', () => {
 
     expect(logs).toContain('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
     expect(logs).toContain('Full suite exit: 1');
+    expect(logs).toContain('Full suite resource budget: requested=default effective=4');
   });
 
   test('missing Node executable follows the incomplete aggregate path without spawning', async () => {
