@@ -15,6 +15,8 @@ const {
   collectAssetFiles,
   isExecutableAsset,
   assetFingerprint,
+  renderManifest,
+  stageAssetFiles,
 } = require('../scripts/gen-embedded-assets.mjs');
 const { ESSENTIAL_DOCS } = require('../lib/docs-copy');
 
@@ -122,4 +124,31 @@ test('embedded text assets are LF-only (no CRLF) so cross-platform embed bytes m
     if (buf.includes(0x0d)) offenders.push(rel); // CR byte present
   }
   expect(offenders).toEqual([]);
+});
+
+test('raw assets use deterministic staged paths without sharing code-module identity', () => {
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'forge-embedded-stage-'));
+  const stagingDir = path.join(root, 'lib', 'embedded-assets.generated-assets');
+  const source = path.join(root, 'scripts', 'collision.js');
+  try {
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    const bytes = Buffer.from([0x00, 0x0d, 0xff, 0x61]);
+    fs.writeFileSync(source, bytes);
+    fs.mkdirSync(stagingDir, { recursive: true });
+    fs.writeFileSync(path.join(stagingDir, 'stale.asset'), 'stale');
+
+    const first = stageAssetFiles(root, ['scripts/collision.js'], stagingDir);
+    const second = stageAssetFiles(root, ['scripts/collision.js'], stagingDir);
+    const manifest = renderManifest(second, 'f'.repeat(64));
+
+    expect(first).toEqual([{ rel: 'scripts/collision.js', filename: 'a0.asset' }]);
+    expect(second).toEqual(first);
+    expect(fs.existsSync(path.join(stagingDir, 'stale.asset'))).toBe(false);
+    expect(fs.readFileSync(path.join(stagingDir, 'a0.asset'))).toEqual(bytes);
+    expect(manifest).toContain('from "./embedded-assets.generated-assets/a0.asset" with { type: "file" }');
+    expect(manifest).not.toContain('from "../scripts/collision.js" with { type: "file" }');
+    expect(manifest).toContain('"scripts/collision.js": a0');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
