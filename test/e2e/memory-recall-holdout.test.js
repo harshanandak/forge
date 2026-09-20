@@ -14,14 +14,121 @@ const fixture = require('../fixtures/memory-recall-holdouts.json');
 
 const roots = [];
 const drivers = [];
+const rootCaseLabels = new Map();
+const phaseTimings = new Map();
+const timingOutputPath = path.join(
+  process.cwd(),
+  'test-results',
+  `memory-recall-holdout-timing-${process.pid}-${Date.now()}.json`,
+);
+let activeCaseLabel = null;
+let activeCaseTiming = null;
+let timingRecordFailed = false;
 
-function createRecallContext(prefix = 'forge-memory-holdout-') {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+function beginProfileCase(caseLabel) {
+  activeCaseLabel = caseLabel;
+  activeCaseTiming = {
+    wallStartedAt: performance.now(),
+    cpuStartedAt: process.cpuUsage(),
+  };
+}
+
+function trackRoot(root, caseLabel = activeCaseLabel) {
   roots.push(root);
+  rootCaseLabels.set(root, caseLabel);
+  return root;
+}
+
+function recordPhase(caseLabel, phase, wallMs, cpuUsage) {
+  const key = `${caseLabel}:${phase}`;
+  const current = phaseTimings.get(key) || {
+    caseLabel,
+    phase,
+    count: 0,
+    wallMs: 0,
+    cpuMs: 0,
+  };
+  current.count += 1;
+  current.wallMs += wallMs;
+  current.cpuMs += (cpuUsage.user + cpuUsage.system) / 1_000;
+  phaseTimings.set(key, current);
+}
+
+function measureSync(caseLabel, phase, operation) {
+  const wallStartedAt = performance.now();
+  const cpuStartedAt = process.cpuUsage();
+  try {
+    return operation();
+  } finally {
+    try {
+      recordPhase(
+        caseLabel,
+        phase,
+        performance.now() - wallStartedAt,
+        process.cpuUsage(cpuStartedAt),
+      );
+    } catch {
+      timingRecordFailed = true;
+    }
+  }
+}
+
+function createProfiledDriver(caseLabel, options) {
+  const store = createBuiltinSQLiteDriver(options);
+  let recordCount = 0;
+  const phases = new Map([
+    ['recordMemory', () => (recordCount++ === 0 ? 'record.first' : 'record.later')],
+    ['searchMemoriesRankedScored', () => 'search'],
+    ['close', () => 'close'],
+  ]);
+  for (const [method, phaseForCall] of phases) {
+    const original = store[method];
+    if (typeof original !== 'function') continue;
+    store[method] = function profiledDriverMethod(...args) {
+      return measureSync(caseLabel, phaseForCall(), () => original.apply(this, args));
+    };
+  }
+  return store;
+}
+
+function timingSummary() {
+  const cases = {};
+  const entries = [...phaseTimings.values()].sort((left, right) => (
+    left.caseLabel.localeCompare(right.caseLabel) || left.phase.localeCompare(right.phase)
+  ));
+  for (const entry of entries) {
+    const caseSummary = cases[entry.caseLabel] || {};
+    caseSummary[entry.phase] = {
+      count: entry.count,
+      wallMs: Number(entry.wallMs.toFixed(3)),
+      cpuMs: Number(entry.cpuMs.toFixed(3)),
+    };
+    cases[entry.caseLabel] = caseSummary;
+  }
+  return {
+    schema: 'forge.memory-recall-holdout-timing.v1',
+    timingRecordFailed,
+    hardKillLimit: 'A hard process termination can prevent the active case from reaching afterEach.',
+    cases,
+  };
+}
+
+function flushTimingSummary() {
+  const outputDirectory = path.dirname(timingOutputPath);
+  const temporaryPath = `${timingOutputPath}.tmp`;
+  fs.mkdirSync(outputDirectory, { recursive: true });
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(timingSummary(), null, 2)}\n`, 'utf8');
+  fs.renameSync(temporaryPath, timingOutputPath);
+}
+
+function createRecallContext(prefix = 'forge-memory-holdout-', caseLabel = activeCaseLabel) {
+  const root = trackRoot(fs.mkdtempSync(path.join(os.tmpdir(), prefix)), caseLabel);
   const commonDir = path.join(root, '.git');
   fs.mkdirSync(commonDir);
   const projectId = commonDir.replaceAll('\\', '/').toLowerCase();
-  const store = createBuiltinSQLiteDriver({ databasePath: path.join(root, 'kernel.sqlite') });
+  const store = createProfiledDriver(caseLabel, {
+    databasePath: path.join(root, 'kernel.sqlite'),
+  });
   drivers.push(store);
   return { root, commonDir, projectId, store };
 }
@@ -69,18 +176,62 @@ function additionalContext(result) {
 }
 
 afterEach(() => {
-  while (drivers.length) drivers.pop().close();
-  while (roots.length) fs.rmSync(roots.pop(), { recursive: true, force: true });
+  let firstError = null;
+  while (drivers.length) {
+    const store = drivers.pop();
+    try {
+      store.close();
+    } catch (error) {
+      firstError ||= error;
+    }
+  }
+  while (roots.length) {
+    const root = roots.pop();
+    const caseLabel = rootCaseLabels.get(root) || activeCaseLabel;
+    rootCaseLabels.delete(root);
+    try {
+      measureSync(caseLabel, 'cleanup', () => fs.rmSync(root, { recursive: true, force: true }));
+    } catch (error) {
+      firstError ||= error;
+    }
+  }
+  if (activeCaseTiming) {
+    try {
+      recordPhase(
+        activeCaseLabel,
+        'total',
+        performance.now() - activeCaseTiming.wallStartedAt,
+        process.cpuUsage(activeCaseTiming.cpuStartedAt),
+      );
+    } catch {
+      timingRecordFailed = true;
+    }
+  }
+  try {
+    flushTimingSummary();
+  } catch {
+    timingRecordFailed = true;
+    try {
+      process.stderr.write('memory-recall holdout timing diagnostic flush failed\n');
+    } catch {
+      // An unavailable diagnostic stream must not mask the original test or cleanup failure.
+    }
+  }
+  activeCaseLabel = null;
+  activeCaseTiming = null;
+  if (firstError) throw firstError;
 });
 
 describe('project-local memory recall holdout', () => {
   test('foreign rows cannot crowd an unseen local memory out of additionalContext', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-holdout-'));
-    roots.push(root);
+    beginProfileCase('foreign-crowding');
+    const root = trackRoot(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-holdout-')));
     const commonDir = path.join(root, '.git');
     fs.mkdirSync(commonDir);
     const projectId = commonDir.replaceAll('\\', '/').toLowerCase();
-    const store = createBuiltinSQLiteDriver({ databasePath: path.join(root, 'kernel.sqlite') });
+    const store = createProfiledDriver(activeCaseLabel, {
+      databasePath: path.join(root, 'kernel.sqlite'),
+    });
     drivers.push(store);
 
     for (let index = 0; index < fixture.foreign.count; index += 1) {
@@ -135,12 +286,14 @@ describe('project-local memory recall holdout', () => {
   });
 
   test('keeps suggested authority separate and denies stale or superseded memories', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-authority-'));
-    roots.push(root);
+    beginProfileCase('authority-filtering');
+    const root = trackRoot(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-authority-')));
     const commonDir = path.join(root, '.git');
     fs.mkdirSync(commonDir);
     const projectId = commonDir.replaceAll('\\', '/').toLowerCase();
-    const store = createBuiltinSQLiteDriver({ databasePath: path.join(root, 'kernel.sqlite') });
+    const store = createProfiledDriver(activeCaseLabel, {
+      databasePath: path.join(root, 'kernel.sqlite'),
+    });
     drivers.push(store);
     const records = [
       ['confirmed', fixture.authorityDenial.confirmed, 'forge remember', [], null, '2026-07-30T00:00:00.000Z'],
@@ -185,8 +338,8 @@ describe('project-local memory recall holdout', () => {
   });
 
   test('shadow evidence is content-free and disabled or failed Kernel paths fail open', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-privacy-'));
-    roots.push(root);
+    beginProfileCase('privacy-fail-open');
+    const root = trackRoot(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-privacy-')));
     const options = {
       readInput: () => JSON.stringify({
         session_id: fixture.privacy.sessionId,
@@ -230,13 +383,13 @@ describe('project-local memory recall holdout', () => {
   });
 
   test('real locked SQLite prompt recall fails open below its deadline', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-lock-holdout-'));
-    roots.push(root);
+    beginProfileCase('locked-database');
+    const root = trackRoot(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-lock-holdout-')));
     const commonDir = path.join(root, '.git');
     fs.mkdirSync(commonDir);
     const databasePath = path.join(root, 'kernel.sqlite');
-    const locker = createBuiltinSQLiteDriver({ databasePath });
-    const reader = createBuiltinSQLiteDriver({ databasePath });
+    const locker = createProfiledDriver(activeCaseLabel, { databasePath });
+    const reader = createProfiledDriver(activeCaseLabel, { databasePath });
     drivers.push(locker, reader);
     projectMemory.write(root, {
       key: 'locked',
@@ -267,6 +420,7 @@ describe('project-local memory recall holdout', () => {
   });
 
   test('26 stronger seen rows are excluded before rank and an unseen local row survives', async () => {
+    beginProfileCase('seen-row-filtering');
     const context = createRecallContext('forge-memory-seen-');
     const seenKeys = [];
     await context.store.exec('BEGIN;');
@@ -302,6 +456,7 @@ describe('project-local memory recall holdout', () => {
   });
 
   test('foreign and suggested superseders cannot erase eligible confirmed memories', async () => {
+    beginProfileCase('supersession-filtering');
     const context = createRecallContext('forge-memory-supersession-');
     writeMemory(context, {
       key: 'foreign-protected',
@@ -336,6 +491,7 @@ describe('project-local memory recall holdout', () => {
   });
 
   test('duplicate recall is excluded and an oversized first hit does not starve a fitting hit', async () => {
+    beginProfileCase('packing-and-deduplication');
     const context = createRecallContext('forge-memory-packing-');
     writeMemory(context, {
       key: 'oversized-retry',
@@ -365,9 +521,9 @@ describe('project-local memory recall holdout', () => {
   });
 
   test('common-dir identity is deterministic and trust/type precedence survives the assembled path', async () => {
+    beginProfileCase('common-dir-identity');
     const context = createRecallContext('forge-memory-identity-');
-    const siblingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-sibling-'));
-    roots.push(siblingRoot);
+    const siblingRoot = trackRoot(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-sibling-')));
     expect(projectMemory.resolveProjectId(context.root, {
       gitCommonDir: context.commonDir,
       realpath: value => value,
@@ -440,6 +596,7 @@ describe('project-local memory recall holdout', () => {
   });
 
   test('assembled 1,000-row recall keeps 100-sample p95 within 250ms', async () => {
+    beginProfileCase('performance-sampling');
     const context = createRecallContext('forge-memory-performance-');
     await context.store.exec('BEGIN;');
     try {
@@ -480,6 +637,7 @@ describe('project-local memory recall holdout', () => {
   }, 20_000);
 
   test('harness matrix renders Claude JSON and fails open cleanly elsewhere', async () => {
+    beginProfileCase('harness-matrix');
     const context = createRecallContext('forge-memory-harness-');
     writeMemory(context, {
       key: fixture.projectLocal.memoryId,
