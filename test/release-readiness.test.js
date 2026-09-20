@@ -272,6 +272,44 @@ describe('release readiness bd call-site audit', () => {
     expect(evidencePaths.has('.example/skills/forge-workflow/SKILL.md')).toBe(true);
   });
 
+  test('reads each plugin manifest once for discovery and once for audit per report', () => {
+    const root = makeRepo();
+    const manifestPath = path.join(root, 'lib', 'agents', 'example.plugin.json');
+    const writeManifest = rootConfig => writeFile(root, 'lib/agents/example.plugin.json', JSON.stringify({
+      id: 'example',
+      files: { rootConfig },
+    }));
+    writeManifest('.example-one');
+    writeFile(root, '.example-one', 'Run `bd ready` from the first surface.\n');
+    writeFile(root, '.example-two', 'Run `bd ready` from the second surface.\n');
+
+    const originalReadFileSync = fs.readFileSync;
+    let manifestReads = 0;
+    fs.readFileSync = function countedRead(filePath, ...args) {
+      if (path.resolve(String(filePath)) === manifestPath) manifestReads += 1;
+      return originalReadFileSync.call(this, filePath, ...args);
+    };
+
+    try {
+      const directAudit = auditBdCallSites(root);
+      expect(manifestReads).toBe(2);
+
+      manifestReads = 0;
+      const firstReport = buildReadinessReport(root, { target: '0.1.0' });
+      expect(manifestReads).toBe(2);
+      expect(firstReport.audit).toEqual(directAudit);
+
+      writeManifest('.example-two');
+      manifestReads = 0;
+      const secondReport = buildReadinessReport(root, { target: '0.1.0' });
+      expect(manifestReads).toBe(2);
+      expect(secondReport.audit.groups.docs.files.map(file => file.path)).toContain('.example-two');
+      expect(secondReport.audit.groups.docs.files.map(file => file.path)).not.toContain('.example-one');
+    } finally {
+      fs.readFileSync = originalReadFileSync;
+    }
+  });
+
   test('default hot-path scan covers every agent plugin instruction surface', () => {
     const root = makeRepo();
     writeRepoAgentPluginManifests(root);
