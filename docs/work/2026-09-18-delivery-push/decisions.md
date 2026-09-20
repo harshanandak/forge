@@ -119,3 +119,17 @@
 
 **RED**: With the old path, a missing marker completed the push and an `envFor` exception installed the signal handler before failing (0 passed, 2 failed). A truthy non-string marker was then shown to pass the first guard incorrectly (2 passed, 1 failed). The external full-mode auto-trigger fixture also failed its success assertion because its synthetic tree did not publish a marker.
 **GREEN**: Missing, non-string, and throwing marker cases all abort before handler installation, spawn, proof writing, or Git push (3 passed, 18 expectations). The corrected auto-trigger fixture passed its named full-mode case. The eight-file affected set passed 191 tests with 1,082 expectations and 0 failures in 19.59 seconds, including the real detached-descendant timeout, cancellation, proof, receipt, runner-selection, backing-issue, GitHub-route, and singleton-trigger coverage.
+
+## Decision 10
+
+**Date**: 2026-09-20
+**Task**: Preserve push-proof reuse for Node-only consumers
+**Gap**: Push proof capture reused strict validation test-runtime discovery, so an npm, pnpm, or Yarn consumer without a default Bun executable could pass its selected tests but fail to mint authorization. The unchanged Node hook then reran those gates.
+**Score**: 0 / 14
+**Route**: PROCEED within the existing signed-proof issue
+**Choice made**: Keep validation receipts strict. For push proofs only, represent `ENOENT` from the unconfigured default `bun --version` probe as the fixed `missing:default-bun` identity. Configured `BUN_EXE`, Node, locator, permission, and nonzero failures remain fail-closed. Bun becoming available or unavailable changes the signed state and invalidates the proof. The consumer command-selection mismatch around configured `BUN_EXE` remains separate issue `af2eb94b-f941-44c2-90f5-13175b8e1ac8`.
+**Status**: RESOLVED IN SOURCE; CANONICAL RECHECK PENDING
+
+**RED**: The push snapshot was null when default Bun was absent, and a real isolated Node issuer exited 24 before writing its proof.
+**GREEN**: The full and quick missing-Bun states verify unchanged, while missing-to-available and available-to-missing states reject. Configured Bun, Node, locator, permission, and nonzero failures remain strict; receipt capture remains strict. The real Node-only issuer removed every PATH entry containing a platform-executable Bun name, self-proved Bun `ENOENT` plus working Node and Git, then the unchanged Node checker accepted and consumed its proof. The focused three-file run passed 83 tests with 236 expectations and 0 failures in 24.47 seconds. Standard ESLint, the isolated Sonar-parity ESLint configuration, and independent source/security review passed.
+**Compiled boundary**: An independent disposable compiled issuer removed configured/default Bun access in its child environment, proved Bun `ENOENT` plus working Node and Git, captured `missing:default-bun`, and wrote the proof under its live owner PID. The unchanged Node checker accepted and consumed it. The minimal compile exited 0 in 584 ms and the proof run exited 0 in 2.397 seconds; no repository files were edited.

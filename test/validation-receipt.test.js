@@ -12,6 +12,7 @@ const {
 	verifyValidationReceipt,
 	_pushProof,
 } = require('../lib/validation-receipt');
+const { QUICK_LANE_ENV_VAR, QUICK_LANE_VALUE } = require('../scripts/test');
 
 function createRepo() {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge receipt path with spaces-'));
@@ -37,6 +38,39 @@ function fullPass() {
 			security: { success: true },
 			tests: { success: true, fullSuite: true, testsFound: true, total: 12, failed: 0 },
 		},
+	};
+}
+
+function probeRuntimes({ bun = 'available', node = 'available', locator = 'available' } = {}) {
+	return (command, args) => {
+		if (args[0] === '--version') {
+			const availability = command === 'node' ? node : bun;
+			if (availability !== 'available') {
+				const error = new Error(`${command} probe failed`);
+				error.code = availability;
+				throw error;
+			}
+			return command === 'node' ? '22.1.0\n' : '1.4.2\n';
+		}
+		if (locator !== 'available') {
+			const error = new Error('locator failed');
+			error.code = locator;
+			throw error;
+		}
+		const located = process.platform === 'win32' ? `C:\\tools\\${args[0]}.exe` : `/tools/${args[0]}`;
+		return `${located}\n`;
+	};
+}
+
+function pushClaims(mode) {
+	return {
+		nonce: mode === 'quick'
+			? '10000000-0000-4000-8000-000000000000'
+			: '00000000-0000-4000-8000-000000000000',
+		mode,
+		gates: mode === 'quick' ? ['branch-protection', 'lint'] : ['branch-protection', 'lint', 'tests'],
+		owner: { pid: 42, identity: 'process-start-a' },
+		receiptIdentity: mode === 'full' ? 'fresh-tests' : null,
 	};
 }
 
@@ -159,6 +193,46 @@ describe('validation receipt', () => {
 				nonce: proof.payload.nonce,
 				env: {},
 			}, deps)).toMatchObject({ valid: false, reason: 'state' });
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('push proof represents only a missing default Bun runtime and binds availability changes', () => {
+		const { root, homeDir } = createRepo();
+		const base = { homeDir, runtimeIdentity: 'forge-runtime', env: {} };
+		const missingBun = { ...base, runtimeExecFileSync: probeRuntimes({ bun: 'ENOENT' }) };
+		const available = { ...base, runtimeExecFileSync: probeRuntimes() };
+		try {
+			expect(beginValidation(root, missingBun), 'validation receipts remain strict').toBeNull();
+
+			const missingSnapshot = _pushProof.begin(root, missingBun);
+			expect(missingSnapshot?.testRuntime).toContain('missing:default-bun');
+			for (const mode of ['full', 'quick']) {
+				const proof = _pushProof.create(root, missingSnapshot, pushClaims(mode), missingBun);
+				const env = mode === 'quick' ? { [QUICK_LANE_ENV_VAR]: QUICK_LANE_VALUE } : {};
+				expect(_pushProof.verify(root, proof, { nonce: proof.payload.nonce, env }, missingBun))
+					.toMatchObject({ valid: true });
+				expect(_pushProof.verify(root, proof, { nonce: proof.payload.nonce, env }, available))
+					.toMatchObject({ valid: false, reason: 'state' });
+			}
+
+			const availableSnapshot = _pushProof.begin(root, available);
+			const availableProof = _pushProof.create(root, availableSnapshot, pushClaims('full'), available);
+			expect(_pushProof.verify(root, availableProof, {
+				nonce: availableProof.payload.nonce,
+				env: {},
+			}, missingBun)).toMatchObject({ valid: false, reason: 'state' });
+
+			for (const strictFailure of [
+				{ ...base, env: { BUN_EXE: path.join(root, 'configured-missing-bun') }, runtimeExecFileSync: probeRuntimes({ bun: 'ENOENT' }) },
+				{ ...base, runtimeExecFileSync: probeRuntimes({ node: 'ENOENT' }) },
+				{ ...base, runtimeExecFileSync: probeRuntimes({ locator: 'ENOENT' }) },
+				{ ...base, runtimeExecFileSync: probeRuntimes({ bun: 'EACCES' }) },
+				{ ...base, runtimeExecFileSync: probeRuntimes({ bun: 'CHILD_PROCESS_FAILED' }) },
+			]) {
+				expect(_pushProof.begin(root, strictFailure)).toBeNull();
+			}
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

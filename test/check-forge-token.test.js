@@ -119,6 +119,82 @@ describe('check-forge-token', () => {
       .toEqual({ status: 0, errorCode: null });
   });
 
+  test('accepts a real Node-only proof in the Node hook checker', () => {
+    initializeRepo(root);
+    const homeDir = path.join(root, '.git', 'forge-test-home');
+    fs.mkdirSync(homeDir);
+    const fixture = path.join(root, '.git', 'node-only-proof-fixture.js');
+    fs.writeFileSync(fixture, `
+'use strict';
+const { spawnSync } = require('node:child_process');
+const [projectRoot, homeDir, checkerPath, receiptPath] = process.argv.slice(2);
+const missingBun = spawnSync('bun', ['--version'], { stdio: 'ignore' });
+if (missingBun.error?.code !== 'ENOENT') process.exit(21);
+for (const command of ['node', 'git']) {
+  const available = spawnSync(command, ['--version'], { stdio: 'ignore' });
+  if (available.error || available.status !== 0) process.exit(command === 'node' ? 22 : 23);
+}
+const forgeToken = require(checkerPath);
+const { _pushProof } = require(receiptPath);
+const options = { homeDir, env: process.env };
+const snapshot = _pushProof.begin(projectRoot, options);
+if (!snapshot) process.exit(24);
+const token = forgeToken.write(projectRoot, {
+  ...options,
+  snapshot,
+  mode: 'full',
+  gates: ['branch-protection', 'lint', 'tests'],
+  receiptIdentity: 'fresh-tests',
+});
+const checked = spawnSync(process.execPath, [checkerPath], {
+  cwd: projectRoot,
+  env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir, ${JSON.stringify(NONCE_ENV)}: token.nonce },
+  stdio: 'ignore',
+});
+forgeToken.consume(projectRoot, { homeDir, nonce: token.nonce });
+process.exit(checked.error ? 25 : checked.status);
+`);
+    const nodeExecutable = process.env.FORGE_TEST_NODE_EXECUTABLE || globalThis.Bun?.which?.('node') || 'node';
+    const bunExecutableNames = process.platform === 'win32'
+      ? ['bun', ...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD')
+        .split(';')
+        .filter(Boolean)
+        .map(suffix => `bun${suffix.toLowerCase()}`)]
+      : ['bun'];
+    const childEnv = { ...process.env };
+    for (const key of Object.keys(childEnv)) {
+      if (key.toUpperCase() === 'PATH' || key.toUpperCase() === 'BUN_EXE') delete childEnv[key];
+    }
+    const providesBun = entry => bunExecutableNames.some((name) => {
+      try {
+        fs.accessSync(path.join(entry, name), process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    childEnv.PATH = (process.env.PATH || '')
+      .split(path.delimiter)
+      .filter(entry => entry && !providesBun(entry))
+      .join(path.delimiter);
+    const result = spawnSync(nodeExecutable, [
+      fixture,
+      root,
+      homeDir,
+      path.resolve(__dirname, '../scripts/check-forge-token.js'),
+      path.resolve(__dirname, '../lib/validation-receipt.js'),
+    ], {
+      cwd: root,
+      encoding: 'utf8',
+      env: childEnv,
+      timeout: 10_000,
+      windowsHide: true,
+    });
+
+    expect({ status: result.status, errorCode: result.error?.code || null })
+      .toEqual({ status: 0, errorCode: null });
+  });
+
   test('accepts quick only with its exact gate set and explicit quick child lane', () => {
     const { token, options } = issue(root, 'quick');
     expect(forgeToken.isValid(root, {
