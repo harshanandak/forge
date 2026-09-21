@@ -10,3 +10,47 @@ No specification gaps encountered.
 - Validate every repeated `--shards` occurrence and keep the last valid value, matching the standalone full-suite parser.
 - Reject `--shards` for consumer repositories because their package-owned test command has no Forge resource-budget contract.
 - Record requested and effective budgets in full-suite run output; keep validation receipt identity and schema unchanged.
+
+## Release checkpoint, 2026-09-22
+
+Issue: `e0cb0671-735c-4980-944b-286d6f78fe48`.
+
+The five implementation commits were reconciled onto `origin/master` at
+`9dac015783200221ea652c378c7cada9da808a8b`. Range comparison preserved all five
+patches unchanged; the implementation head is
+`9faf94c6118e42201cb90209872830e39d742dab`. The original branch remains recoverable
+through `backup/delivery-budget-before-20260921`.
+
+Recorded focused evidence: 127 passed, 13 existing skips, zero failures and
+419 assertions in 87.25 seconds across the validate and full-suite runner tests.
+Relevant ESLint passed. These checks establish focused behavior, not canonical
+validation or merge readiness. No full-suite receipt exists for this head.
+
+The user explicitly postponed full validation. Current host inspection still
+shows substantial competing work, including active Vite and Playwright processes;
+their ownership and staleness have not been established. Preserve that hold.
+
+The next canonical attempt must retain its native session handle, output and
+terminal verdict. Select an explicit supported budget before starting; a smaller
+budget reduces declared concurrent worker cost but may increase elapsed time.
+Do not treat `--shards 2` as a demonstrated speed improvement or as control over
+other applications. Preserve the 25-minute limit and all test assertions.
+
+Sol's independent source review confirms that Windows budget two funds one
+subprocess worker and defers the unit lane until that work releases capacity;
+exclusive files remain sequential. This can reduce contention at the expense
+of elapsed time. Historical summed file timings are not a wall-clock forecast
+for that schedule. Completion within 25 minutes on a quiet host remains unproved.
+
+After a passing canonical run, verify the clean head and receipt, push unchanged
+through the personal account route, and open the budget PR for review. Resolve
+all review threads and verify checks before the human merge. Verify merge-SHA
+workflows before closing this issue. Resume the separate memory holdout diagnostic
+only after this delivery prerequisite is verified.
+
+If validation fails, preserve the failed head, runtime, selected budget, host
+sample, terminal output and available artifacts before choosing another step.
+Do not patch unrelated timed-out tests or immediately repeat the full suite.
+Windows process stalls remain tracked in
+`a04a58d4-9266-4fff-8c1a-24cd6bd014fe`; lost delegated execution handles are tracked
+in `4a4f5dd8-8132-4257-a869-c8507ac98468`. Neither is closed by the budget change.
