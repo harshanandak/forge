@@ -81,6 +81,16 @@ The revised validate test file passed 67 tests with 13 skips, zero failures and
 168 assertions in 14.42s; strict file lint passed. Sonar's nested-ternary and
 generic-error findings were corrected without suppressions or message changes.
 
+Further review exposed a shared formatting gap: a passing test message could
+become the error for a failed lint check, and accepted budget evidence disappeared
+when tests failed. Terminal diagnostics must derive from actual failed checks,
+including caught exceptions, while ignoring intentionally skipped checks. Budget
+evidence is independent of the overall outcome. Verify this outcome matrix at
+the public handler boundary rather than adding isolated example-specific fixes.
+The four missed scenarios reproduced before the shared correction. The outcome
+matrix then passed 18 tests; the complete focused file passed 73 tests with
+13 skips, zero failures and 178 assertions in 15.55s. Strict file lint passed.
+
 The largest attributed test file was `test/protected-state-surfaces.test.js`
 at 99.037s. Repeated Git fixture setup is a hypothesis to measure separately in
 issue `6eb0147a-ea09-4c8a-83dd-ed8c74acb7bc`, preserving all isolation and authority
