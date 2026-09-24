@@ -25,6 +25,7 @@ describe('Validate Command - Validation Orchestration', () => {
 			'rejects invalid --shards value %s',
 			(value) => {
 				const args = value === undefined ? ['--shards'] : ['--shards', value];
+				expect(() => parseResourceBudget(args)).toThrow(TypeError);
 				expect(() => parseResourceBudget(args)).toThrow('--shards must be a positive integer resource budget');
 			},
 		);
@@ -51,6 +52,44 @@ describe('Validate Command - Validation Orchestration', () => {
 
 			expect(calls).toEqual([{ rootDir: 'C:/repo', resourceBudget: 2 }]);
 			expect(result.output).toBe('validated');
+		});
+
+		test('surfaces an accepted budget through the registry dispatcher output contract', async () => {
+			const tests = { success: true, resourceBudget: { requested: 2, effective: 2 } };
+			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {
+				executeValidate: async () => ({ success: true, summary: 'validated', checks: { tests } }),
+			});
+
+			expect(result).toMatchObject({ success: true, checks: { tests } });
+			expect(result.output).toBe([
+				'validated',
+				'Full suite resource budget: requested=2 effective=2',
+			].join('\n'));
+		});
+
+		test('surfaces a rejected budget through the registry dispatcher error contract', async () => {
+			const message = 'Full suite resource budget rejected: requested=1 minimum=2';
+			const tests = {
+				success: false,
+				resourceBudget: { requested: 1, minimum: 2, outcome: 'rejected' },
+				message,
+			};
+			const result = await validateHandler(['--shards', '1'], {}, 'C:/repo', {
+				executeValidate: async () => ({
+					success: false,
+					summary: 'Checks failed: tests',
+					checks: { tests },
+					failedChecks: ['tests'],
+				}),
+			});
+
+			expect(result).toMatchObject({
+				success: false,
+				error: message,
+				checks: { tests },
+				failedChecks: ['tests'],
+			});
+			expect(result.output).toBeUndefined();
 		});
 
 		test('rejects an invalid handler budget before validation starts', async () => {

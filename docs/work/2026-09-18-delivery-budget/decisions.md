@@ -54,3 +54,34 @@ Do not patch unrelated timed-out tests or immediately repeat the full suite.
 Windows process stalls remain tracked in
 `a04a58d4-9266-4fff-8c1a-24cd6bd014fe`; lost delegated execution handles are tracked
 in `4a4f5dd8-8132-4257-a869-c8507ac98468`. Neither is closed by the budget change.
+
+## Measured validation and review checkpoint, 2026-09-24
+
+The user resumed testing. One canonical `node bin/forge.js validate --shards 2`
+run at `6121400fe71919222191a01c84ab3fef26ac4cae` passed: 8,777 tests passed,
+32 skipped, zero failed, and 28,517 assertions across 617 profiled files. Type
+checking was reported as skipped; conflict checks, lint, security and tests
+passed. The native session ran from 08:21:31.857Z to 08:43:24.065Z: **21m52s**.
+The clean-head receipt verified under Node. The unchanged personal-account push
+reused those tests and took **84.6s**, including **37.0s** of team sync.
+
+These are measured completion times, not a controlled speed improvement. Host
+samples varied from 49% CPU / 2.7 GiB free RAM to 97% / 1.2 GiB. The profile's
+summed JUnit duration includes overlapping suite records and is not wall time.
+
+PR #574 review found that the CLI discarded structured budget details when
+rendering success or rejection. Correct the existing output boundary and cover
+the public formatting contract. For this output-only review correction, use
+focused regressions and strict lint with the documented `forge push --quick`
+review path, then verify required CI. The earlier canonical receipt belongs
+only to `6121400f`; do not present it as proof for a changed head.
+
+The formatter regressions failed before the correction and passed afterward.
+The revised validate test file passed 67 tests with 13 skips, zero failures and
+168 assertions in 14.42s; strict file lint passed. Sonar's nested-ternary and
+generic-error findings were corrected without suppressions or message changes.
+
+The largest attributed test file was `test/protected-state-surfaces.test.js`
+at 99.037s. Repeated Git fixture setup is a hypothesis to measure separately in
+issue `6eb0147a-ea09-4c8a-83dd-ed8c74acb7bc`, preserving all isolation and authority
+assertions. No fixture optimization is included in this PR.
