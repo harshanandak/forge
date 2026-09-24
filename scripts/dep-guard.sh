@@ -298,21 +298,26 @@ cmd_check_ripple_keyword_v1() {
     exit 1
   fi
 
-  local issue_id
-  issue_id="$(sanitize "$1")"
+  local issue_id="$1"
+  # Optional $2: title already fetched by cmd_check_ripple for this sanitized
+  # issue id, so the fallback does not show the same issue a second time.
+  local src_title="${2:-}"
 
-  # ---- Step 1: Validate issue exists ----------------------------------------
-  local src_json
-  src_json="$(bd_show_json "$issue_id")"
-
-  # ---- Step 2: Extract source title ----------------------------------------
-  local src_title=""
-  if command -v jq &>/dev/null; then
-    src_title="$(printf '%s' "$src_json" | jq -r '.title // ""' 2>/dev/null)" || true
-  fi
-  # Fallback: grep for title in JSON
   if [[ -z "$src_title" ]]; then
-    src_title="$(printf '%s' "$src_json" | grep -oE '"title"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/^"title"[[:space:]]*:[[:space:]]*"//;s/"$//')" || true
+    issue_id="$(sanitize "$1")"
+
+    # ---- Step 1: Validate issue exists --------------------------------------
+    local src_json
+    src_json="$(bd_show_json "$issue_id")"
+
+    # ---- Step 2: Extract source title --------------------------------------
+    if command -v jq &>/dev/null; then
+      src_title="$(printf '%s' "$src_json" | jq -r '.title // ""' 2>/dev/null)" || true
+    fi
+    # Fallback: grep for title in JSON
+    if [[ -z "$src_title" ]]; then
+      src_title="$(printf '%s' "$src_json" | grep -oE '"title"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/^"title"[[:space:]]*:[[:space:]]*"//;s/"$//')" || true
+    fi
   fi
 
   if [[ -z "$src_title" ]]; then
@@ -405,7 +410,7 @@ cmd_check_ripple() {
   task_file="$(extract_task_file_from_design "$design_text" || true)"
   if [[ -z "$task_file" || ! -f "$task_file" ]]; then
     echo "Warning: structured analyzer unavailable, falling back to keyword-only ripple check." >&2
-    cmd_check_ripple_keyword_v1 "$issue_id"
+    cmd_check_ripple_keyword_v1 "$issue_id" "$src_title"
     return 0
   fi
 
@@ -432,7 +437,7 @@ cmd_check_ripple() {
   fi
 
   echo "Warning: structured analyzer unavailable, falling back to keyword-only ripple check." >&2
-  cmd_check_ripple_keyword_v1 "$issue_id"
+  cmd_check_ripple_keyword_v1 "$issue_id" "$src_title"
 }
 
 cmd_apply_decision() {
