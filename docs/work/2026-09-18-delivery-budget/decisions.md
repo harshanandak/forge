@@ -95,3 +95,18 @@ The largest attributed test file was `test/protected-state-surfaces.test.js`
 at 99.037s. Repeated Git fixture setup is a hypothesis to measure separately in
 issue `6eb0147a-ea09-4c8a-83dd-ed8c74acb7bc`, preserving all isolation and authority
 assertions. No fixture optimization is included in this PR.
+
+The next exact-head review found budget evidence being lost before formatting:
+`testExecutionErrorResult` returned from timeout classification before parsing
+captured stdout. Move parsing ahead of classification and retain only observed
+budget metadata. Timeout and termination remain failures with zero test counts;
+captured partial counts cannot become completion evidence. Missing runner/root
+and no-output cases must not invent an effective budget. Audit of the canonical
+producer confirmed zero-test shard receipts already become `INCOMPLETE` through
+the existing budget-preserving path, so no zero-test behavior change was needed.
+
+The timeout, termination and public-handler composition regressions reproduced
+the loss before the correction. The complete focused file then passed 76 tests
+with 13 skips, zero failures and 190 assertions in 12.32s; strict file lint passed.
+The composition test uses real execution-result parsing and orchestration with an
+injected subprocess timeout, rather than only mocking the final result envelope.
