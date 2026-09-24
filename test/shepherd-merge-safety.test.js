@@ -8,7 +8,8 @@
 const path = require('node:path');
 const { describe, test, expect } = require('bun:test');
 
-const { computeVerdict, gatherPullSignal } = require('../lib/pr-pull');
+const { computeVerdict, gatherPullSignal, renderPullSummary } = require('../lib/pr-pull');
+const { PrStateAdapter } = require('../lib/adapters/pr-state-adapter');
 const { runShepherdPass } = require('../lib/pr-shepherd');
 const shepherdCmd = require('../lib/commands/shepherd');
 const { loadCommands, executeCommand } = require('../lib/commands/_registry');
@@ -201,6 +202,47 @@ async function gather(spec) {
   });
 }
 
+function issueCommentNode({
+  id = '901', url = `https://github.com/o/r/pull/5#issuecomment-${id}`,
+  author = 'github-actions[bot]', authorTypename = 'Bot', body,
+  createdAt = new Date(SETTLED).toISOString(),
+}) {
+  return {
+    fullDatabaseId: id, url, author: { __typename: authorTypename, login: author },
+    body, createdAt, updatedAt: createdAt,
+  };
+}
+
+async function gatherThroughIssueCommentAdapter(nodes, spec = {}) {
+  const page = JSON.stringify({
+    data: { repository: { pullRequest: { comments: {
+      pageInfo: { hasNextPage: false, endCursor: null }, nodes,
+    } } } },
+  });
+  const realAdapter = new PrStateAdapter({
+    gh: (_cmd, args) => (args.join(' ').includes('comments(first') ? page : ''),
+    git: () => '',
+  });
+  const adapter = makeAdapter({
+    mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi,
+    headPushTimeMs: NOW - (2 * 3600 * 1000), ...spec,
+  });
+  adapter.readIssueComments = realAdapter.readIssueComments.bind(realAdapter);
+  return gatherPullSignal({
+    pr: '5', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+    adapter, runGh: () => '', self: 'shepherd-bot', now: NOW,
+  });
+}
+
+const PACKAGE_SIZE_SUCCESS = [
+  '## \u{1F4E6} Package Size Report',
+  '',
+  '**Size:** 9MB (10239KB)',
+  '**Threshold:** 10MB',
+  '**Status:** \u2705 Within threshold',
+].join('\n');
+const TESTS_PASSED = 'Tests passed in https://github.com/owner/repo/actions/runs/123456. @coderabbitai review';
+
 describe('gatherPullSignal verdict integration', () => {
   // (c) core regression — 13 unresolved coderabbit threads + green checks.
   test('(c) 13 unresolved coderabbit threads: pass NOT merge-ready AND verdict BLOCKED-THREADS', async () => {
@@ -354,6 +396,68 @@ describe('agnostic classification (no hardcoded bot names, fail-closed)', () => 
 // ---------------------------------------------------------------------------
 // (g) output contract — handler prints JSON on stdout via the registry
 // ---------------------------------------------------------------------------
+describe('direct issue-comment evidence', () => {
+  test.each([
+    ['package-size success with producer indentation', 'github-actions[bot]', `  ${PACKAGE_SIZE_SUCCESS.replace(/\n/g, '\n  ')}  `],
+    ['tests-passed trigger with CRLF and login case variant', 'GitHub-Actions', `\r\n${TESTS_PASSED}\r\n`],
+  ])('known Actions %s is informational through adapter -> gather', async (_name, author, body) => {
+    const payload = await gatherThroughIssueCommentAdapter([issueCommentNode({ author, body })]);
+    expect(payload.verdict).toBe('CLEAN-MERGEABLE');
+    expect(payload.evidence.botComments).toEqual([]);
+  });
+
+  test.each([
+    ['package failure', 'github-actions[bot]', PACKAGE_SIZE_SUCCESS.replace('\u2705 Within threshold', '\u26A0\uFE0F Exceeds threshold')],
+    ['success with inconsistent integers', 'github-actions[bot]', PACKAGE_SIZE_SUCCESS.replace('9MB', '11MB')],
+    ['success over the producer limit', 'github-actions[bot]', PACKAGE_SIZE_SUCCESS.replace('9MB (10239KB)', '11MB (11264KB)')],
+    ['success with unsupported threshold', 'github-actions[bot]', PACKAGE_SIZE_SUCCESS.replace('9MB (10239KB)', '11MB (11264KB)').replace('10MB', '20MB')],
+    ['success with appended feedback', 'github-actions[bot]', `${PACKAGE_SIZE_SUCCESS}\nPlease remove the large fixture.`],
+    ['unknown Actions prose', 'github-actions[bot]', 'Tests passed. Please inspect the release artifact.'],
+    ['unknown bot', 'other-check[bot]', PACKAGE_SIZE_SUCCESS],
+  ])('%s remains a direct-comment blocker', async (_name, author, body, authorTypename = 'Bot') => {
+    const payload = await gatherThroughIssueCommentAdapter([issueCommentNode({ author, authorTypename, body })], {
+      mergeStateStatus: 'BLOCKED',
+    });
+    expect(payload.verdict).toBe('BLOCKED-THREADS');
+    expect(payload.blockers.some((b) => b.type === 'direct-comment')).toBe(true);
+  });
+
+  test('mixed comments preserve the actionable comment id, URL and author in JSON and text', async () => {
+    const payload = await gatherThroughIssueCommentAdapter([
+      issueCommentNode({ id: '901', body: PACKAGE_SIZE_SUCCESS }),
+      issueCommentNode({ id: '902', author: 'review-agent[bot]', body: 'Please fix the null path.' }),
+      issueCommentNode({ id: '903', author: 'github-actions', authorTypename: 'User', body: PACKAGE_SIZE_SUCCESS }),
+    ], { mergeStateStatus: 'BLOCKED' });
+    expect(payload.evidence.botComments).toEqual(['902']);
+    expect(payload.blockers).toContainEqual(expect.objectContaining({
+      type: 'direct-comment', commentId: '902',
+      url: 'https://github.com/o/r/pull/5#issuecomment-902', author: 'review-agent[bot]',
+    }));
+    const text = renderPullSummary(payload);
+    expect(text).toContain('issuecomment-902');
+    expect(text).toContain('not a resolvable review thread');
+  });
+
+  test('legacy id alias and missing identity still produce explained blockers', async () => {
+    const createdAt = new Date(NOW - 100 * 1000).toISOString();
+    const aliased = await gather({
+      mergeStateStatus: 'BLOCKED', required: ['ci'], checks: greenCi,
+      headPushTimeMs: NOW - 300 * 1000,
+      issueComments: [{ id: 'legacy-7', author: 'review-agent', authorTypename: 'Bot', body: 'fix it', createdAt }],
+    });
+    expect(aliased.evidence.botComments).toEqual(['legacy-7']);
+    expect(aliased.blockers[0]).toEqual(expect.objectContaining({ commentId: 'legacy-7' }));
+
+    const unidentified = await gather({
+      mergeStateStatus: 'BLOCKED', required: ['ci'], checks: greenCi,
+      headPushTimeMs: NOW - 300 * 1000,
+      issueComments: [{ authorTypename: 'Bot', body: 'fix it', createdAt }],
+    });
+    expect(unidentified.verdict).toBe('BLOCKED-THREADS');
+    expect(unidentified.blockers[0].detail).toContain('author and comment id unavailable');
+  });
+});
+
 describe('(g) output contract: --pull --json serializes the verdict to result.output', () => {
   test('--pull --json through the registry → result.output parses as JSON carrying the verdict', async () => {
     const commands = loadCommands(path.join(__dirname, '..', 'lib', 'commands')).commands;
