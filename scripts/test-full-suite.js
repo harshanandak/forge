@@ -64,11 +64,22 @@ function parseArgs(argv) {
     const next = argv[index + 1];
 
     if (current === '--label-prefix') args.labelPrefix = next;
-    if (current === '--shards') args.shards = Number.parseInt(next, 10);
+    if (current === '--shards') args.shards = parseResourceBudget(next);
     if (current === '--timeout') args.timeoutMs = parseTimeoutMs(next);
   }
 
   return args;
+}
+
+function parseResourceBudget(value) {
+  if (!/^[1-9]\d*$/.test(String(value ?? ''))) {
+    throw new Error('--shards must be a positive integer resource budget');
+  }
+  const budget = Number(value);
+  if (!Number.isSafeInteger(budget)) {
+    throw new Error('--shards must be a positive integer resource budget');
+  }
+  return budget;
 }
 
 function parseTimeoutMs(value) {
@@ -479,10 +490,19 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
 // A subprocess-lane worker owns two OS processes on Windows: the shard's own bun
 // runtime plus the bun.exe grandchild its tests spawn. Counting such a worker as
 // one budget unit oversubscribes small runners (3 workers is ~6 processes on 4
-// vCPU), so weight the grant by real process cost instead of by worker count.
+// vCPU), so weight the grant by the declared worker cost instead of worker count.
 function laneWorkerCost(laneName, platform = process.platform) {
   if (platform !== 'win32') return 1;
   return laneName === 'unit' ? 1 : 2;
+}
+
+function minimumResourceBudget(lanes, platform = process.platform) {
+  return lanes
+    .filter((lane) => lane.shards.length > 0)
+    .reduce(
+      (minimum, lane) => Math.max(minimum, laneWorkerCost(lane.name, platform)),
+      0,
+    );
 }
 
 function computeLaneGrants(lanes, options = {}) {
@@ -515,8 +535,18 @@ function computeLaneGrants(lanes, options = {}) {
     }
     return grants;
   }
-  // An explicit shard count is an operator-imposed cap on total concurrent
-  // children; reserve the budget for heavier subprocess workers first and
+  const minimumBudget = minimumResourceBudget(lanes, platform);
+  if (workerBudget < minimumBudget) {
+    throw new Error(
+      `Full suite resource budget: requested=${workerBudget} minimum=${minimumBudget} outcome=rejected`,
+    );
+  }
+  for (const lane of lanes.filter((candidate) => candidate.name === 'exclusive')) {
+    const entry = grants.get(lane);
+    entry.granted = Math.min(lane.concurrency, Math.floor(workerBudget / entry.cost));
+  }
+  // An explicit shard count is an operator-imposed weighted worker budget;
+  // reserve it for heavier subprocess workers first and
   // defer leftover lanes until capacity frees instead of exceeding it.
   const ordered = [...sharedLanes].sort(
     (left, right) => (left.name === 'subprocess' ? 0 : 1) - (right.name === 'subprocess' ? 0 : 1),
@@ -596,7 +626,7 @@ async function runLaneSchedule(lanes, execute, cancel = () => {}, options = {}) 
   if (deferredFailure) throw deferredFailure.reason;
 
   for (const lane of lanes.filter((candidate) => candidate.name === 'exclusive')) {
-    resultsByLane.set(lane, await runLane(lane));
+    resultsByLane.set(lane, await runLane(lane, grants.get(lane).granted));
   }
   return lanes.flatMap((lane) => {
     const laneResults = resultsByLane.get(lane);
@@ -929,10 +959,11 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
 
   try {
     const allTests = deps.allTests || listAllFullSuiteTests();
-    const shardTotal = Number.isInteger(args.shards) && args.shards > 0
-      ? args.shards
-      : getDefaultShardCount(deps.cpuCount);
-    const subprocessShardTotal = Number.isInteger(args.shards) && args.shards > 0
+    const requestedResourceBudget = args.shards === null || args.shards === undefined
+      ? null
+      : parseResourceBudget(args.shards);
+    const shardTotal = requestedResourceBudget ?? getDefaultShardCount(deps.cpuCount);
+    const subprocessShardTotal = requestedResourceBudget !== null
       ? shardTotal
       : Math.max(6, shardTotal);
     const profile = deps.profile || readNewestProfile(reportDir);
@@ -949,6 +980,21 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
       subprocessShardTotal,
     });
     const shardSpecs = lanePlan.flatMap((lane) => lane.shards);
+    const minimumBudget = minimumResourceBudget(lanePlan, platform);
+    const effectiveResourceBudget = requestedResourceBudget === null
+      ? Math.max(shardTotal, minimumBudget)
+      : shardTotal;
+    if (requestedResourceBudget !== null && requestedResourceBudget < minimumBudget) {
+      console.log(
+        `Full suite resource budget: requested=${requestedResourceBudget} minimum=${minimumBudget} outcome=rejected`,
+      );
+    }
+    const laneGrants = computeLaneGrants(lanePlan, {
+      platform,
+      workerBudget: effectiveResourceBudget,
+    });
+
+    console.log(`Full suite resource budget: requested=${requestedResourceBudget ?? 'default'} effective=${effectiveResourceBudget}`);
 
     if (shardSpecs.length === 0) {
       const exitCode = signal ? signalExitCode(signal) : 1;
@@ -962,12 +1008,11 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const runReportDir = fs.mkdtempSync(path.join(reportDir, 'full-suite-'));
 
     console.log(`Running local full suite in ${shardSpecs.length} shard(s)`);
-    const laneGrants = computeLaneGrants(lanePlan, { platform, workerBudget: shardTotal });
     for (const lane of lanePlan) {
       const grant = laneGrants.get(lane);
       const granted = grant.deferred ? grant.deferredConcurrency : grant.granted;
       const files = lane.shards.reduce((total, shard) => total + shard.files.length, 0);
-      console.log(`Resource lane ${lane.name}: files=${files} shards=${lane.shards.length} concurrency=${granted} (nominal=${lane.concurrency} cost=${grant.cost} budget=${shardTotal}${grant.deferred ? ' deferred' : ''})`);
+      console.log(`Resource lane ${lane.name}: files=${files} shards=${lane.shards.length} concurrency=${granted} (nominal=${lane.concurrency} cost=${grant.cost} budget=${effectiveResourceBudget}${grant.deferred ? ' deferred' : ''})`);
     }
     const childEnv = stripFullSuiteChildEnv(
       typeof processTree.envFor === 'function' ? processTree.envFor(env) : env,
@@ -1001,7 +1046,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
       }, {
         grants: laneGrants,
         platform,
-        workerBudget: shardTotal,
+        workerBudget: effectiveResourceBudget,
       });
     } catch (error) {
       console.error('Full suite shard execution failed:', error);

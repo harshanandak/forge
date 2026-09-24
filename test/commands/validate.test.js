@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {
+	handler: validateHandler,
+	parseResourceBudget,
 	runTypeCheck,
 	runLint,
 	runSecurityScan,
@@ -18,6 +20,270 @@ const { resolveReceiptPath } = require('../../lib/validation-receipt.js');
 setDefaultTimeout(30000);
 
 describe('Validate Command - Validation Orchestration', () => {
+	describe('Resource budget', () => {
+		test.each(['0', '-1', '1.5', '2x', undefined])(
+			'rejects invalid --shards value %s',
+			(value) => {
+				const args = value === undefined ? ['--shards'] : ['--shards', value];
+				expect(() => parseResourceBudget(args)).toThrow(TypeError);
+				expect(() => parseResourceBudget(args)).toThrow('--shards must be a positive integer resource budget');
+			},
+		);
+
+		test('accepts a positive integer unchanged and preserves the absent default', () => {
+			expect(parseResourceBudget(['--shards', '2'])).toBe(2);
+			expect(parseResourceBudget([])).toBeNull();
+		});
+
+		test('validates every repeated budget and keeps the last valid value', () => {
+			expect(() => parseResourceBudget(['--shards', '2', '--shards', '0']))
+				.toThrow('--shards must be a positive integer resource budget');
+			expect(parseResourceBudget(['--shards', '2', '--shards', '3'])).toBe(3);
+		});
+
+		test('threads a validated budget through the command handler', async () => {
+			const calls = [];
+			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {
+				executeValidate: async (options) => {
+					calls.push(options);
+					return { success: true, summary: 'validated' };
+				},
+			});
+
+			expect(calls).toEqual([{ rootDir: 'C:/repo', resourceBudget: 2 }]);
+			expect(result.output).toBe('validated');
+		});
+
+		test('surfaces an accepted budget through the registry dispatcher output contract', async () => {
+			const tests = {
+				success: true,
+				message: 'All 8777 tests passed',
+				resourceBudget: { requested: 2, effective: 2 },
+			};
+			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {
+				executeValidate: async () => ({ success: true, summary: 'validated', checks: { tests } }),
+			});
+
+			expect(result).toMatchObject({ success: true, checks: { tests } });
+			expect(result.output).toBe([
+				'validated',
+				'Full suite resource budget: requested=2 effective=2',
+			].join('\n'));
+		});
+
+		test('surfaces the automatic default budget through the registry dispatcher output contract', async () => {
+			const tests = {
+				success: true,
+				message: 'All 8777 tests passed',
+				resourceBudget: { requested: null, effective: 4 },
+			};
+			const result = await validateHandler([], {}, 'C:/repo', {
+				executeValidate: async () => ({ success: true, summary: 'validated', checks: { tests } }),
+			});
+
+			expect(result.output).toBe([
+				'validated',
+				'Full suite resource budget: requested=default effective=4',
+			].join('\n'));
+		});
+
+		test('retains an accepted budget when tests fail after starting', async () => {
+			const tests = {
+				success: false,
+				skipped: 3,
+				message: '2/8777 tests failed',
+				resourceBudget: { requested: 2, effective: 2 },
+			};
+			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {
+				executeValidate: async () => ({
+					success: false,
+					summary: 'Checks failed: tests',
+					checks: { tests },
+					failedChecks: ['tests'],
+				}),
+			});
+
+			expect(result).toMatchObject({ success: false, error: '2/8777 tests failed', checks: { tests } });
+			expect(result.output).toBe('Full suite resource budget: requested=2 effective=2');
+		});
+
+		test('reports only the failed check when tests pass', async () => {
+			const lint = { success: false, message: 'Linting failed: 2 errors, 0 warnings' };
+			const tests = {
+				success: true,
+				message: 'All 8777 tests passed',
+				resourceBudget: { requested: 2, effective: 2 },
+			};
+			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {
+				executeValidate: async () => ({
+					success: false,
+					summary: 'Checks failed: lint',
+					checks: { lint, tests },
+					failedChecks: ['lint'],
+				}),
+			});
+
+			expect(result.error).toBe('Linting failed: 2 errors, 0 warnings');
+			expect(result.output).toBe('Full suite resource budget: requested=2 effective=2');
+		});
+
+		test('reports every failed check and retains the accepted budget', async () => {
+			const lint = { success: false, message: 'Linting failed: 2 errors, 0 warnings' };
+			const tests = {
+				success: false,
+				message: '2/8777 tests failed',
+				resourceBudget: { requested: 2, effective: 2 },
+			};
+			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {
+				executeValidate: async () => ({
+					success: false,
+					summary: 'Checks failed: lint, tests',
+					checks: { lint, tests },
+					failedChecks: ['lint', 'tests'],
+				}),
+			});
+
+			expect(result.error).toBe('Linting failed: 2 errors, 0 warnings; 2/8777 tests failed');
+			expect(result.output).toBe('Full suite resource budget: requested=2 effective=2');
+		});
+
+		test('uses caught check errors and ignores skipped checks when failedChecks is incomplete', async () => {
+			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {
+				executeValidate: async () => ({
+					success: false,
+					summary: 'Checks failed: ',
+					errors: ['Lint error: lint crashed'],
+					checks: {
+						lint: { success: false, message: 'lint crashed' },
+						typeCheck: { success: false, skipped: true, message: 'TypeScript not configured' },
+						tests: {
+							success: true,
+							message: 'All 8777 tests passed',
+							resourceBudget: { requested: 2, effective: 2 },
+						},
+					},
+				}),
+			});
+
+			expect(result.error).toBe('Lint error: lint crashed');
+			expect(result.output).toBe('Full suite resource budget: requested=2 effective=2');
+		});
+
+		test('preserves an explicit error without tests or budget evidence', async () => {
+			const result = await validateHandler([], {}, 'C:/repo', {
+				executeValidate: async () => ({ success: false, error: 'Explicit validation failure' }),
+			});
+
+			expect(result).toEqual({ success: false, error: 'Explicit validation failure' });
+		});
+
+		test('surfaces a rejected budget through the registry dispatcher error contract', async () => {
+			const message = 'Full suite resource budget rejected: requested=1 minimum=2';
+			const tests = {
+				success: false,
+				resourceBudget: { requested: 1, minimum: 2, outcome: 'rejected' },
+				message,
+			};
+			const result = await validateHandler(['--shards', '1'], {}, 'C:/repo', {
+				executeValidate: async () => ({
+					success: false,
+					summary: 'Checks failed: tests',
+					checks: { tests },
+					failedChecks: ['tests'],
+				}),
+			});
+
+			expect(result).toMatchObject({
+				success: false,
+				error: message,
+				checks: { tests },
+				failedChecks: ['tests'],
+			});
+			expect(result.output).toBeUndefined();
+		});
+
+		test('rejects an invalid handler budget before validation starts', async () => {
+			let called = false;
+			const result = await validateHandler(['--shards'], {}, 'C:/repo', {
+				executeValidate: async () => {
+					called = true;
+					return { success: true, summary: 'unexpected' };
+				},
+			});
+
+			expect(result).toEqual({
+				success: false,
+				error: '--shards must be a positive integer resource budget',
+			});
+			expect(called).toBe(false);
+		});
+
+		test('threads the budget through executeValidate without minting a targeted receipt', async () => {
+			const calls = [];
+			const result = await executeValidate({
+				rootDir: path.resolve(__dirname, '..', '..'),
+				resourceBudget: 2,
+				skip: ['conflictMarkers', 'typeCheck', 'lint', 'security'],
+				runAllTests: async (...args) => {
+					calls.push(args);
+					return { success: true, testsFound: true, passed: 1, failed: 0, total: 1 };
+				},
+				validationReceipt: {
+					beginValidation: () => ({ head: 'unused-targeted-snapshot' }),
+					completeValidation: (_rootDir, snapshot) => {
+						expect(snapshot).toBeNull();
+						return false;
+					},
+				},
+			});
+
+			expect(calls).toHaveLength(1);
+			expect(calls[0][1]).toBe(path.resolve(__dirname, '..', '..'));
+			expect(calls[0][2]).toBe(2);
+			expect(result.validationReceipt).toBe(false);
+		});
+
+		test('composes captured timeout budget evidence through runAllTests and the public handler', async () => {
+			const rootDir = path.resolve(__dirname, '..', '..');
+			const result = await validateHandler(['--shards', '2'], {}, rootDir, {
+				executeValidate: (options) => executeValidate({
+					...options,
+					skip: ['conflictMarkers', 'typeCheck', 'lint', 'security'],
+					runAllTests: (_exec, testRoot, budget) => runAllTests(() => {
+						throw Object.assign(new Error('full suite timed out'), {
+							code: 'ETIMEDOUT',
+							stdout: [
+								'Full suite resource budget: requested=2 effective=2',
+								'3 pass',
+								'1 fail',
+								'Ran 4 tests across 1 file.',
+							].join('\n'),
+						});
+					}, testRoot, budget),
+					validationReceipt: {
+						beginValidation: () => ({ head: 'timeout-snapshot' }),
+						completeValidation: () => false,
+					},
+				}),
+			});
+
+			expect(result).toMatchObject({
+				success: false,
+				error: 'Test execution timed out after 25 minutes',
+				output: 'Full suite resource budget: requested=2 effective=2',
+				checks: {
+					tests: {
+						success: false,
+						resourceBudget: { requested: 2, effective: 2 },
+						passed: 0,
+						failed: 0,
+						total: 0,
+					},
+				},
+				failedChecks: ['tests'],
+			});
+		});
+	});
 	describe('Type checking', () => {
 		test.skip('should run type check successfully', async () => {
 			const result = await runTypeCheck();
@@ -116,6 +382,7 @@ describe('Validate Command - Validation Orchestration', () => {
 				expect(result.success).toBe(false);
 				expect(result.skipped).not.toBe(true);
 				expect(result.message).toMatch(/root directory/i);
+				expect(result.resourceBudget).toBeUndefined();
 			} finally {
 				fs.rmSync(parentDir, { recursive: true, force: true });
 			}
@@ -132,6 +399,7 @@ describe('Validate Command - Validation Orchestration', () => {
 				expect(result.success).toBe(false);
 				expect(result.skipped).not.toBe(true);
 				expect(result.message).toMatch(/root directory/i);
+				expect(result.resourceBudget).toBeUndefined();
 			} finally {
 				fs.rmSync(rootDir, { recursive: true, force: true });
 			}
@@ -219,12 +487,32 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
-		test('reports the full-suite timeout using its selected limit without waiting', async () => {
+		test.each([
+			['ETIMEDOUT', { code: 'ETIMEDOUT' }],
+			['killed SIGTERM', { killed: true, signal: 'SIGTERM' }],
+		])('reports the full-suite timeout and captured budget for %s without waiting', async (_name, terminalState) => {
 			const result = await runAllTests(() => {
-				throw Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGTERM' });
-			}, path.resolve(__dirname, '..', '..'));
+				throw Object.assign(new Error('full suite terminated'), terminalState, {
+					stdout: 'Full suite resource budget: requested=2 effective=2',
+				});
+			}, path.resolve(__dirname, '..', '..'), 2);
 			expect(result.success).toBe(false);
 			expect(result.message).toBe('Test execution timed out after 25 minutes');
+			expect(result).toMatchObject({
+				passed: 0,
+				failed: 0,
+				total: 0,
+				resourceBudget: { requested: 2, effective: 2 },
+			});
+		});
+
+		test('does not invent budget evidence when a full-suite timeout has no output', async () => {
+			const result = await runAllTests(() => {
+				throw Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT' });
+			}, path.resolve(__dirname, '..', '..'), 2);
+
+			expect(result).toMatchObject({ success: false, passed: 0, failed: 0, total: 0 });
+			expect(result.resourceBudget).toBeUndefined();
 		});
 	});
 
@@ -732,6 +1020,9 @@ describe('Validate Command - Validation Orchestration', () => {
 			expect(result.skipped).toBe(true);
 			expect(result.testsFound).toBe(false);
 			expect(result.total).toBe(0);
+			expect(result.resourceBudget).toBeUndefined();
+			// Forge's full-suite producer rejects zero-test shard receipts as INCOMPLETE
+			// before this branch; raw Bun is the reachable zero-test producer here.
 			// The status label must not read PASS when nothing ran.
 			expect(getCheckStatus(result)).toBe('SKIPPED');
 			expect(result.message).toMatch(/no tests|0 tests/i);
@@ -763,6 +1054,7 @@ describe('Validate Command - Validation Orchestration', () => {
 			const exec = () => { const e = new Error(message); e.code = 'ENOENT'; throw e; };
 			const result = await runAllTests(exec);
 			expect(result.skipped).toBe(true);
+			expect(result.resourceBudget).toBeUndefined();
 			expect(getCheckStatus(result)).toBe('SKIPPED');
 			expect(result.message).toMatch(/bun|test runner/i);
 		});
@@ -783,6 +1075,50 @@ describe('Validate Command - Validation Orchestration', () => {
 			expect(calls[0][1]).toEqual(['scripts/test-full-suite.js']);
 			expect(calls[0][2].cwd).toBe(rootDir);
 			expect(result).toMatchObject({ success: true, passed: 6, failed: 0, skipped: 1, total: 7 });
+		});
+
+		test('forwards and records the selected full-suite resource budget', async () => {
+			const rootDir = path.resolve(__dirname, '..', '..');
+			const calls = [];
+			const result = await runAllTests((...args) => {
+				calls.push(args);
+				return [
+					'Full suite resource budget: requested=2 effective=2',
+					'Full suite aggregate: status=PASS tests=7 assertions=9 passed=7 failed=0 errors=0 skipped=0',
+				].join('\n');
+			}, rootDir, 2);
+
+			expect(calls[0][1]).toEqual(['scripts/test-full-suite.js', '--shards', '2']);
+			expect(result.resourceBudget).toEqual({ requested: 2, effective: 2 });
+
+			const defaultResult = await runAllTests(
+				() => [
+					'Full suite resource budget: requested=default effective=4',
+					'Full suite aggregate: status=PASS tests=7 assertions=9 passed=7 failed=0 errors=0 skipped=0',
+				].join('\n'),
+				rootDir,
+			);
+			expect(defaultResult.resourceBudget).toEqual({ requested: null, effective: 4 });
+		});
+
+		test('rejects an explicit budget before running a non-Forge consumer command', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-budget-consumer-'));
+			let called = false;
+			try {
+				const result = await runAllTests(() => {
+					called = true;
+					return '1 pass\n0 fail\nRan 1 tests across 1 file.';
+				}, rootDir, 2);
+
+				expect(result).toMatchObject({
+					success: false,
+					fullSuite: false,
+					message: '--shards requires the canonical Forge full-suite runner',
+				});
+				expect(called).toBe(false);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
 		});
 
 		test('falls back to raw Bun outside Forge even when the script path exists', async () => {
@@ -877,11 +1213,53 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
+		test('retains rejected budget evidence without synthesizing test failures', async () => {
+			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-full-suite-exit-'));
+			try {
+				fs.mkdirSync(path.join(rootDir, 'scripts'));
+				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'forge-workflow',
+					bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
+				const output = 'Full suite resource budget: requested=1 minimum=2 outcome=rejected';
+				expect(parseTestCounts(output).resourceBudget).toEqual({
+					requested: 1,
+					minimum: 2,
+					outcome: 'rejected',
+				});
+				const exec = () => {
+					const error = new Error('full suite exited 1');
+					error.stdout = output;
+					throw error;
+				};
+
+				const result = await runAllTests(exec, rootDir, 1);
+				expect(result).toMatchObject({
+					success: false,
+					testsFound: false,
+					passed: 0,
+					failed: 0,
+					total: 0,
+					resourceBudget: { requested: 1, minimum: 2, outcome: 'rejected' },
+					message: 'Full suite resource budget rejected: requested=1 minimum=2',
+				});
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		});
+
 		test('keeps a non-zero full-suite exit failed when the aggregate reports zero failures', async () => {
 			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-full-suite-exit-'));
 			try {
 				fs.mkdirSync(path.join(rootDir, 'scripts'));
 				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
+				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
+					name: 'forge-workflow',
+					bin: { forge: 'bin/forge.js' },
+					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+				}));
 				const exec = () => {
 					const error = new Error('full suite exited 1');
 					error.stdout = 'Full suite aggregate: status=FAIL tests=10 assertions=12 passed=10 failed=0 errors=0 skipped=0';
@@ -889,7 +1267,14 @@ describe('Validate Command - Validation Orchestration', () => {
 				};
 
 				const result = await runAllTests(exec, rootDir);
-				expect(result).toMatchObject({ success: false, testsFound: true, passed: 10, failed: 1, total: 10 });
+				expect(result).toMatchObject({
+					success: false,
+					testsFound: true,
+					fullSuite: true,
+					passed: 10,
+					failed: 1,
+					total: 10,
+				});
 			} finally {
 				fs.rmSync(rootDir, { recursive: true, force: true });
 			}

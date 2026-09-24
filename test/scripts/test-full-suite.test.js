@@ -15,6 +15,7 @@ const {
   buildShardSpecs,
   classifyShardFailure,
   classifyTestResource,
+  computeLaneGrants,
   extractFailedTestCases,
   getDefaultShardCount,
   listAllFullSuiteTests,
@@ -115,6 +116,20 @@ describe('scripts/test-full-suite.js', () => {
   test('parseArgs rejects an invalid shard timeout', () => {
     expect(() => parseArgs(['--timeout', '0'])).toThrow('--timeout must be a positive integer');
     expect(() => parseArgs(['--timeout', 'not-a-number'])).toThrow('--timeout must be a positive integer');
+  });
+
+  test.each(['0', '-1', '1.5', '2x', undefined])(
+    'parseArgs rejects invalid resource budget %s',
+    (value) => {
+      const argv = value === undefined ? ['--shards'] : ['--shards', value];
+      expect(() => parseArgs(argv)).toThrow('--shards must be a positive integer resource budget');
+    },
+  );
+
+  test('parseArgs validates every repeated resource budget and keeps the last valid value', () => {
+    expect(() => parseArgs(['--shards', '2', '--shards', '0']))
+      .toThrow('--shards must be a positive integer resource budget');
+    expect(parseArgs(['--shards', '2', '--shards', '3']).shards).toBe(3);
   });
 
   test('buildShardTestArgs preserves an explicit shard timeout', () => {
@@ -404,6 +419,67 @@ describe('scripts/test-full-suite.js', () => {
     ]));
   });
 
+  test('rejects an explicit Windows budget below a required heavy lane before scheduling', async () => {
+    const lanes = [{
+      name: 'subprocess',
+      concurrency: 1,
+      shards: [{ id: 's0' }],
+    }];
+    let executions = 0;
+
+    expect(() => computeLaneGrants(lanes, { platform: 'win32', workerBudget: 1 }))
+      .toThrow('requested=1 minimum=2 outcome=rejected');
+    await expect(runLaneSchedule(lanes, async () => { executions += 1; }, () => {}, {
+      platform: 'win32',
+      workerBudget: 1,
+    })).rejects.toThrow('requested=1 minimum=2 outcome=rejected');
+    expect(executions).toBe(0);
+  });
+
+  test('admits one Windows heavy worker at budget two and affordable unit work at budget one', () => {
+    const subprocessLane = { name: 'subprocess', concurrency: 3, shards: [{ id: 's0' }] };
+    const subprocessGrant = computeLaneGrants([subprocessLane], {
+      platform: 'win32',
+      workerBudget: 2,
+    }).get(subprocessLane);
+    expect(subprocessGrant).toMatchObject({ cost: 2, granted: 1, deferred: false });
+
+    const unitLane = { name: 'unit', concurrency: 3, shards: [{ id: 'u0' }] };
+    const unitGrant = computeLaneGrants([unitLane], {
+      platform: 'win32',
+      workerBudget: 1,
+    }).get(unitLane);
+    expect(unitGrant).toMatchObject({ cost: 1, granted: 1, deferred: false });
+  });
+
+  test('keeps every immediate, deferred, and exclusive grant within the explicit budget', () => {
+    const lanes = [
+      { name: 'unit', concurrency: 4, shards: [{ id: 'u0' }] },
+      { name: 'subprocess', concurrency: 3, shards: [{ id: 's0' }] },
+      { name: 'exclusive', concurrency: 1, shards: [{ id: 'e0' }] },
+    ];
+    const workerBudget = 2;
+    const grants = computeLaneGrants(lanes, { platform: 'win32', workerBudget });
+
+    for (const lane of lanes) {
+      const grant = grants.get(lane);
+      expect(grant.granted * grant.cost).toBeLessThanOrEqual(workerBudget);
+      if (grant.deferred) {
+        expect(grant.deferredConcurrency * grant.cost).toBeLessThanOrEqual(workerBudget);
+      }
+    }
+  });
+
+  test('rejects a Windows budget below a required exclusive lane', () => {
+    const exclusiveLane = {
+      name: 'exclusive',
+      concurrency: 1,
+      shards: [{ id: 'e0' }],
+    };
+    expect(() => computeLaneGrants([exclusiveLane], { platform: 'win32', workerBudget: 1 }))
+      .toThrow('requested=1 minimum=2 outcome=rejected');
+  });
+
   test('runLaneSchedule settles in-flight shared work before propagating a failure', async () => {
     const probe = executionProbe();
     const scheduled = runLaneSchedule([
@@ -653,6 +729,7 @@ describe('scripts/test-full-suite.js', () => {
       classify: (file) => (file.indexOf('spawn') !== -1 ? 'subprocess' : 'unit'),
       durationMap: new Map(),
       cpuCount: 8,
+      platform: 'linux',
       processTree: fakeProcessTree(),
       spawn,
     });
@@ -758,6 +835,63 @@ describe('scripts/test-full-suite.js', () => {
     expect(maxWeightedCost).toBeLessThanOrEqual(3);
   });
 
+  test.each(['subprocess', 'exclusive'])(
+    'normalizes a one-CPU Windows default for the required %s lane',
+    async (resource) => {
+      const logged = [];
+      let spawned = 0;
+      const logSpy = spyOn(console, 'log').mockImplementation((...parts) => {
+        logged.push(parts.join(' '));
+      });
+      try {
+        const status = await runFullSuiteInParallel({}, {
+          allTests: [`test/${resource}.test.js`],
+          classify: () => resource,
+          cpuCount: 1,
+          durationMap: new Map(),
+          platform: 'win32',
+          processTree: fakeProcessTree(),
+          spawn: (_command, args) => {
+            spawned += 1;
+            return fakeShardChild(0, 9850 + spawned, args);
+          },
+        });
+        expect(status).toBe(0);
+      } finally {
+        logSpy.mockRestore();
+      }
+
+      expect(spawned).toBe(1);
+      expect(logged).toContain('Full suite resource budget: requested=default effective=2');
+    },
+  );
+
+  test('reports an explicitly rejected Windows budget before spawning', async () => {
+    const logged = [];
+    let spawned = 0;
+    const logSpy = spyOn(console, 'log').mockImplementation((...parts) => {
+      logged.push(parts.join(' '));
+    });
+    try {
+      await expect(runFullSuiteInParallel({ shards: 1 }, {
+        allTests: ['test/spawn.test.js'],
+        classify: () => 'subprocess',
+        durationMap: new Map(),
+        platform: 'win32',
+        processTree: fakeProcessTree(),
+        spawn: () => {
+          spawned += 1;
+          throw new Error('spawn must not run');
+        },
+      })).rejects.toThrow('requested=1 minimum=2 outcome=rejected');
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    expect(spawned).toBe(0);
+    expect(logged).toContain('Full suite resource budget: requested=1 minimum=2 outcome=rejected');
+  });
+
   test('resource lane plan output reports granted concurrency and budget', async () => {
     const logged = [];
     const logSpy = spyOn(console, 'log').mockImplementation((...parts) => {
@@ -803,7 +937,7 @@ describe('scripts/test-full-suite.js', () => {
       return { code: 0, resource: lane.name };
     };
 
-    await expect(runLaneSchedule(lanes, execute, () => {}, { workerBudget: 1 }))
+    await expect(runLaneSchedule(lanes, execute, () => {}, { platform: 'linux', workerBudget: 1 }))
       .rejects.toThrow('deferred boom');
     expect(executedLanes).not.toContain('exclusive');
 
@@ -817,7 +951,7 @@ describe('scripts/test-full-suite.js', () => {
       if (lane.name === 'unit') throw new Error('deferred boom two');
       return { code: 0, resource: lane.name };
     };
-    await expect(runLaneSchedule(exclusiveLanes, spawnProbe, () => {}, { workerBudget: 1 }))
+    await expect(runLaneSchedule(exclusiveLanes, spawnProbe, () => {}, { platform: 'linux', workerBudget: 1 }))
       .rejects.toThrow('deferred boom two');
     expect(exclusiveSpawned).toBe(false);
   });
@@ -1406,6 +1540,7 @@ describe('scripts/test-full-suite.js', () => {
     try {
       expect(await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix }, {
         allTests: [],
+        cpuCount: 5,
         durationMap: new Map(),
         processTree: fakeProcessTree(),
       })).toBe(1);
@@ -1415,6 +1550,7 @@ describe('scripts/test-full-suite.js', () => {
 
     expect(logs).toContain('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
     expect(logs).toContain('Full suite exit: 1');
+    expect(logs).toContain('Full suite resource budget: requested=default effective=4');
   });
 
   test('missing Node executable follows the incomplete aggregate path without spawning', async () => {
